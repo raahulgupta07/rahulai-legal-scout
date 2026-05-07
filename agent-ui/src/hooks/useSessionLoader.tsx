@@ -39,12 +39,21 @@ const useSessionLoader = () => {
       try {
         setIsSessionsLoading(true)
 
+        let userId: string | null = null
+        if (typeof window !== 'undefined') {
+          try {
+            const u = JSON.parse(localStorage.getItem('ls_user') || 'null')
+            if (u?.id != null) userId = String(u.id)
+          } catch {}
+        }
+
         const sessions = await getAllSessionsAPI(
           selectedEndpoint,
           entityType,
           selectedId,
           dbId,
-          authToken
+          authToken,
+          userId
         )
         setSessionsData(sessions.data ?? [])
       } catch {

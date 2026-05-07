@@ -168,6 +168,14 @@ const useAIChatStreamHandler = () => {
         formData.append('stream', 'true')
         formData.append('session_id', sessionId ?? '')
 
+        // Tag run with current user so sessions are filtered per-user
+        if (typeof window !== 'undefined') {
+          try {
+            const u = JSON.parse(localStorage.getItem('ls_user') || 'null')
+            if (u?.id != null) formData.append('user_id', String(u.id))
+          } catch {}
+        }
+
         // Create abort controller for cancellation
         const controller = new AbortController()
         setAbortController(controller)

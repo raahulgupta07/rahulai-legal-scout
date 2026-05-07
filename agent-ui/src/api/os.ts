@@ -55,13 +55,15 @@ export const getAllSessionsAPI = async (
   type: 'agent' | 'team',
   componentId: string,
   dbId: string,
-  authToken?: string
+  authToken?: string,
+  userId?: string | null
 ): Promise<Sessions | { data: [] }> => {
   try {
     const url = new URL(APIRoutes.GetSessions(base))
     url.searchParams.set('type', type)
     url.searchParams.set('component_id', componentId)
     url.searchParams.set('db_id', dbId)
+    if (userId) url.searchParams.set('user_id', String(userId))
 
     const response = await fetch(url.toString(), {
       method: 'GET',
