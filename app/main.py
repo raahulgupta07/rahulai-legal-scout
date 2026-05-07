@@ -550,7 +550,9 @@ from fastapi import Request, HTTPException
 PUBLIC_ROUTES = [
     "/api/auth/login",
     "/api/version",
-    # PDF previews now require token query param — removed from public routes
+    # PDF preview endpoints validate token via query param themselves
+    "/api/templates/preview-pdf/",
+    "/api/documents/preview-pdf/",
     "/docs",
     "/openapi.json",
     "/redoc",
@@ -647,7 +649,13 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
 
         # Log the request
         ip = request.client.host if request.client else "unknown"
-        log_level = logging.WARNING if response.status_code >= 400 else logging.INFO
+        # Demote noisy expected 4xx (new sessions, stale cached preview-pdf) to INFO
+        _noisy_404 = response.status_code == 404 and ("/sessions/" in path or "/runs" in path)
+        _stale_preview = response.status_code == 401 and "/preview-pdf/" in path
+        if _noisy_404 or _stale_preview:
+            log_level = logging.INFO
+        else:
+            log_level = logging.WARNING if response.status_code >= 400 else logging.INFO
 
         _request_logger.log(
             log_level,
@@ -1900,10 +1908,10 @@ async def sync_templates_to_knowledge():
 
 @app.delete("/api/dashboard/document/{doc_id}")
 async def delete_document(request: Request, doc_id: str):
-    """Delete a generated document by ID or filename."""
+    """Delete a generated document by ID, synthetic doc_<mtime>, or filename."""
     require_admin(request)
     try:
-        import urllib.parse
+        import urllib.parse, re
 
         doc_id_str = urllib.parse.unquote(doc_id)
         conn = get_db_conn()
@@ -1911,7 +1919,9 @@ async def delete_document(request: Request, doc_id: str):
         cur = conn.cursor()
 
         file_name = None
-        # Try by numeric ID first
+        output_base = Path("/documents/legal/output").resolve()
+
+        # 1. Numeric DB id
         if doc_id_str.isdigit():
             cur.execute("SELECT file_name FROM documents WHERE id = %s", (int(doc_id_str),))
             row = cur.fetchone()
@@ -1919,7 +1929,18 @@ async def delete_document(request: Request, doc_id: str):
                 file_name = row[0]
                 cur.execute("DELETE FROM documents WHERE id = %s", (int(doc_id_str),))
 
-        # Try by filename
+        # 2. Synthetic id "doc_<mtime>" — disk-only file. Find by mtime match.
+        if not file_name:
+            m = re.match(r"^doc_(\d+)$", doc_id_str)
+            if m:
+                target_mtime = int(m.group(1))
+                if output_base.exists():
+                    for f in output_base.glob("*.docx"):
+                        if int(f.stat().st_mtime) == target_mtime:
+                            file_name = f.name
+                            break
+
+        # 3. Direct filename match
         if not file_name:
             file_name = doc_id_str
             cur.execute("DELETE FROM documents WHERE file_name = %s", (file_name,))
@@ -1928,16 +1949,8 @@ async def delete_document(request: Request, doc_id: str):
 
         # Delete file from disk
         deleted = False
-        output_base = Path("/documents/legal/output").resolve()
         if file_name:
-            file_path = (Path("/documents/legal/output") / file_name).resolve()
-            if str(file_path).startswith(str(output_base)) and file_path.exists():
-                file_path.unlink()
-                deleted = True
-
-        # Fallback: try raw doc_id as filename
-        if not deleted:
-            file_path = (Path("/documents/legal/output") / doc_id_str).resolve()
+            file_path = (output_base / file_name).resolve()
             if str(file_path).startswith(str(output_base)) and file_path.exists():
                 file_path.unlink()
                 deleted = True
@@ -1945,11 +1958,16 @@ async def delete_document(request: Request, doc_id: str):
         # Delete from S3 if enabled
         try:
             from app.s3_storage import s3_delete_async
-            s3_delete_async(f"output/{file_name or doc_id_str}")
+            if file_name:
+                s3_delete_async(f"output/{file_name}")
         except Exception: pass
 
-        clear_cache()  # Clear dashboard cache
-        return {"success": True, "message": "Document deleted"} if deleted or file_name else {"success": False, "error": "Document not found"}
+        clear_cache()
+        if not deleted and not file_name:
+            return {"success": False, "error": "Document not found"}
+        if not deleted:
+            return {"success": False, "error": f"DB row removed but file not found on disk: {file_name}"}
+        return {"success": True, "message": f"Deleted {file_name}"}
     except Exception as e:
         return {"success": False, "error": str(e)}
 
@@ -2632,6 +2650,12 @@ Only include templates that have a real relationship. Return ONLY the JSON array
                 yield _sse("confidence", f"Training confidence: {_score}% ({len(_passed)}/{len(_checks)} checks passed)", score=_score)
             except Exception as _sce:
                 yield _sse("confidence_warn", f"Confidence scoring warning: {_sce}")
+
+            try:
+                _reg_count = _refresh_field_registry_internal()
+                yield _sse("registry", f"Field registry refreshed: {_reg_count} fields", count=_reg_count)
+            except Exception as _re:
+                yield _sse("registry_warn", f"Registry refresh warning: {_re}")
 
             yield _sse("done", "Complete")
 
@@ -3837,6 +3861,110 @@ async def admin_backup(request: Request):
 
 
 # ---------------------------------------------------------------------------
+# Field Registry — dynamic per-template user_input fields
+# ---------------------------------------------------------------------------
+@app.get("/api/dashboard/field-registry")
+async def get_field_registry(request: Request):
+    """Return all registered company-level user_input fields with metadata."""
+    get_current_user(request)
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        cur.execute("""
+            SELECT field_key, label, description, field_type, used_by_templates
+            FROM company_field_registry
+            ORDER BY field_key
+        """)
+        rows = cur.fetchall()
+        cur.close(); conn.close()
+        fields = [{"field_key": r[0], "label": r[1] or r[0].replace("_", " ").title(),
+                   "description": r[2] or "", "field_type": r[3] or "text",
+                   "used_by_templates": r[4] or []} for r in rows]
+        return {"success": True, "fields": fields}
+    except Exception as e:
+        return {"success": False, "error": str(e), "fields": []}
+
+
+def _refresh_field_registry_internal() -> int:
+    """Rebuild company_field_registry from templates table. Returns row count."""
+    SKIP = {"company", "company_name", "company_name_english", "company_registration_number",
+            "directors", "members", "shareholders", "registered_office", "registered_office_address",
+            "principal_activity", "status", "company_type",
+            "individual_shareholder_1_name", "individual_shareholder_2_name",
+            "corporate_shareholder_3_name", "shareholder_1_name", "shareholder_2_name",
+            "authorized_director_name", "director_name", "pronoun", "date", "meeting_location",
+            "financial_year_end_date", "next_financial_year_end_date",
+            "auditor_name", "auditor_fee"}
+    conn = get_db_conn(); conn.autocommit = True; cur = conn.cursor()
+    cur.execute("SELECT name, fields FROM templates WHERE fields IS NOT NULL")
+    rows = cur.fetchall()
+    registry: dict = {}
+    for tname, fields in rows:
+        if not isinstance(fields, dict): continue
+        user_inputs = fields.get("user_input_fields") or []
+        descs = fields.get("field_descriptions") or {}
+        for f in user_inputs:
+            fk = str(f).lower().replace(" ", "_").replace("-", "_")
+            if fk in SKIP: continue
+            desc = descs.get(f, "")
+            ft = "date" if "date" in fk else ("number" if any(x in fk for x in ("fee","amount","number","capital","share")) else "text")
+            if fk not in registry:
+                registry[fk] = {"label": f.replace("_", " ").title(), "desc": desc, "type": ft, "tpls": []}
+            if tname not in registry[fk]["tpls"]:
+                registry[fk]["tpls"].append(tname)
+    for fk, meta in registry.items():
+        cur.execute("""
+            INSERT INTO company_field_registry (field_key, label, description, field_type, used_by_templates, updated_at)
+            VALUES (%s, %s, %s, %s, %s, NOW())
+            ON CONFLICT (field_key) DO UPDATE SET
+                label = EXCLUDED.label, description = EXCLUDED.description,
+                field_type = EXCLUDED.field_type, used_by_templates = EXCLUDED.used_by_templates,
+                updated_at = NOW()
+        """, (fk, meta["label"], meta["desc"], meta["type"], meta["tpls"]))
+    cur.close(); conn.close()
+    return len(registry)
+
+
+@app.post("/api/dashboard/field-registry/refresh")
+async def refresh_field_registry(request: Request):
+    """Rebuild registry from all templates' user_input_fields."""
+    require_admin(request)
+    try:
+        count = _refresh_field_registry_internal()
+        return {"success": True, "count": count}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+# ---------------------------------------------------------------------------
+# Document Detail endpoint — full row with custom_data + validation
+# ---------------------------------------------------------------------------
+@app.get("/api/dashboard/document-detail/{doc_id}")
+async def get_document_detail(doc_id: str, request: Request):
+    """Return full document record incl custom_data + validation_result."""
+    user = get_current_user(request)
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT id, template_name, company_name, file_name, file_path, download_url,
+                   preview_url, validation_result, custom_data, version, created_at
+            FROM documents WHERE id = %s
+        """, (int(doc_id),))
+        r = cur.fetchone()
+        cur.close(); conn.close()
+        if not r:
+            return {"success": False, "error": "Not found"}
+        return {"success": True, "data": {
+            "id": r[0], "template_name": r[1], "company_name": r[2],
+            "file_name": r[3], "file_path": r[4], "download_url": r[5],
+            "preview_url": r[6], "validation_result": r[7], "custom_data": r[8],
+            "version": r[9], "created_at": r[10].isoformat() if r[10] else None,
+        }}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+# ---------------------------------------------------------------------------
 # Document History endpoint (Task 3)
 # ---------------------------------------------------------------------------
 @app.get("/api/dashboard/document-history/{doc_name}")
@@ -3911,16 +4039,6 @@ async def bulk_generate_documents(request: Request):
     except Exception as e:
         return {"success": False, "error": str(e)}
 
-
-@app.post("/api/dashboard/bulk/upload-templates")
-async def bulk_upload_templates(request: Request):
-    """Upload multiple template files at once."""
-    user = get_current_user(request)
-    if not user:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    # Note: This endpoint accepts multipart form data with multiple files
-    # The frontend sends files one by one, so this is handled by the existing upload endpoint
-    return {"success": True, "message": "Use the single upload endpoint for each file"}
 
 
 
@@ -4143,9 +4261,12 @@ async def upload_dashboard_template(request: Request, file: UploadFile = File(..
 # DOCX → PDF conversion for template preview
 # ---------------------------------------------------------------------------
 @app.get("/api/templates/preview-pdf/{template_name}")
-async def get_template_pdf(template_name: str, token: str = ""):
+async def get_template_pdf(request: Request, template_name: str, token: str = ""):
     """Serve pre-generated PDF preview. Falls back to on-the-fly conversion if needed."""
-    # Validate token
+    if not token:
+        auth = request.headers.get("Authorization", "")
+        if auth.startswith("Bearer "):
+            token = auth[7:]
     if not token:
         return JSONResponse(status_code=401, content={"error": "Token required"})
     try:
@@ -4210,9 +4331,12 @@ async def get_template_pdf(template_name: str, token: str = ""):
 
 
 @app.get("/api/documents/preview-pdf/{doc_name}")
-async def get_document_pdf(doc_name: str, token: str = ""):
+async def get_document_pdf(request: Request, doc_name: str, token: str = ""):
     """Convert a generated document (output) to PDF for preview."""
-    # Validate token
+    if not token:
+        auth = request.headers.get("Authorization", "")
+        if auth.startswith("Bearer "):
+            token = auth[7:]
     if not token:
         return JSONResponse(status_code=401, content={"error": "Token required"})
     try:
@@ -4279,165 +4403,139 @@ async def upload_company_pdf(file: UploadFile = File(...)):
 # ---------------------------------------------------------------------------
 # PDF Company Extract - AI-powered extraction
 # ---------------------------------------------------------------------------
-@app.post("/api/company/extract-pdf")
-async def extract_company_from_pdf(file: UploadFile = File(...)):
-    """Upload a DICA Company Extract PDF, use AI to extract structured company data."""
+
+@app.post("/api/company/extract-pdf-stream")
+async def extract_company_from_pdf_stream(file: UploadFile = File(...)):
+    """Streaming version of extract-pdf. Yields ND-JSON progress events."""
+    from fastapi.responses import StreamingResponse
+    import asyncio
     import tempfile
+    import os
+    import httpx
 
-    try:
-        import pdfplumber
-    except ImportError:
-        return {"success": False, "error": "pdfplumber not installed"}
+    content = await file.read()
+    safe_name = (file.filename or "upload.pdf").replace(" ", "_")
 
-    try:
-        # Save uploaded file temporarily
-        content = await file.read()
-        if len(content) > 50 * 1024 * 1024:
-            return {"success": False, "error": "File too large (max 50MB)"}
-        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
-            tmp.write(content)
-            tmp_path = tmp.name
+    async def gen():
+        def evt(stage: str, msg: str, **extra):
+            return json.dumps({"stage": stage, "msg": msg, **extra}) + "\n"
 
-        # Also save to /documents for PDF viewer access
-        pdf_dir = Path("/documents/legal/uploads")
-        pdf_dir.mkdir(parents=True, exist_ok=True)
-        safe_name = file.filename.replace(" ", "_") if file.filename else "upload.pdf"
-        pdf_save_path = pdf_dir / safe_name
-        with open(pdf_save_path, "wb") as f:
-            f.write(content)
-
-        # Sync to S3 if enabled
+        ai_text = ""
         try:
-            from app.s3_storage import s3_upload_async
-            s3_upload_async(str(pdf_save_path))
-        except Exception:
-            pass
+            yield evt("upload", f"Received {file.filename} ({len(content)} bytes)")
+            await asyncio.sleep(0)
 
-        # Extract text from PDF
-        full_text = ""
-        with pdfplumber.open(tmp_path) as pdf:
-            for page in pdf.pages:
-                text = page.extract_text()
-                if text:
-                    full_text += text + "\n"
+            if len(content) > 50 * 1024 * 1024:
+                yield evt("error", "File too large (max 50MB)"); return
 
-        Path(tmp_path).unlink(missing_ok=True)
-
-        if not full_text.strip():
-            return {"success": False, "error": "Could not extract text from PDF"}
-
-        # ── HYBRID EXTRACTION ──
-        # Step 1: Claude Haiku (cheap/fast) for all structured data
-        # Step 2: GPT-4o-mini (only if Myanmar text has CID codes) for Burmese name
-        import os
-        import httpx
-
-        openrouter_key = os.getenv("OPENROUTER_API_KEY")
-        if not openrouter_key:
-            return {"success": False, "error": "OPENROUTER_API_KEY not set"}
-
-        def call_llm(model: str, prompt: str) -> str:
-            r = httpx.post(
-                f"{OPENROUTER_BASE_URL}/chat/completions",
-                headers={"Authorization": f"Bearer {openrouter_key}", "Content-Type": "application/json"},
-                json={"model": model, "messages": [{"role": "user", "content": prompt}], "temperature": 0},
-                timeout=60,
-            )
-            r.raise_for_status()
-            text = r.json()["choices"][0]["message"]["content"].strip()
-            if text.startswith("```"):
-                text = text.split("```")[1]
-                if text.startswith("json"):
-                    text = text[4:]
-                text = text.strip()
-            return text
-
-        # ── Step 1: Claude Haiku — extract all structured data ──
-        extraction_prompt = f"""Extract ALL company information from this Myanmar DICA Company Extract PDF.
-Return a JSON object with these fields (use null if not found):
-
-{{
-  "company_name_english": "Full company name in English",
-  "company_name_myanmar": null,
-  "company_registration_number": "Registration number",
-  "registration_date": "YYYY-MM-DD",
-  "status": "e.g. Registered",
-  "company_type": "e.g. Private Company Limited by Shares",
-  "foreign_company": "Yes or No",
-  "small_company": "Small or Big (as in DICA)",
-  "under_corpsec_management": "Yes or No — whether under corporate secretary management",
-  "group_company": "Yes or No — whether part of a corporate group",
-  "principal_activity": "All activities listed",
-  "date_of_last_annual_return": "YYYY-MM-DD",
-  "previous_registration_number": "Previous reg number",
-  "registered_office_address": "Full address with phone/email",
-  "principal_place_of_business": "Full address",
-  "directors": [
-    {{"name": "Name", "type": "Director", "date_of_appointment": "YYYY-MM-DD",
-      "date_of_birth": "YYYY-MM-DD", "nationality": "Myanmar",
-      "nrc_passport": "NRC number", "gender": "Male/Female", "business_occupation": "-"}}
-  ],
-  "ultimate_holding_company_name": "Name",
-  "ultimate_holding_company_jurisdiction": "Myanmar",
-  "ultimate_holding_company_registration_number": "Number",
-  "total_shares_issued": "Total shares",
-  "total_capital": "Total capital amount (e.g. 2550000000)",
-  "consideration_amount_paid": "Total consideration/amount paid for shares",
-  "currency_of_share_capital": "MMK",
-  "members": [
-    {{"type": "corporate/individual", "name": "Name", "registration_number": "",
-      "jurisdiction": "", "share_quantity": "", "amount_paid": "",
-      "amount_unpaid": "", "share_class": "ORD"}}
-  ],
-  "filing_history": [{{"form_type": "AR | Annual Return", "effective_date": "YYYY-MM-DD"}}]
-}}
-
-RULES:
-- Extract ALL directors, members, filing history
-- YYYY-MM-DD for dates. null if not found. Do NOT invent data.
-- Set company_name_myanmar to null (will be extracted separately)
-- If text has (cid:XXX) codes, ignore those sections
-
-DOCUMENT:
-{full_text[:8000]}
-
-Return ONLY JSON, no markdown."""
-
-        ai_text = call_llm(get_model("training"), extraction_prompt)
-        extracted = json.loads(ai_text)
-
-        # ── Step 2: GPT-4o-mini — only for Myanmar name if CID codes found ──
-        has_cid = "(cid:" in full_text
-        if has_cid and not extracted.get("company_name_myanmar"):
             try:
-                myanmar_prompt = f"""This PDF text contains Myanmar/Burmese company name encoded as CID codes.
-The English company name is: {extracted.get('company_name_english', 'Unknown')}
+                import pdfplumber
+            except ImportError:
+                yield evt("error", "pdfplumber not installed"); return
 
-From the text below, find and return ONLY the Myanmar company name in Burmese script.
-If you cannot determine the Myanmar name, return "null".
+            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+                tmp.write(content); tmp_path = tmp.name
 
-TEXT:
-{full_text[:3000]}
+            pdf_dir = Path("/documents/legal/uploads")
+            pdf_dir.mkdir(parents=True, exist_ok=True)
+            pdf_save_path = pdf_dir / safe_name
+            with open(pdf_save_path, "wb") as f:
+                f.write(content)
+            yield evt("save", f"Saved to {pdf_save_path}")
 
-Return ONLY the Myanmar name (Burmese script), nothing else."""
-
-                myanmar_text = call_llm(get_model("classification"), myanmar_prompt).strip().strip('"')
-                if myanmar_text and myanmar_text != "null" and "(cid:" not in myanmar_text:
-                    extracted["company_name_myanmar"] = myanmar_text
+            try:
+                from app.s3_storage import s3_upload_async
+                s3_upload_async(str(pdf_save_path))
             except Exception:
-                pass  # Myanmar name is optional, don't fail
+                pass
 
-        return {
-            "success": True,
-            "data": extracted,
-            "pdf_url": f"/documents/legal/uploads/{safe_name}",
-            "raw_text": full_text[:2000],
-        }
+            yield evt("parse", "Reading PDF text…")
+            full_text = ""
+            with pdfplumber.open(tmp_path) as pdf:
+                num_pages = len(pdf.pages)
+                for i, page in enumerate(pdf.pages, 1):
+                    text = page.extract_text()
+                    if text:
+                        full_text += text + "\n"
+                    yield evt("parse", f"Page {i}/{num_pages} parsed ({len(text or '')} chars)")
+                    await asyncio.sleep(0)
+            Path(tmp_path).unlink(missing_ok=True)
 
-    except json.JSONDecodeError as e:
-        return {"success": False, "error": f"AI returned invalid JSON: {str(e)}", "raw": ai_text[:500] if 'ai_text' in dir() else ""}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
+            if not full_text.strip():
+                yield evt("error", "Could not extract text from PDF"); return
+
+            openrouter_key = os.getenv("OPENROUTER_API_KEY")
+            if not openrouter_key:
+                yield evt("error", "OPENROUTER_API_KEY not set"); return
+
+            chat_model = get_model("training")
+            yield evt("ai", f"Calling {chat_model} for structured extraction…")
+
+            extraction_prompt = (
+                "Extract ALL company information from this Myanmar DICA Company Extract PDF. "
+                "Return ONLY a JSON object with fields: company_name_english, company_name_myanmar, "
+                "company_registration_number, registration_date (YYYY-MM-DD), status, company_type, "
+                "foreign_company, small_company, under_corpsec_management, group_company, "
+                "principal_activity, date_of_last_annual_return, previous_registration_number, "
+                "registered_office_address, principal_place_of_business, directors[], "
+                "ultimate_holding_company_name, ultimate_holding_company_jurisdiction, "
+                "ultimate_holding_company_registration_number, total_shares_issued, total_capital, "
+                "consideration_amount_paid, currency_of_share_capital, members[], filing_history[]. "
+                "directors[] items: {name, type, date_of_appointment, date_of_birth, nationality, "
+                "nrc_passport, gender, business_occupation}. members[] items: {type, name, "
+                "registration_number, jurisdiction, share_quantity, amount_paid, amount_unpaid, "
+                "share_class}. filing_history[]: {form_type, effective_date}. "
+                "Use null when unknown. Set company_name_myanmar to null. No markdown.\n\n"
+                f"DOCUMENT:\n{full_text[:8000]}"
+            )
+
+            def _call_llm(model: str, prompt: str) -> str:
+                r = httpx.post(
+                    f"{OPENROUTER_BASE_URL}/chat/completions",
+                    headers={"Authorization": f"Bearer {openrouter_key}", "Content-Type": "application/json"},
+                    json={"model": model, "messages": [{"role": "user", "content": prompt}], "temperature": 0},
+                    timeout=60,
+                )
+                r.raise_for_status()
+                t = r.json()["choices"][0]["message"]["content"].strip()
+                if t.startswith("```"):
+                    t = t.split("```")[1]
+                    if t.startswith("json"): t = t[4:]
+                    t = t.strip()
+                return t
+
+            ai_text = await asyncio.to_thread(_call_llm, chat_model, extraction_prompt)
+            yield evt("ai", f"AI returned {len(ai_text)} chars, parsing JSON…")
+            extracted = json.loads(ai_text)
+            yield evt("ai", f"Extracted: {extracted.get('company_name_english') or 'unknown'} · "
+                            f"{len(extracted.get('directors') or [])} directors · "
+                            f"{len(extracted.get('members') or [])} members")
+
+            has_cid = "(cid:" in full_text
+            if has_cid and not extracted.get("company_name_myanmar"):
+                yield evt("ai", "CID codes detected — extracting Myanmar name…")
+                try:
+                    cls_model = get_model("classification")
+                    myanmar_prompt = (
+                        f"This PDF text contains Myanmar/Burmese company name encoded as CID codes. "
+                        f"The English company name is: {extracted.get('company_name_english','Unknown')}. "
+                        f"Return ONLY the Myanmar name (Burmese script) or 'null'.\n\nTEXT:\n{full_text[:3000]}"
+                    )
+                    myanmar_text = (await asyncio.to_thread(_call_llm, cls_model, myanmar_prompt)).strip().strip('"')
+                    if myanmar_text and myanmar_text != "null" and "(cid:" not in myanmar_text:
+                        extracted["company_name_myanmar"] = myanmar_text
+                        yield evt("ai", f"Myanmar name: {myanmar_text}")
+                except Exception as e:
+                    yield evt("warn", f"Myanmar name extraction failed: {e}")
+
+            yield evt("done", "Extraction complete", success=True, data=extracted,
+                      pdf_url=f"/documents/legal/uploads/{safe_name}")
+        except json.JSONDecodeError as e:
+            yield evt("error", f"AI returned invalid JSON: {e}", raw=(ai_text or "")[:500])
+        except Exception as e:
+            yield evt("error", str(e))
+
+    return StreamingResponse(gen(), media_type="application/x-ndjson")
 
 
 # ---------------------------------------------------------------------------

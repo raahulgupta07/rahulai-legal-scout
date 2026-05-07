@@ -43,8 +43,8 @@ def record_document(
                 file_path,
                 download_url,
                 preview_url,
-                json.dumps(validation_result) if validation_result else None,
-                json.dumps(custom_data) if custom_data else None,
+                json.dumps(validation_result, default=str) if validation_result else None,
+                json.dumps(custom_data, default=str) if custom_data else None,
                 datetime.now(),
             ),
         )

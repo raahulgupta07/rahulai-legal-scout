@@ -7,11 +7,13 @@ AI-powered legal document automation system for Myanmar corporate law. Generate 
 ## What It Does
 
 - **Chat Interface** — Ask "Create AGM for City Holdings" and the AI agent finds the template, looks up company data, fills placeholders, generates the document
-- **Template Management** — Upload Word `.docx` templates with `{{placeholders}}`, AI analyzes and trains on each template (15-step deep training)
-- **Company Management** — Add companies via DICA PDF upload (AI extracts all fields automatically) or manual form entry
-- **Document Generation** — Auto-fill templates with company data from database, download as `.docx`
-- **PDF Preview** — Preview templates with yellow-highlighted placeholders
+- **Template Management** — Upload Word `.docx` templates with `{{placeholders}}`, `[brackets]` or `{single}`, AI analyzes and trains on each template (15-step deep training)
+- **Company Management** — Add companies via DICA PDF upload with **streaming AI extraction logs** (real-time terminal feed), or manual form entry
+- **Document Generation** — Auto-fill templates with company data, ~92% auto-fill rate via dynamic field registry; download as `.docx`
+- **Pixel-match Preview** — Inline PDF and Word preview rendered via LibreOffice → PDF → pdfjs canvas (works in Brave w/ shields up)
 - **Deep Training** — AI analyzes templates for field types, legal references, document workflows, Q&A pairs, cross-template relationships
+- **Dynamic Field Registry** — New templates auto-register their user_input fields; Edit Company UI renders inputs dynamically. Zero code changes per template.
+- **Document Split-View** — Generated docs render side-by-side: pixel-match PDF left, placeholder values + validation stats right
 
 ---
 
@@ -455,6 +457,10 @@ docker compose exec scout-api python -m db.migrate
 | Port 80 taken | Set `PORT=8080` in `.env` |
 | "SECURITY FATAL" on startup | Set strong `JWT_SECRET_KEY` (64 chars) and `ADMIN_PASSWORD` (10+ chars) |
 | Health check returns 503 | `docker compose logs scout-db` — check DB credentials |
+| Cannot create user — "Request failed" | Password must be ≥10 chars; see browser DevTools Network for exact error |
+| Doc preview blank in Brave | Hard reload (`Cmd+Shift+R`); canvas viewer self-hosts pdfjs worker |
+| Generated docs full of TBD | Click **Refresh Field Registry** in Companies, then fill new fields in Edit Company. Auto-runs after each `Start Training`. |
+| New columns missing after deploy | `docker compose exec scout-api python -m db.migrate` |
 | Can't login | Verify `ADMIN_EMAIL` and `ADMIN_PASSWORD` in `.env`, then `docker compose restart` |
 | Templates not showing | Upload via `/admin/templates` |
 | Companies not showing | Add via `/admin/companies` |

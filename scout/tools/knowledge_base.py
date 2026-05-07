@@ -582,11 +582,15 @@ def add_company(data: dict) -> dict:
                 ultimate_holding_company_jurisdiction, ultimate_holding_company_registration_number,
                 total_shares_issued, currency_of_share_capital, members, filing_history,
                 under_corpsec_management, group_company, total_capital, consideration_amount_paid,
-                source, pdf_url
+                source, pdf_url,
+                financial_year_end_date, next_financial_year_end_date, auditor_name, auditor_fee,
+                custom_fields
             ) VALUES (
                 %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                 %s::jsonb, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb,
-                %s, %s, %s, %s, %s, %s
+                %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s,
+                %s::jsonb
             )
             ON CONFLICT (company_registration_number) DO UPDATE SET
                 company_name_english = EXCLUDED.company_name_english,
@@ -605,6 +609,11 @@ def add_company(data: dict) -> dict:
                 total_capital = EXCLUDED.total_capital,
                 consideration_amount_paid = EXCLUDED.consideration_amount_paid,
                 pdf_url = EXCLUDED.pdf_url,
+                financial_year_end_date = EXCLUDED.financial_year_end_date,
+                next_financial_year_end_date = EXCLUDED.next_financial_year_end_date,
+                auditor_name = EXCLUDED.auditor_name,
+                auditor_fee = EXCLUDED.auditor_fee,
+                custom_fields = COALESCE(companies.custom_fields, '{}'::jsonb) || EXCLUDED.custom_fields,
                 updated_at = NOW()
         """, (
             company_name,
@@ -634,6 +643,11 @@ def add_company(data: dict) -> dict:
             data.get("consideration_amount_paid"),
             data.get("source", "manual"),
             data.get("pdf_url"),
+            data.get("financial_year_end_date") or None,
+            data.get("next_financial_year_end_date") or None,
+            data.get("auditor_name") or None,
+            data.get("auditor_fee") or None,
+            safe_json_dumps(data.get("custom_fields") or {}),
         ))
         conn.commit()
 

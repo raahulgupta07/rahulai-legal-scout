@@ -23,7 +23,8 @@ export default function DocxViewer({ url, className = '' }: DocxViewerProps) {
       try {
         const { renderAsync } = await import('docx-preview')
 
-        const res = await fetch(url)
+        const tok = typeof window !== 'undefined' ? (localStorage.getItem('ls_token') || '') : ''
+        const res = await fetch(url, tok ? { headers: { Authorization: `Bearer ${tok}` } } : {})
         if (!res.ok) throw new Error('Failed to fetch document')
         const blob = await res.blob()
 
@@ -81,25 +82,28 @@ export default function DocxViewer({ url, className = '' }: DocxViewerProps) {
           flex-direction: column;
           align-items: center;
           min-height: 100%;
+          overflow-x: auto;
         }
         .docx-preview .docx-wrapper > section.docx {
           background: white !important;
           box-shadow: 0 2px 8px rgba(0,0,0,0.12) !important;
           margin-bottom: 16px !important;
           min-height: auto !important;
-          max-width: 100% !important;
-          width: 100% !important;
-          transform-origin: top center;
-          overflow-x: auto;
+          flex-shrink: 0;
         }
         .docx-preview .docx-wrapper > section.docx > * {
-          max-width: 100% !important;
           overflow-wrap: break-word;
           word-wrap: break-word;
         }
         .docx-preview table {
-          max-width: 100% !important;
-          font-size: 0.85em;
+          max-width: 100%;
+          font-size: 0.9em;
+          table-layout: fixed;
+          word-break: break-word;
+        }
+        .docx-preview img {
+          max-width: 100%;
+          height: auto;
         }
       `}</style>
     </div>

@@ -2,6 +2,7 @@
 
 import { FC, useState } from 'react'
 import { Download, FileText, Eye, X, Loader2 } from 'lucide-react'
+import DocViewer from '@/components/ui/DocViewer'
 
 interface DocumentCardProps {
   url: string
@@ -18,7 +19,8 @@ const DocumentCard: FC<DocumentCardProps> = ({ url, fileName }) => {
   // Extract just the filename from the full URL and build the PDF preview URL
   const docFileName = url.split('/').pop() || ''
   const apiBase = process.env.NEXT_PUBLIC_API_URL || ''
-  const pdfPreviewUrl = `${apiBase}/api/documents/preview-pdf/${encodeURIComponent(docFileName)}`
+  const tok = typeof window !== 'undefined' ? (localStorage.getItem('ls_token') || '') : ''
+  const pdfPreviewUrl = `${apiBase}/api/documents/preview-pdf/${encodeURIComponent(docFileName)}?token=${tok}`
 
   const handlePreview = () => {
     if (!showPreview) {
@@ -71,14 +73,7 @@ const DocumentCard: FC<DocumentCardProps> = ({ url, fileName }) => {
               <X className="w-3.5 h-3.5" />
             </button>
           </div>
-          <iframe
-            src={pdfPreviewUrl}
-            className="w-full border-0"
-            style={{ height: '700px' }}
-            title="Document Preview"
-            onLoad={() => setPdfLoading(false)}
-            sandbox="allow-same-origin"
-          />
+          <DocViewer url={pdfPreviewUrl} forceFormat="pdf" className="w-full" />
         </div>
       )}
     </div>

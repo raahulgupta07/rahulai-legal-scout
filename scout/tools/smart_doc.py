@@ -239,6 +239,11 @@ def prepare_document_data(template_name: str, company_name: str, documents_dir: 
                     "company_type": c.get("company_type", ""),
                     "total_shares": c.get("total_shares", ""),
                     "currency": c.get("currency", ""),
+                    "financial_year_end_date": c.get("financial_year_end_date", ""),
+                    "next_financial_year_end_date": c.get("next_financial_year_end_date", ""),
+                    "auditor_name": c.get("auditor_name", ""),
+                    "auditor_fee": c.get("auditor_fee", ""),
+                    **(c.get("custom_fields") or {}),
                 })
             companies_data = {"success": True, "companies": companies_list}
             company_result = find_company_data(company_name, companies_data)
@@ -431,7 +436,6 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
                     db_fields_filled.append(df)
 
             # Generate smart defaults for missing fields
-            from datetime import datetime
             try:
                 import zoneinfo, os as _dos
                 _tz = zoneinfo.ZoneInfo(_dos.getenv("TZ", "Asia/Yangon"))
@@ -469,7 +473,6 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
         # Auto-generate defaults for missing fields
         if not result.get("ready_to_generate") and not custom_data:
             custom_data = {}
-            from datetime import datetime
             try:
                 import zoneinfo, os
                 tz = zoneinfo.ZoneInfo(os.getenv("TZ", "Asia/Yangon"))
@@ -858,7 +861,8 @@ def _get_company_from_db(company_name: str) -> dict | None:
             SELECT company_name_english, company_registration_number, registered_office_address,
                    principal_place_of_business, status, company_type, directors, members,
                    total_shares_issued, currency_of_share_capital, date_of_last_annual_return,
-                   financial_year_end_date, ultimate_holding_company_name
+                   financial_year_end_date, ultimate_holding_company_name,
+                   next_financial_year_end_date, auditor_name, auditor_fee
             FROM companies WHERE company_name_english ILIKE %s LIMIT 1
         """, (f"%{company_name}%",))
         row = cur.fetchone()
@@ -874,6 +878,8 @@ def _get_company_from_db(company_name: str) -> dict | None:
                 "date_of_last_annual_return": str(row[10]) if row[10] else None,
                 "financial_year_end_date": str(row[11]) if row[11] else None,
                 "ultimate_holding_company_name": row[12],
+                "next_financial_year_end_date": str(row[13]) if row[13] else None,
+                "auditor_name": row[14], "auditor_fee": row[15],
             }
     except Exception as e:
         logging.getLogger("legalscout").warning(f"Failed to load company '{company_name}' from DB: {e}")
@@ -950,6 +956,15 @@ def find_replacement(placeholder: str, data: dict[str, Any], template_name: str 
         return "they"
     if "location" in placeholder_norm or "venue" in placeholder_norm:
         return data.get("registered_office", data.get("registered_office_address", "TBD"))
+
+    # Final fallback — any unfilled placeholder becomes TBD so it is not left raw in the doc
+    KNOWN_USER_INPUT = {
+        "financial_year_end_date", "next_financial_year_end_date",
+        "auditor_name", "auditor_fee", "auditor_remuneration",
+        "meeting_time", "shareholder_name",
+    }
+    if placeholder_norm in KNOWN_USER_INPUT or "financial_year" in placeholder_norm or "auditor" in placeholder_norm:
+        return "TBD"
 
     return None
 

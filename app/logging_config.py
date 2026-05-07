@@ -105,6 +105,14 @@ def setup_logging():
     # Uvicorn uses its own access log — keep error level only
     logging.getLogger("uvicorn.error").setLevel(logging.INFO)
 
+    # Silence Agno's noisy 404 "Session with ID ... not found" warnings
+    class _SessionNotFoundFilter(logging.Filter):
+        def filter(self, record: logging.LogRecord) -> bool:
+            msg = record.getMessage()
+            return "Session with ID" not in msg and "404 Session" not in msg
+    for n in ("agno", "uvicorn.error", "fastapi"):
+        logging.getLogger(n).addFilter(_SessionNotFoundFilter())
+
     return logging.getLogger("legalscout")
 
 

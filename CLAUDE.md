@@ -104,16 +104,21 @@ EXA_API_KEY=...           # Optional — only loaded when set, never embedded in
 | `db/migration_006_field_mapping.sql` | Field mapping |
 | `db/migration_007_deep_training.sql` | Deep training support |
 | `db/migration_008_fix_user_role_constraint.sql` | User role constraint (adds 'editor') |
+| `db/migration_009_company_extra_fields.sql` | `auditor_name`, `auditor_fee`, `next_financial_year_end_date` columns |
+| `db/migration_010_dynamic_fields.sql` | `custom_fields JSONB` + `company_field_registry` table |
 
 ### Frontend
 | File | Purpose |
 |------|---------|
 | `agent-ui/src/app/page.tsx` | Chat interface (input capped at 5000 chars) |
 | `agent-ui/src/app/login/page.tsx` | Brutalist login page (Space Grotesk, warm yellow, ink borders) |
-| `agent-ui/src/app/admin/templates/page.tsx` | Template upload, training, preview |
-| `agent-ui/src/app/admin/companies/page.tsx` | Company management (PDF/manual) |
+| `agent-ui/src/app/admin/templates/page.tsx` | Template upload, training, preview (DocViewer + LibreOffice PDF) |
+| `agent-ui/src/app/admin/companies/page.tsx` | Company management (PDF/manual + dynamic field registry section + streaming extract logs) |
 | `agent-ui/src/app/admin/dashboard/page.tsx` | Dashboard KPIs |
-| `agent-ui/src/app/admin/documents/page.tsx` | Generated documents |
+| `agent-ui/src/app/admin/documents/page.tsx` | Generated documents (split-view: PDF left, placeholder values right, back button) |
+| `agent-ui/src/components/ui/DocViewer.tsx` | Unified PDF/DOCX dispatcher; forces PdfViewer for `/preview-pdf/` paths |
+| `agent-ui/src/components/ui/PdfViewer.tsx` | Canvas PDF render via pdfjs-dist (Brave-shields-safe, sends Bearer header) |
+| `agent-ui/src/components/ui/DocxViewer.tsx` | Client-side docx render via docx-preview (sends Bearer header) |
 | `agent-ui/src/lib/api-client.ts` | API endpoint URLs |
 | `agent-ui/src/store.ts` | Zustand state |
 | `agent-ui/src/app/globals.css` | Global styles + brutalist utilities (.ink-border, .stamp-shadow, .tag-label, .stamp-press) |
@@ -247,6 +252,9 @@ Triggered from `/admin/templates` → "Train Agent" → "Start Training". Stream
 | `app_settings` | Runtime configuration (models, S3, SMTP) |
 | `document_versions` | Version tracking |
 | `template_versions` | Template versioning |
+| `company_field_registry` | Dynamic per-template user_input field registry (auto-populated after training) |
+| `companies.custom_fields` | JSONB column — per-company key/value overrides for any field discovered by training |
+| `schema_migrations` | Tracks applied SQL migration files (driven by `python -m db.migrate`) |
 
 ---
 
@@ -313,7 +321,12 @@ GET  /api/knowledge/train-stream/{template}   # SSE training stream (15 steps, a
 GET  /api/knowledge/train-companies-stream    # SSE company training stream (auth required)
 POST /api/knowledge/deep-train                # Batch train all templates (auth required)
 GET  /api/templates/preview-pdf/{name}        # PDF preview (JWT token query param)
-POST /api/company/extract-pdf                 # AI extract from DICA PDF
+POST /api/company/extract-pdf-stream          # AI extract from DICA PDF (ND-JSON streaming logs)
+GET  /api/dashboard/document-detail/{id}      # Full doc record incl custom_data + validation_result
+GET  /api/dashboard/field-registry            # Auto-discovered user_input field list
+POST /api/dashboard/field-registry/refresh    # Rebuild registry from templates table (auto-runs after training)
+GET  /api/templates/preview-pdf/{name}        # docx→PDF (LibreOffice). Accepts ?token= or Authorization header
+GET  /api/documents/preview-pdf/{name}        # output docx→PDF preview. Accepts ?token= or Authorization header
 POST /agents/scout/runs                       # AI chat (streaming)
 POST /api/suggest-followups                    # LLM-powered follow-up suggestions
 GET  /health                                  # Health check
@@ -420,6 +433,26 @@ All directories are auto-created at startup (defense-in-depth beyond Docker).
 | DB_PASS ValueError on startup | Set `DB_PASS` in `.env` — no longer optional |
 
 ---
+
+## Dynamic Field System (Future-Proof Templates)
+
+Per-template user_input fields are stored as JSONB on `companies.custom_fields`. New templates auto-register fields without schema migrations.
+
+**Flow**:
+1. Admin uploads `New Resolution.docx` → 15-step training extracts placeholders + classifies user_input fields.
+2. After training, `_refresh_field_registry_internal()` UPSERTs each user_input field into `company_field_registry` (key, label, description, type heuristic, used_by_templates).
+3. Edit Company UI fetches `/api/dashboard/field-registry` → renders inputs dynamically. Values save to `companies.custom_fields[key]`.
+4. `smart_doc.py` flattens `custom_fields` into companies dict so `find_replacement` resolves new keys with zero code change.
+
+**Resolution priority** in `find_replacement`:
+1. Trained `field_mapping` (db_column or default)
+2. DB column on `companies` (auditor_name, financial_year_end_date, etc.)
+3. `custom_fields` JSONB by key
+4. user_provided `custom_data` from chat
+5. Smart defaults (today date, registered_office for location, "they" for pronoun)
+6. `KNOWN_USER_INPUT` fallback → "TBD"
+
+Result: avg fill rate 64% → **92%** across 15 templates after registry populated.
 
 ## Stability Hardening (Applied)
 

@@ -99,6 +99,7 @@ export const getSessionAPI = async (
     }
   )
 
+  if (response.status === 404) return null  // session not yet created — not an error
   if (!response.ok) {
     throw new Error(`Failed to fetch session: ${response.statusText}`)
   }

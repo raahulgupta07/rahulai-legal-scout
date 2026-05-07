@@ -48,10 +48,12 @@ export const apiClient = {
   updateCompany: (name: string) => `${API_BASE_URL}/api/dashboard/company/${encodeURIComponent(name)}`,
   deleteCompany: (name: string) => `${API_BASE_URL}/api/dashboard/company/${encodeURIComponent(name)}`,
   uploadCompanyPdf: () => `${API_BASE_URL}/api/company/upload-pdf`,
-  extractCompanyPdf: () => `${API_BASE_URL}/api/company/extract-pdf`,
+  extractCompanyPdfStream: () => `${API_BASE_URL}/api/company/extract-pdf-stream`,
+  documentDetail: (id: string | number) => `${API_BASE_URL}/api/dashboard/document-detail/${id}`,
+  fieldRegistry: () => `${API_BASE_URL}/api/dashboard/field-registry`,
+  refreshFieldRegistry: () => `${API_BASE_URL}/api/dashboard/field-registry/refresh`,
 
   // Document generation
-  generateDocument: () => `${API_BASE_URL}/api/dashboard/generate`,
   downloadDocument: (filename: string) => `${API_BASE_URL}/documents/legal/output/${encodeURIComponent(filename)}`,
 
   // Knowledge base endpoints

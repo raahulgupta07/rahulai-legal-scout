@@ -1,8 +1,9 @@
 "use client"
 
 import React, { useEffect, useState, useRef } from "react"
-import { FileText, Upload, Sparkles, Trash2, X, CheckCircle, Loader2, Terminal, RefreshCw, Square, Download, Eye } from "lucide-react"
+import { FileText, Upload, Sparkles, Trash2, X, CheckCircle, Loader2, Terminal, Square, Download, Eye } from "lucide-react"
 import apiClient, { authFetch } from "@/lib/api-client"
+import DocViewer from "@/components/ui/DocViewer"
 
 interface Template {
   name: string
@@ -61,7 +62,6 @@ export default function TemplatesPage() {
   const terminalRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const logIdRef = useRef(0)
-  const trainingIntervalRef = useRef<NodeJS.Timeout | null>(null)
   const abortControllerRef = useRef<AbortController | null>(null)
 
   useEffect(() => {
@@ -165,7 +165,6 @@ export default function TemplatesPage() {
     abortControllerRef.current = controller
 
     const API_BASE = process.env.NEXT_PUBLIC_API_URL || ''
-    const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 
     const skipped = templates.length - toTrain.length
     addLog("━".repeat(55), 'info')
@@ -636,11 +635,10 @@ export default function TemplatesPage() {
                     <Eye className="w-4 h-4 text-brand" />
                     <span className="text-xs font-semibold text-gray-700">Document Preview</span>
                   </div>
-                  <iframe
-                    src={apiClient.previewTemplatePdf(selectedTemplate.name)}
-                    className="flex-1 w-full border-0"
-                    title="Template Preview"
-                    sandbox="allow-same-origin"
+                  <DocViewer
+                    url={`${apiClient.previewTemplatePdf(selectedTemplate.name)}?token=${typeof window !== 'undefined' ? (localStorage.getItem('ls_token') || '') : ''}`}
+                    forceFormat="pdf"
+                    className="flex-1 w-full"
                   />
                 </div>
 

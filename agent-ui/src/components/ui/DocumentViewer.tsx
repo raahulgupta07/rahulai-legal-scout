@@ -2,6 +2,7 @@
 
 import { useState } from "react"
 import { X, FileText, Download, Eye, ExternalLink } from "lucide-react"
+import DocViewer from "./DocViewer"
 
 interface DocumentCardProps {
   fileName: string
@@ -89,12 +90,7 @@ export function DocumentCard({
               </div>
             </div>
             <div className="flex-1 overflow-hidden">
-              <iframe
-                src={previewUrl}
-                className="w-full h-full border-0"
-                title={`Preview: ${fileName}`}
-                sandbox="allow-same-origin"
-              />
+              <DocViewer url={previewUrl || downloadUrl} className="w-full h-full" />
             </div>
           </div>
         </div>

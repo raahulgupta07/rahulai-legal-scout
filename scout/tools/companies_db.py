@@ -36,7 +36,9 @@ def get_all_companies(limit: int = 100) -> List[Dict]:
             SELECT id, company_name_english, company_registration_number,
                    registered_office_address, directors, status, company_type,
                    created_at, updated_at, members, total_shares_issued,
-                   currency_of_share_capital
+                   currency_of_share_capital,
+                   financial_year_end_date, next_financial_year_end_date,
+                   auditor_name, auditor_fee, custom_fields
             FROM companies
             ORDER BY company_name_english ASC
             LIMIT %s
@@ -69,6 +71,11 @@ def get_all_companies(limit: int = 100) -> List[Dict]:
                 "company_type": row[6] or "",
                 "created_at": row[7].isoformat() if row[7] else None,
                 "updated_at": row[8].isoformat() if row[8] else None,
+                "financial_year_end_date": row[12] or "",
+                "next_financial_year_end_date": row[13] or "",
+                "auditor_name": row[14] or "",
+                "auditor_fee": row[15] or "",
+                "custom_fields": row[16] if isinstance(row[16], dict) else {},
             })
         return results
     except Exception as e:

@@ -4,6 +4,7 @@ import { useEffect, useState, useRef } from "react"
 import { Plus, Search, Trash2, Pencil, X, Check, Building, ChevronDown, ChevronUp, FileUp, Loader2, FileText, Users, MapPin, ScrollText, Sparkles, ArrowLeft, Brain, CheckCircle } from "lucide-react"
 import apiClient, { authFetch } from "@/lib/api-client"
 import { toast } from "sonner"
+import DocViewer from "@/components/ui/DocViewer"
 
 // ─── Types ──────────────────────────────────────────────────────────
 interface Director {
@@ -29,7 +30,11 @@ const EMPTY: CompanyData = {
   ultimate_holding_company_registration_number: "",
   total_shares_issued: "", currency_of_share_capital: "",
   members: [], filing_history: [],
+  financial_year_end_date: "", next_financial_year_end_date: "",
+  auditor_name: "", auditor_fee: "",
 }
+
+interface RegistryField { field_key: string; label: string; description: string; field_type: string; used_by_templates: string[] }
 
 // ─── Reusable Components ────────────────────────────────────────────
 function Section({ title, icon, defaultOpen = true, children }: {
@@ -67,11 +72,13 @@ function Field({ label, value, onChange, type = "text", placeholder = "", wide =
 }
 
 // ─── Company Form (right panel) ─────────────────────────────────────
-function CompanyForm({ data, onChange, onSave, onCancel, saving, extracting, isEdit }: {
+function CompanyForm({ data, onChange, onSave, onCancel, saving, extracting, isEdit, registry }: {
   data: CompanyData; onChange: (d: CompanyData) => void
   onSave: () => void; onCancel: () => void; saving: boolean; extracting: boolean; isEdit: boolean
+  registry?: RegistryField[]
 }) {
   const set = (key: string, val: any) => onChange({ ...data, [key]: val })
+  const setCustom = (key: string, val: any) => onChange({ ...data, custom_fields: { ...(data.custom_fields || {}), [key]: val } })
   const setDirector = (i: number, key: string, val: string) => {
     const dirs = [...data.directors]; dirs[i] = { ...dirs[i], [key]: val }; onChange({ ...data, directors: dirs })
   }
@@ -176,6 +183,34 @@ function CompanyForm({ data, onChange, onSave, onCancel, saving, extracting, isE
             className="text-xs text-brand hover:underline mt-1">+ Add Member</button>
         </Section>
 
+        {registry && registry.length > 0 && (
+          <Section title={`Template Required Fields (${registry.length})`} icon={<Sparkles className="w-3.5 h-3.5 text-purple-500" />} defaultOpen={false}>
+            <p className="text-[10px] text-muted mb-2">Auto-discovered from trained templates. Fill any that apply — used during document generation.</p>
+            <div className="grid grid-cols-2 gap-2.5">
+              {registry.map(rf => (
+                <Field
+                  key={rf.field_key}
+                  label={rf.label}
+                  value={(data.custom_fields || {})[rf.field_key] || ""}
+                  onChange={v => setCustom(rf.field_key, v)}
+                  placeholder={rf.description ? rf.description.slice(0, 60) : ""}
+                  type={rf.field_type === "date" ? "date" : "text"}
+                  wide={rf.field_type === "text" && rf.field_key.length > 25}
+                />
+              ))}
+            </div>
+          </Section>
+        )}
+
+        <Section title="Audit & Financial Year" icon={<ScrollText className="w-3.5 h-3.5 text-orange-500" />} defaultOpen={!!(data.auditor_name || data.financial_year_end_date)}>
+          <div className="grid grid-cols-2 gap-2.5">
+            <Field label="Financial Year End Date" value={data.financial_year_end_date} onChange={v => set("financial_year_end_date", v)} placeholder="e.g. 31 March 2026" />
+            <Field label="Next Financial Year End" value={data.next_financial_year_end_date} onChange={v => set("next_financial_year_end_date", v)} placeholder="e.g. 31 March 2027" />
+            <Field label="Auditor Name" value={data.auditor_name} onChange={v => set("auditor_name", v)} placeholder="Audit firm or individual" wide />
+            <Field label="Auditor Fee" value={data.auditor_fee} onChange={v => set("auditor_fee", v)} placeholder="e.g. 500 USD" />
+          </div>
+        </Section>
+
         <Section title={`Filing History (${data.filing_history?.length || 0})`} icon={<FileText className="w-3.5 h-3.5 text-gray-500" />} defaultOpen={false}>
           {(data.filing_history || []).map((f, i) => (
             <div key={i} className="flex items-center gap-3 text-xs py-1.5 border-b border-primary/5">
@@ -198,11 +233,42 @@ function CompanyForm({ data, onChange, onSave, onCancel, saving, extracting, isE
   )
 }
 
+// ─── Extract Log Pane (streaming) ───────────────────────────────────
+function ExtractLogPane({ logs }: { logs: { stage: string; msg: string }[] }) {
+  const ref = useRef<HTMLDivElement>(null)
+  useEffect(() => { ref.current?.scrollTo({ top: ref.current.scrollHeight, behavior: "smooth" }) }, [logs.length])
+  const icon = (s: string) =>
+    s === "upload" ? "⬆" : s === "save" ? "💾" : s === "parse" ? "📖" :
+    s === "ai" ? "🤖" : s === "warn" ? "⚠" : s === "done" ? "✅" : s === "error" ? "✗" : "•"
+  const color = (s: string) =>
+    s === "error" ? "text-red-500" : s === "warn" ? "text-amber-500" :
+    s === "done" ? "text-green-600" : s === "ai" ? "text-brand" : "text-primary/80"
+  return (
+    <div className="flex-1 flex flex-col bg-[#1a1a1a] text-green-400 font-mono text-xs overflow-hidden">
+      <div className="px-4 py-2 border-b border-green-900/30 flex items-center gap-2 bg-black/40">
+        <Loader2 className="w-3 h-3 animate-spin" />
+        <span className="text-green-300">$ scout extract --stream</span>
+      </div>
+      <div ref={ref} className="flex-1 overflow-y-auto px-4 py-3 space-y-1">
+        {logs.length === 0 && <div className="text-green-700">Waiting for events…</div>}
+        {logs.map((l, i) => (
+          <div key={i} className={`flex gap-2 ${color(l.stage).replace('text-','text-')}`}>
+            <span className="text-green-700 shrink-0">[{String(i + 1).padStart(2, "0")}]</span>
+            <span className="shrink-0">{icon(l.stage)}</span>
+            <span className="whitespace-pre-wrap break-words text-green-200">{l.msg}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 // ─── Split View (PDF left + Form right) ─────────────────────────────
-function SplitView({ pdfUrl, formData, onChange, onSave, onCancel, saving, extracting, isEdit, onExtract, pdfReady }: {
+function SplitView({ pdfUrl, formData, onChange, onSave, onCancel, saving, extracting, isEdit, onExtract, pdfReady, extractLogs, registry }: {
   pdfUrl: string | null; formData: CompanyData; onChange: (d: CompanyData) => void
   onSave: () => void; onCancel: () => void; saving: boolean; extracting: boolean
-  isEdit: boolean; onExtract?: () => void; pdfReady?: boolean
+  isEdit: boolean; onExtract?: () => void; pdfReady?: boolean; extractLogs?: { stage: string; msg: string }[]
+  registry?: RegistryField[]
 }) {
   return (
     <div className="flex flex-col h-full">
@@ -235,7 +301,7 @@ function SplitView({ pdfUrl, formData, onChange, onSave, onCancel, saving, extra
             )}
           </div>
           {pdfUrl ? (
-            <iframe src={`${process.env.NEXT_PUBLIC_API_URL || ''}${pdfUrl}`} className="flex-1 w-full bg-white" title="PDF" sandbox="allow-same-origin" />
+            <DocViewer url={`${process.env.NEXT_PUBLIC_API_URL || ''}${pdfUrl}`} className="flex-1 w-full" />
           ) : (
             <div className="flex-1 flex items-center justify-center text-muted text-sm">No PDF available</div>
           )}
@@ -250,7 +316,9 @@ function SplitView({ pdfUrl, formData, onChange, onSave, onCancel, saving, extra
               </span>
             </div>
           </div>
-          {!extracting && !formData.company_name_english && !isEdit ? (
+          {extracting ? (
+            <ExtractLogPane logs={extractLogs || []} />
+          ) : !formData.company_name_english && !isEdit ? (
             <div className="flex-1 flex flex-col items-center justify-center gap-4 text-center px-8">
               <Sparkles className="w-12 h-12 text-brand/30" />
               <div>
@@ -260,7 +328,7 @@ function SplitView({ pdfUrl, formData, onChange, onSave, onCancel, saving, extra
             </div>
           ) : (
             <CompanyForm data={formData} onChange={onChange} onSave={onSave} onCancel={onCancel}
-              saving={saving} extracting={extracting} isEdit={isEdit} />
+              saving={saving} extracting={extracting} isEdit={isEdit} registry={registry} />
           )}
         </div>
       </div>
@@ -272,7 +340,6 @@ function SplitView({ pdfUrl, formData, onChange, onSave, onCancel, saving, extra
 function CreateChoiceScreen({ onUploadPdf, onManual, onCancel }: {
   onUploadPdf: () => void; onManual: () => void; onCancel: () => void
 }) {
-  const pdfRef = useRef<HTMLInputElement>(null)
   return (
     <div className="flex flex-col h-full">
       <div className="flex items-center gap-3 p-4 border-b border-primary/10 bg-card">
@@ -322,6 +389,8 @@ export default function CompaniesPage() {
   const [view, setView] = useState<PageView>("list")
 
   const [extracting, setExtracting] = useState(false)
+  const [extractLogs, setExtractLogs] = useState<{ stage: string; msg: string }[]>([])
+  const [registry, setRegistry] = useState<RegistryField[]>([])
   const [pdfUrl, setPdfUrl] = useState<string | null>(null)
   const [pdfReady, setPdfReady] = useState(false)
   const [pdfFile, setPdfFile] = useState<File | null>(null)
@@ -336,7 +405,15 @@ export default function CompaniesPage() {
 
   const pdfInputRef = useRef<HTMLInputElement>(null)
   const abortControllerRef = useRef<AbortController | null>(null)
-  useEffect(() => { fetchCompanies() }, [])
+  useEffect(() => { fetchCompanies(); fetchRegistry() }, [])
+
+  const fetchRegistry = async () => {
+    try {
+      const res = await authFetch(apiClient.fieldRegistry())
+      const data = await res.json()
+      if (data.success) setRegistry(data.fields || [])
+    } catch {}
+  }
 
   // Save company training logs when training completes
   useEffect(() => {
@@ -407,23 +484,48 @@ export default function CompaniesPage() {
   // ── Choice: Manual ──
   const handleChooseManual = () => { resetState(); setView("manual") }
 
-  // ── Extract with AI ──
+  // ── Extract with AI (streaming logs) ──
   const handleExtract = async () => {
     if (!pdfFile) return
     setExtracting(true)
+    setExtractLogs([])
     const fd = new FormData(); fd.append("file", pdfFile)
     try {
-      const res = await authFetch(apiClient.extractCompanyPdf(), { method: "POST", body: fd })
-      if (!res.ok) throw new Error(`Request failed: ${res.status}`)
-      const data = await res.json()
-      if (data.success && data.data) {
-        const d = data.data
+      const res = await authFetch(apiClient.extractCompanyPdfStream(), { method: "POST", body: fd })
+      if (!res.ok || !res.body) throw new Error(`Request failed: ${res.status}`)
+
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buf = ""
+      let finalEvt: any = null
+
+      while (true) {
+        const { value, done } = await reader.read()
+        if (done) break
+        buf += decoder.decode(value, { stream: true })
+        const lines = buf.split("\n")
+        buf = lines.pop() || ""
+        for (const line of lines) {
+          const trimmed = line.trim()
+          if (!trimmed) continue
+          try {
+            const ev = JSON.parse(trimmed)
+            setExtractLogs(prev => [...prev, { stage: ev.stage, msg: ev.msg }])
+            if (ev.stage === "done" || ev.stage === "error") finalEvt = ev
+          } catch {}
+        }
+      }
+
+      if (finalEvt?.stage === "done" && finalEvt.data) {
+        const d = finalEvt.data
         d.directors = d.directors || []; d.members = d.members || []; d.filing_history = d.filing_history || []
-        d.pdf_url = data.pdf_url || pdfUrl
+        d.pdf_url = finalEvt.pdf_url || pdfUrl
         setFormData(d)
-        if (data.pdf_url) setPdfUrl(data.pdf_url)
+        if (finalEvt.pdf_url) setPdfUrl(finalEvt.pdf_url)
         toast.success(`Extracted: ${d.company_name_english || "Company"}`)
-      } else toast.error(data.error || "Extraction failed")
+      } else {
+        toast.error(finalEvt?.msg || "Extraction failed")
+      }
     } catch (e) { console.error("Extract error:", e); toast.error("Failed to extract") }
     finally { setExtracting(false) }
   }
@@ -531,8 +633,6 @@ export default function CompaniesPage() {
     const time = new Date().toLocaleTimeString()
     setTrainingLogs(prev => [...prev, { time, msg, type }])
   }
-
-  const delay = (ms: number) => new Promise(r => setTimeout(r, ms))
 
   const handleTrainAgent = async () => {
     const token = localStorage.getItem("ls_token")
@@ -651,7 +751,7 @@ export default function CompaniesPage() {
   if (view === "pdf") return (
     <>{hiddenPdfInput}<SplitView pdfUrl={pdfUrl} formData={formData} onChange={setFormData}
       onSave={handleSave} onCancel={handleBack} saving={saving} extracting={extracting}
-      isEdit={false} onExtract={handleExtract} pdfReady={pdfReady} /></>
+      isEdit={false} onExtract={handleExtract} pdfReady={pdfReady} extractLogs={extractLogs} registry={registry} /></>
   )
 
   // ── Manual Form (full-width, no PDF) ──
@@ -663,7 +763,7 @@ export default function CompaniesPage() {
         <h1 className="text-lg font-semibold text-primary">New Company — Manual Entry</h1>
       </div>
       <CompanyForm data={formData} onChange={setFormData} onSave={handleSave} onCancel={handleBack}
-        saving={saving} extracting={false} isEdit={false} />
+        saving={saving} extracting={false} isEdit={false} registry={registry} />
     </div></>
   )
 
@@ -673,7 +773,7 @@ export default function CompaniesPage() {
     {pdfUrl ? (
       <SplitView pdfUrl={pdfUrl} formData={formData} onChange={setFormData}
         onSave={handleSave} onCancel={handleBack} saving={saving} extracting={false}
-        isEdit={true} pdfReady={false} />
+        isEdit={true} pdfReady={false} registry={registry} />
     ) : (
       <div className="flex flex-col h-full">
         <div className="flex items-center justify-between p-4 border-b border-primary/10 bg-card">
