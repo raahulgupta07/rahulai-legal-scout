@@ -92,6 +92,73 @@ You should see:
 
 ---
 
+## Engineer Pre-Flight Checklist
+
+Run this before handing off:
+
+```bash
+# 1. Fresh nuke + redeploy
+docker compose down -v
+docker compose up -d --build
+
+# 2. Wait for healthy
+docker compose ps                       # both containers should say "healthy"
+
+# 3. Verify endpoints
+curl http://localhost:${PORT:-80}/health
+# Expected: {"status":"healthy", ...}
+
+# 4. Verify migrations applied
+docker compose exec scout-api python -m db.migrate --status
+# Expected: 10/10 applied
+
+# 5. Verify admin auto-created
+docker compose exec scout-db psql -U scout -d legalscout -c "SELECT email, role FROM users;"
+# Expected: row with your ADMIN_EMAIL + role=admin
+
+# 6. Login + sanity check
+curl -X POST http://localhost:${PORT:-80}/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d "{\"email\":\"${ADMIN_EMAIL}\",\"password\":\"${ADMIN_PASSWORD}\"}"
+# Expected: {"success":true,"token":"eyJ..."}
+```
+
+If all 6 pass → app ready for use.
+
+---
+
+## Resource Requirements
+
+| Resource | Minimum | Recommended |
+|---|---|---|
+| CPU | 2 vCPU | 4 vCPU |
+| RAM | 4 GB | 8 GB (Node + LibreOffice + Postgres + pgvector) |
+| Disk | 20 GB | 40 GB SSD (Docker image ~2 GB + DB growth + uploaded docs) |
+| Network | 100 Mbps | — needs outbound HTTPS to OpenRouter |
+| OS | Linux x64 / macOS arm64 | Ubuntu 22.04 LTS |
+| Docker | 24+ | latest |
+
+**Build time**: ~5 minutes first build (downloads ~2 GB layers). Subsequent builds < 1 min if package files unchanged.
+
+---
+
+## Setup Order (zero state → working)
+
+After Docker comes up, the app is empty. Follow this exact order:
+
+1. **Login** as admin → http://localhost:${PORT}/login
+2. **Upload templates** → `/admin/templates` → Upload `.docx` files (already shipped: 15 sample templates in `./documents/legal/templates/` mounted automatically)
+3. **Add companies** → `/admin/companies` → Either:
+   - Upload DICA PDF (AI extracts all fields automatically with streaming logs), OR
+   - Click "Manual Entry" → fill the form
+4. **Train** → `/admin/templates` → click **Start Training**. Each template runs the 15-step pipeline (~30s/template). Field registry auto-populates after each training.
+5. **Fill custom fields** → `/admin/companies` → edit company → "Template Required Fields" section → fill any field marked TBD (auditor name, financial year end, etc.). These come from registry auto-discovered during training.
+6. **Chat** → `/` → "Create AGM for ARCTIC SUN COMPANY LIMITED" → agent generates document.
+
+Skipping training = generation works but agent gives generic answers. Skipping custom fields = TBD placeholders in output.
+
+---
+
 ## Install on AWS (EC2)
 
 ### Step 1: Launch EC2 Instance
@@ -266,6 +333,43 @@ Internet → Port 80 (or $PORT)
 ```
 
 **2 Docker containers. 1 external port. No other dependencies.**
+
+### Why this stack
+- **FastAPI + Agno** — agentic framework w/ memory, tool calls, streaming. Production-grade.
+- **Next.js static export** — no Node runtime in production. FastAPI serves baked HTML/JS.
+- **PostgreSQL 18 + pgvector** — single DB for relational + vector. No Redis/Pinecone needed.
+- **LibreOffice in container** — pixel-match Word→PDF conversion server-side. Required for fidelity preview.
+- **OpenRouter** — single API key for GPT, Gemini, Claude. Switch models from admin UI without redeploy.
+- **JSONB `custom_fields`** — adding new template fields needs zero migrations or schema changes. Auto-discovered after training.
+
+### Data Flow
+
+```
+Admin uploads template.docx
+   │
+   └──> 15-step training pipeline
+        ├── Extract {{placeholders}}, {single}, [bracket]
+        ├── AI metadata (Gemini 3 Flash)
+        ├── Classify db_field vs user_input (Gemini 3.1 Lite)
+        ├── Map fields → DB columns
+        ├── Vector embed (text-embedding-3-small)
+        ├── PDF preview (LibreOffice)
+        ├── Deep field analysis × 6 (legal refs, sample fill, workflow, Q&A, cross-rels)
+        └── Auto-refresh field registry  ← NEW v1.1.0
+
+User chats "Create AGM for ARCTIC SUN"
+   │
+   └──> Agent (scout)
+        ├── find_matching_templates("AGM") → "Annual General Meeting Minutes.docx"
+        ├── prepare_document(template, company) → preview + missing fields
+        ├── generate_document(...) → fill_template_with_validation
+        │       ├── Priority 1: trained field_mapping (db_column or default)
+        │       ├── Priority 2: companies table column (auditor_name, etc.)
+        │       ├── Priority 3: companies.custom_fields[key] JSONB  ← NEW v1.1.0
+        │       ├── Priority 4: user-provided custom_data (chat)
+        │       └── Priority 5: smart defaults (today, registered_office, "they") OR "TBD"
+        └── record_document → documents table → download link
+```
 
 ---
 
@@ -461,6 +565,17 @@ docker compose exec scout-api python -m db.migrate
 | Doc preview blank in Brave | Hard reload (`Cmd+Shift+R`); canvas viewer self-hosts pdfjs worker |
 | Generated docs full of TBD | Click **Refresh Field Registry** in Companies, then fill new fields in Edit Company. Auto-runs after each `Start Training`. |
 | New columns missing after deploy | `docker compose exec scout-api python -m db.migrate` |
+| Container build OOM | Bump host RAM to 8 GB OR add `--memory=4g` to Docker daemon. Node `next build` is the heavy step. |
+| `pnpm install` fails behind firewall | Set `HTTPS_PROXY` in build env, or pre-cache `pnpm-store` |
+| Brave: PDF preview blank | Hard reload `Cmd+Shift+R` once after build. Canvas viewer is shields-safe. |
+| Logs full of `404 /sessions/{id}/runs` | Already silenced to INFO. Cosmetic — frontend pre-fetches before session created. |
+| Template generated 100% TBD | Train templates first (Templates page → Start Training). Then fill custom_fields per company. |
+| LibreOffice convert timeout | First convert per file ~5s. If consistently >30s: bump container CPU; conversion happens once then cached in `/documents/legal/previews/`. |
+| Port 80 conflict on macOS | `PORT=8080` in `.env`. macOS reserves port 80 for some Apple services. |
+| `Authentication required` on preview | Hard reload — frontend caches old chunk. Endpoints accept `Authorization: Bearer` header now. |
+| Admin user not created | Check `docker compose logs scout-api | grep "Admin user created"`. If missing, verify `ADMIN_EMAIL`/`ADMIN_PASSWORD` in `.env` (10+ chars). |
+| Two users see same chat history | Was a bug pre-v1.1.0; fixed. Hard reload after upgrade — frontend now sends `user_id` filter. |
+| Agno `agno_*` tables missing | These auto-create on first agent run, not via migrate. Send any chat message to bootstrap. |
 | Can't login | Verify `ADMIN_EMAIL` and `ADMIN_PASSWORD` in `.env`, then `docker compose restart` |
 | Templates not showing | Upload via `/admin/templates` |
 | Companies not showing | Add via `/admin/companies` |
