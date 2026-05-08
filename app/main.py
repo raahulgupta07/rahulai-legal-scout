@@ -1133,6 +1133,30 @@ async def admin_activity_logs(request: Request):
 documents_dir = Path("/documents")
 
 
+_MIME_BY_EXT = {
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".doc": "application/msword",
+    ".pdf": "application/pdf",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".xls": "application/vnd.ms-excel",
+    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ".txt": "text/plain",
+    ".csv": "text/csv",
+    ".json": "application/json",
+}
+
+
+def _file_response(path: Path, filename: str | None = None) -> FileResponse:
+    """FileResponse with correct MIME and Content-Disposition so browsers don't append .txt."""
+    ext = path.suffix.lower()
+    media_type = _MIME_BY_EXT.get(ext, "application/octet-stream")
+    return FileResponse(
+        path,
+        media_type=media_type,
+        filename=filename or path.name,
+    )
+
+
 @app.get("/documents/legal/{subdir}/{filename}")
 async def serve_document_with_s3_fallback(subdir: str, filename: str):
     """Serve document files — local first, S3 fallback if missing."""
@@ -1142,13 +1166,13 @@ async def serve_document_with_s3_fallback(subdir: str, filename: str):
     if not str(local_path).startswith(str(base_dir)):
         return JSONResponse(status_code=400, content={"error": "Invalid filename"})
     if local_path.exists():
-        return FileResponse(local_path)
+        return _file_response(local_path, filename)
 
     # Try S3 fallback
     if is_s3_enabled():
         s3_key = f"{subdir}/{filename}"
         if s3_download(s3_key, str(local_path)):
-            return FileResponse(local_path)
+            return _file_response(local_path, filename)
 
     return JSONResponse(status_code=404, content={"error": "File not found"})
 
