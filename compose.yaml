@@ -99,58 +99,9 @@ services:
           cpus: "2.0"
           memory: 2G
 
-  # --------------------------------------------------------------------------
-  # Monitoring (opt-in): docker compose --profile monitoring up -d
-  # --------------------------------------------------------------------------
-  prometheus:
-    image: prom/prometheus:latest
-    container_name: scout-prometheus
-    restart: unless-stopped
-    volumes:
-      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - prometheus-data:/prometheus
-    command:
-      - "--config.file=/etc/prometheus/prometheus.yml"
-      - "--storage.tsdb.retention.time=30d"
-      - "--storage.tsdb.retention.size=1GB"
-    networks:
-      - scout
-    profiles:
-      - monitoring
-    deploy:
-      resources:
-        limits:
-          cpus: "0.5"
-          memory: 512M
-
-  grafana:
-    image: grafana/grafana:latest
-    container_name: scout-grafana
-    restart: unless-stopped
-    ports:
-      - "3000:3000"
-    volumes:
-      - grafana-data:/var/lib/grafana
-      - ./monitoring/grafana-datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
-    environment:
-      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-changeme-grafana-2026}
-      GF_USERS_ALLOW_SIGN_UP: "false"
-    networks:
-      - scout
-    profiles:
-      - monitoring
-    deploy:
-      resources:
-        limits:
-          cpus: "0.5"
-          memory: 512M
-
 networks:
   scout:
     driver: bridge
 
 volumes:
   pgdata:
-  prometheus-data:
-  grafana-data:
