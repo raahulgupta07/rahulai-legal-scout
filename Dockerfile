@@ -10,12 +10,14 @@ FROM node:22-alpine AS frontend-builder
 
 WORKDIR /frontend
 
-# Install pnpm
-RUN npm install -g pnpm
+# Install pnpm (pinned — pnpm v10+ blocks postinstall and breaks build)
+RUN npm install -g pnpm@9.15.4
 
 # Install deps (cached layer)
+# --ignore-scripts: skip native builds (canvas needs cairo/pango not in alpine; sharp ships prebuilt binary fetched on demand)
 COPY agent-ui/package.json agent-ui/pnpm-lock.yaml* ./
-RUN pnpm install --frozen-lockfile
+RUN pnpm install --frozen-lockfile --ignore-scripts \
+    && pnpm rebuild sharp || true
 
 # Copy source and build
 COPY agent-ui/ ./

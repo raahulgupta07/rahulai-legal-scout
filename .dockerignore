@@ -35,3 +35,8 @@ backups/
 agent-ui/node_modules
 agent-ui/.next
 agent-ui/out
+
+# Runtime data — bind-mounted at runtime, not needed in image
+documents/
+logs/
+*.log
