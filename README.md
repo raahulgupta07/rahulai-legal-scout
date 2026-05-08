@@ -498,8 +498,7 @@ User chats "Create AGM for ARCTIC SUN"
 | **AI Models** | GPT-5.4 Mini (chat), Gemini 3 Flash (training), Gemini 3.1 Flash Lite (classification), text-embedding-3-small — all via OpenRouter |
 | **Document** | python-docx (Word), LibreOffice (PDF conversion), openpyxl (Excel parsing) |
 | **Auth** | JWT (PyJWT) + bcrypt |
-| **Deploy** | Docker Compose, single multi-stage Dockerfile (Node 22 build stage) |
-| **Monitoring** | Prometheus + Grafana (optional) |
+| **Deploy** | Docker Compose, single multi-stage Dockerfile (Node 22 build stage, pnpm@9 pinned) |
 
 ---
 
@@ -584,6 +583,9 @@ docker compose exec scout-api python -m db.migrate
 | Build fails | `docker compose build --no-cache` |
 | Disk full | `docker system prune -f` |
 | Container keeps restarting | `docker compose logs scout-api --tail 50` — check for errors |
+| `ERR_PNPM_IGNORED_BUILDS` during build | Dockerfile pins `pnpm@9.15.4` — pull latest commit and rebuild w/ `--no-cache` |
+| Build OOM during `next build` on small EC2 | Add 4GB swap: `fallocate -l 4G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile` |
+| Downloaded `.docx` saves as `.docx.txt` | Fixed in `serve_document_with_s3_fallback` — sets explicit MIME + Content-Disposition |
 
 ---
 

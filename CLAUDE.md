@@ -294,7 +294,6 @@ Triggered from `/admin/templates` → "Train Agent" → "Start Training". Stream
 - SSE generators wrapped in try-finally for connection cleanup
 - AbortController added to frontend SSE streams (templates + companies)
 - Log rotation (10MB x 3 files per container)
-- Grafana default password strengthened
 
 ### Resource & Connection Management
 - 30+ DB connection leaks fixed with try-finally across all backend files
@@ -431,6 +430,9 @@ All directories are auto-created at startup (defense-in-depth beyond Docker).
 | Agent gives generic answers | Click "Train Agent" + "Start Training" |
 | Download links broken | Restart: `docker compose restart scout-api` |
 | DB_PASS ValueError on startup | Set `DB_PASS` in `.env` — no longer optional |
+| `ERR_PNPM_IGNORED_BUILDS` during build | Dockerfile pins `pnpm@9.15.4`; pull latest + rebuild `--no-cache` |
+| Downloaded `.docx` saves as `.docx.txt` | Fixed via explicit MIME map in `_file_response` (app/main.py) |
+| Build OOM on 4GB host | Add swap: `fallocate -l 4G /swapfile && mkswap /swapfile && swapon /swapfile` |
 
 ---
 
@@ -457,3 +459,11 @@ Result: avg fill rate 64% → **92%** across 15 templates after registry populat
 ## Stability Hardening (Applied)
 
 All database connections use centralized `get_db_conn()` from `db/connection.py` — no more inline `psycopg.connect()` with hardcoded credentials. OpenRouter base URL centralized via `OPENROUTER_BASE_URL` in `app/model_config.py`. All silent `except: pass` blocks replaced with logged warnings. Chat input limited to 50KB on backend. All document directories auto-created at startup. All AI model references use `get_model()` — no hardcoded model names in any endpoint. Training/classification switched from Claude 3.5 Haiku to Gemini 3 Flash / 3.1 Flash Lite (70-94% cheaper).
+
+## Cloud Build Hardening
+
+- **pnpm pinned to v9.15.4** in Dockerfile — pnpm v10+ blocks postinstall scripts and breaks `--frozen-lockfile` on fresh cloud builds (`ERR_PNPM_IGNORED_BUILDS`).
+- **`--ignore-scripts` + explicit `pnpm rebuild sharp`** — skips canvas native build (alpine missing cairo/pango; canvas is unused at runtime), keeps sharp prebuilt binary for Next.js image opt.
+- **`.dockerignore`** excludes `documents/`, `logs/`, `.git/`, `agent-ui/node_modules`, `agent-ui/.next`, `agent-ui/out` — minimal build context.
+- **Monitoring stack removed** from compose — only `scout-db` + `scout-api` ship.
+- **Download MIME fix** — `_file_response()` sets correct `media_type` + `Content-Disposition` so browsers (Safari especially) don't append `.txt` to `.docx`.
