@@ -81,3 +81,5 @@ documents/legal/previews/
 documents/legal/uploads/
 documents/legal/knowledge/*.xlsx
 documents/legal/data/*.xlsx
+# Client feedback trackers (not source)
+LegalScout_*.xlsx
