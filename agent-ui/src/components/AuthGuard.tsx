@@ -94,9 +94,8 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
       aria-label="Checking your session"
       className="flex items-center justify-center h-screen bg-[var(--bg-secondary)]"
     >
-      {/* rounded-[999px] rather than rounded-full: globals.css carries a
-          `body .rounded-full { border-radius: 0 !important }` sweep, which
-          was turning this spinner into a spinning square. */}
+      {/* rounded-[999px] rather than rounded-full: a pill radius that keeps
+          this spinner circular regardless of the Tailwind rounding scale. */}
       <div className="animate-spin rounded-[999px] h-6 w-6 border-2 border-[var(--border)] border-t-[var(--brand)]" />
     </div>
   )

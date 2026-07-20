@@ -26,7 +26,7 @@ export function DocumentCard({
 
   return (
     <>
-      <div className="flex items-center gap-3 p-3 bg-muted/50 rounded-lg border">
+      <div className="flex items-center gap-3 p-3 bg-muted/50 rounded-none border">
         <div className="flex-shrink-0">
           <FileText className="w-8 h-8 text-primary" />
         </div>
@@ -38,7 +38,7 @@ export function DocumentCard({
           {previewUrl && (
             <button
               onClick={handlePreview}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-primary text-primary-foreground rounded-md hover:bg-primary/90 transition-colors"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-primary text-primary-foreground rounded-none hover:bg-primary/90 transition-colors"
             >
               <Eye className="w-3.5 h-3.4" />
               Preview
@@ -47,7 +47,7 @@ export function DocumentCard({
           <a
             href={downloadUrl}
             download
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-input bg-background rounded-md hover:bg-accent hover:text-accent-foreground transition-colors"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-input bg-background rounded-none hover:bg-accent hover:text-accent-foreground transition-colors"
           >
             <Download className="w-3.5 h-3.5" />
             Download
@@ -57,7 +57,7 @@ export function DocumentCard({
 
       {isPreviewOpen && previewUrl && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-          <div className="relative w-full max-w-5xl h-[85vh] bg-background rounded-xl shadow-2xl flex flex-col overflow-hidden">
+          <div className="relative w-full max-w-5xl h-[85vh] bg-background rounded-none shadow-2xl flex flex-col overflow-hidden">
             <div className="flex items-center justify-between px-4 py-3 border-b bg-muted/30">
               <div className="flex items-center gap-2">
                 <FileText className="w-5 h-5 text-primary" />
@@ -67,7 +67,7 @@ export function DocumentCard({
                 <a
                   href={downloadUrl}
                   download
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-input bg-background rounded-md hover:bg-accent transition-colors"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-input bg-background rounded-none hover:bg-accent transition-colors"
                 >
                   <Download className="w-3.5 h-3.5" />
                   Download
@@ -76,14 +76,14 @@ export function DocumentCard({
                   href={previewUrl}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-input bg-background rounded-md hover:bg-accent transition-colors"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-input bg-background rounded-none hover:bg-accent transition-colors"
                 >
                   <ExternalLink className="w-3.5 h-3.5" />
                   Open
                 </a>
                 <button
                   onClick={() => setIsPreviewOpen(false)}
-                  className="p-1.5 rounded-md hover:bg-accent transition-colors"
+                  className="p-1.5 rounded-none hover:bg-accent transition-colors"
                 >
                   <X className="w-5 h-5" />
                 </button>

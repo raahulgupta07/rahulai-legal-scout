@@ -59,10 +59,9 @@ const ChatInput = () => {
         the focus ring (focus-within), the textarea inside is chrome-less. Actions
         sit on an inner toolbar so the writing area keeps its full width.
 
-        rounded-[var(--radius-xl)] rather than rounded-xl: globals.css carries a
-        `body .rounded-xl { border-radius: var(--radius-none) !important }` sweep
-        that squares off the standard Tailwind rounding classes. The arbitrary
-        value generates a different class name and slips past it.
+        rounded-[var(--radius-xl)] rather than rounded-xl: the radius comes from
+        the --radius-xl token so the composer tracks the token layer rather than
+        Tailwind's own rounding scale.
 
         The ring uses color-mix rather than a `/25` alpha modifier: Tailwind
         cannot apply an alpha modifier to a var() holding a hex, and emits no

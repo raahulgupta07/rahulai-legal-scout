@@ -21,8 +21,8 @@ const SkeletonList: FC<SkeletonListProps> = ({ skeletonCount }) => {
   )
 
   // Rows fade out down the list so the placeholder reads as "loading", not as
-  // content. rounded-[var(--radius-sm)] rather than rounded-lg: globals.css
-  // squares off the standard Tailwind rounding classes.
+  // content. The radius comes from the --radius-sm token so it tracks the
+  // token layer rather than Tailwind's own scale.
   return list.map((k, idx) => (
     <Skeleton
       key={k}

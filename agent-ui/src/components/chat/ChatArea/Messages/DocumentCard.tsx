@@ -10,10 +10,9 @@ interface DocumentCardProps {
 }
 
 /*
-  rounded-[var(--radius-xl)] rather than rounded-xl: globals.css carries a
-  `body .rounded-xl { border-radius: var(--radius-none) !important }` sweep that
-  squares off the standard Tailwind rounding classes. The arbitrary value
-  generates a different class name and slips past it.
+  rounded-[var(--radius-xl)] rather than rounded-xl: the radius comes from the
+  --radius-xl token so the card tracks the token layer rather than Tailwind's
+  own rounding scale.
 */
 const DocumentCard: FC<DocumentCardProps> = ({ url, fileName }) => {
   const [showPreview, setShowPreview] = useState(true)

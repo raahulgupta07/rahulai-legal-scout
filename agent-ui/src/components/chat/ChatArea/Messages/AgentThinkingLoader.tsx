@@ -1,8 +1,6 @@
 /*
-  rounded-[999px] rather than rounded-full: globals.css carries a
-  `body .rounded-full { border-radius: var(--radius-none) !important }` sweep
-  that squares off standard Tailwind rounding. These dots were rendering as
-  hard squares because of it.
+  rounded-[999px] rather than rounded-full: a pill radius that stays circular
+  regardless of what the Tailwind rounding scale is configured to.
 
   cliBlink is declared in globals.css; motion-reduce:animate-none holds the
   dots at a steady state for users who ask for reduced motion, and the text

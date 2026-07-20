@@ -8,9 +8,9 @@ import { cn } from '@/lib/utils'
  * Every colour resolves through a token. Radius comes from --radius-sm so the
  * whole app changes shape from one place.
  *
- * Note on `rounded-[var(--radius-sm)]` rather than `rounded-md`: globals.css
- * carries a legacy `body .rounded-md { border-radius: 0 !important }` sweep.
- * The arbitrary-value form generates a different class name and so survives it.
+ * Note on `rounded-[var(--radius-sm)]` rather than `rounded-md`: the radius
+ * comes from the --radius-sm token so it tracks the token layer rather than
+ * Tailwind's own scale.
  */
 export const focusRing =
   'focus:outline-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)]'

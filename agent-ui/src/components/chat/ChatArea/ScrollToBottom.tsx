@@ -21,8 +21,8 @@ const ScrollToBottom: React.FC = () => {
           className="absolute bottom-4 left-1/2 -translate-x-1/2"
         >
           {/*
-            rounded-[999px] rather than rounded-full: globals.css squares off the
-            standard Tailwind rounding classes with a `!important` sweep.
+            rounded-[999px] rather than rounded-full: a pill radius that stays
+            circular regardless of the Tailwind rounding scale.
           */}
           <button
             type="button"

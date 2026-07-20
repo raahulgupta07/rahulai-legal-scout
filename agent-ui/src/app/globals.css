@@ -285,11 +285,6 @@
   box-shadow: 4px 4px 0px 0px var(--ink);
 }
 
-/* Zero radius override for brutalist pages */
-.brutalist * {
-  border-radius: var(--radius-none) !important;
-}
-
 /* Dark tag label (used for form labels, section tags) */
 .tag-label {
   display: inline-block;
@@ -327,69 +322,13 @@
 }
 
 /* ============================================
-   Admin Pages — Global Brutalist Overrides
+   Admin Pages — Global Overrides
    Applies to all pages under /admin/ layout
    ============================================ */
-
-/* Kill all border-radius in admin */
-[class*="admin"] *,
-.admin-brutalist * {
-  border-radius: var(--radius-none) !important;
-}
 
 /* Admin content background */
 .admin-content {
   background: var(--bg-secondary);
-}
-
-/* Cards in admin only: override bg-card */
-[class*="admin"] .bg-card,
-.admin-content .bg-card {
-  background: var(--bg) !important;
-}
-
-/* Admin buttons: override gradient buttons */
-body .bg-gradient-to-r.from-orange-500,
-body .bg-gradient-to-r.from-orange-600 {
-  background: var(--ok-strong) !important;
-  border: 2px solid var(--ink) !important;
-}
-
-body .bg-gradient-to-r.from-orange-500:hover,
-body .bg-gradient-to-r.from-orange-600:hover {
-  background: color-mix(in srgb, var(--ok-strong) 80%, black) !important;
-}
-
-/* Orange/red accent buttons → green brutalist */
-body button.bg-orange-500,
-body button.bg-red-500,
-body a.bg-orange-500 {
-  background: var(--ok-strong) !important;
-  border: 2px solid var(--ink) !important;
-  border-radius: var(--radius-none) !important;
-}
-
-/* Override rounded-xl on cards */
-body .rounded-xl {
-  border-radius: var(--radius-none) !important;
-}
-
-body .rounded-lg {
-  border-radius: var(--radius-none) !important;
-}
-
-body .rounded-full {
-  border-radius: var(--radius-none) !important;
-}
-
-body .rounded-md {
-  border-radius: var(--radius-none) !important;
-}
-
-/* Override thin borders with ink borders */
-body .border-primary\/10 {
-  border-color: var(--ink) !important;
-  border-width: 2px !important;
 }
 
 /* Override bg-background — scoped to avoid breaking chat page */
@@ -410,16 +349,6 @@ body .text-muted {
 /* Override accent backgrounds */
 body .bg-accent {
   background: var(--accent) !important;
-}
-
-/* Override gradient icon circles in any admin page */
-body .bg-gradient-to-br.from-orange-500 {
-  background: var(--ink) !important;
-}
-
-/* Status badge override */
-body .bg-green-500\/10 {
-  background: color-mix(in srgb, var(--ok-strong) 12%, transparent) !important;
 }
 
 /* Ensure font-brutalist loads everywhere */
