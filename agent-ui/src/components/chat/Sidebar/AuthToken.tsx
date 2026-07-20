@@ -1,10 +1,14 @@
 'use client'
-import { Button } from '@/components/ui/button'
 import { useStore } from '@/store'
-import { motion, AnimatePresence } from 'framer-motion'
 import { useState, useEffect } from 'react'
-import Icon from '@/components/ui/icon'
+import { Check, Pencil, X } from 'lucide-react'
+import { Label, Input, Button, IconButton, Badge } from '@/components/ui/kit'
 
+/**
+ * The previous version swapped its own contents on hover to reveal that it was
+ * editable — invisible to keyboard and touch, and it hid the value it was
+ * meant to show. Now the value is always shown masked, with an explicit Edit.
+ */
 const AuthToken = ({
   hasEnvToken,
   envToken
@@ -16,7 +20,6 @@ const AuthToken = ({
   const [isEditing, setIsEditing] = useState(false)
   const [tokenValue, setTokenValue] = useState('')
   const [isMounted, setIsMounted] = useState(false)
-  const [isHovering, setIsHovering] = useState(false)
 
   useEffect(() => {
     // Initialize with environment variable if available and no token is set
@@ -30,16 +33,13 @@ const AuthToken = ({
   }, [authToken, setAuthToken, hasEnvToken, envToken])
 
   const handleSave = () => {
-    const cleanToken = tokenValue.trim()
-    setAuthToken(cleanToken)
+    setAuthToken(tokenValue.trim())
     setIsEditing(false)
-    setIsHovering(false)
   }
 
   const handleCancel = () => {
     setTokenValue(authToken)
     setIsEditing(false)
-    setIsHovering(false)
   }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -50,90 +50,55 @@ const AuthToken = ({
     }
   }
 
-  const handleClear = () => {
-    setAuthToken('')
-    setTokenValue('')
-  }
-
-  const displayValue = authToken
-    ? `${'*'.repeat(Math.min(authToken.length, 20))}${authToken.length > 20 ? '...' : ''}`
-    : 'NO TOKEN SET'
+  const hasToken = isMounted && Boolean(authToken)
 
   return (
-    <div className="flex flex-col items-start gap-2">
-      <div className="text-xs font-medium uppercase text-primary">
-        Auth Token
+    <div className="w-full">
+      <div className="mb-1 flex items-center justify-between gap-2">
+        <Label>Auth token</Label>
+        <Badge tone={hasToken ? 'ok' : 'neutral'} dot>
+          {hasToken ? 'Set' : 'Not set'}
+        </Badge>
       </div>
+
       {isEditing ? (
-        <div className="flex w-full items-center gap-1">
-          <input
+        <div className="flex items-center gap-1">
+          <Input
             type="password"
             value={tokenValue}
             onChange={(e) => setTokenValue(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Enter authentication token..."
-            className="flex h-9 w-full items-center text-ellipsis rounded-xl border border-primary/10 bg-accent p-3 text-xs font-medium text-muted placeholder:text-muted/50"
+            placeholder="Paste token…"
+            aria-label="Authentication token"
             autoFocus
+            className="h-8 py-0 text-[length:var(--text-xs)]"
           />
-          <Button
-            variant="ghost"
-            size="icon"
+          <IconButton
+            aria-label="Save token"
+            title="Save token"
             onClick={handleSave}
-            className="hover:cursor-pointer hover:bg-transparent"
-          >
-            <Icon type="save" size="xs" />
-          </Button>
+            icon={<Check className="h-3.5 w-3.5" />}
+          />
+          <IconButton
+            aria-label="Cancel"
+            title="Cancel"
+            onClick={handleCancel}
+            icon={<X className="h-3.5 w-3.5" />}
+          />
         </div>
       ) : (
-        <div className="flex w-full items-center gap-1">
-          <motion.div
-            className="relative flex h-9 w-full cursor-pointer items-center justify-between rounded-xl border border-primary/10 bg-accent p-3 uppercase"
-            onMouseEnter={() => setIsHovering(true)}
-            onMouseLeave={() => setIsHovering(false)}
+        <div className="flex items-center gap-1">
+          <p className="min-w-0 flex-1 truncate border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-1.5 font-[family-name:var(--font-mono)] text-[length:var(--text-xs)] text-[var(--text-muted)] rounded-[var(--radius-sm)]">
+            {hasToken ? '•'.repeat(Math.min(authToken.length, 24)) : 'No token'}
+          </p>
+          <Button
+            size="sm"
+            variant="ghost"
             onClick={() => setIsEditing(true)}
-            transition={{ type: 'spring', stiffness: 400, damping: 10 }}
+            icon={<Pencil className="h-3 w-3" />}
           >
-            <AnimatePresence mode="wait">
-              {isHovering ? (
-                <motion.div
-                  key="token-display-hover"
-                  className="absolute inset-0 flex items-center justify-center"
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  exit={{ opacity: 0 }}
-                  transition={{ duration: 0.2 }}
-                >
-                  <p className="flex items-center gap-2 whitespace-nowrap text-xs font-medium text-primary">
-                    <Icon type="edit" size="xxs" /> EDIT TOKEN
-                  </p>
-                </motion.div>
-              ) : (
-                <motion.div
-                  key="token-display"
-                  className="absolute inset-0 flex items-center justify-between px-3"
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  exit={{ opacity: 0 }}
-                  transition={{ duration: 0.2 }}
-                >
-                  <p className="text-xs font-medium text-muted">
-                    {isMounted ? displayValue : 'NO TOKEN SET'}
-                  </p>
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </motion.div>
-          {authToken && (
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={handleClear}
-              className="hover:cursor-pointer hover:bg-transparent"
-              title="Clear token"
-            >
-              <Icon type="x" size="xs" />
-            </Button>
-          )}
+            Edit
+          </Button>
         </div>
       )}
     </div>

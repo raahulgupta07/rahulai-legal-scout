@@ -1,30 +1,45 @@
 import { useQueryState } from 'nuqs'
 import { SessionEntry } from '@/types/os'
-import { Button } from '../../../ui/button'
 import useSessionLoader from '@/hooks/useSessionLoader'
 import { deleteSessionAPI } from '@/api/os'
 import { useStore } from '@/store'
 import { toast } from 'sonner'
-import Icon from '@/components/ui/icon'
 import { useState } from 'react'
 import DeleteSessionModal from './DeleteSessionModal'
 import useChatActions from '@/hooks/useChatActions'
-import { truncateText, cn } from '@/lib/utils'
-import { MessageSquare, Trash2 } from 'lucide-react'
+import { cn } from '@/lib/utils'
+import { Trash2 } from 'lucide-react'
+import { focusRing } from '@/components/ui/kit'
 
+function toMillis(timestamp: number | string): number {
+  return typeof timestamp === 'number'
+    ? timestamp * 1000
+    : new Date(timestamp).getTime()
+}
+
+/** Coarse and short — the list is scanned, not read. */
 function timeAgo(timestamp: number | string | undefined): string {
   if (!timestamp) return ''
-  const now = Date.now()
-  const t = typeof timestamp === 'number' ? timestamp * 1000 : new Date(timestamp).getTime()
-  const diff = now - t
-  const minutes = Math.floor(diff / 60000)
+  const t = toMillis(timestamp)
+  if (Number.isNaN(t)) return ''
+  const minutes = Math.floor((Date.now() - t) / 60000)
   if (minutes < 1) return 'Just now'
   if (minutes < 60) return `${minutes}m ago`
   const hours = Math.floor(minutes / 60)
   if (hours < 24) return `${hours}h ago`
   const days = Math.floor(hours / 24)
   if (days < 7) return `${days}d ago`
-  return new Date(t).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+  return new Date(t).toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric'
+  })
+}
+
+/** The exact stamp, for the tooltip — "3d ago" is not enough to file by. */
+function exactTime(timestamp: number | string | undefined): string | undefined {
+  if (!timestamp) return undefined
+  const t = toMillis(timestamp)
+  return Number.isNaN(t) ? undefined : new Date(t).toLocaleString()
 }
 
 type SessionItemProps = SessionEntry & {
@@ -50,6 +65,8 @@ const SessionItem = ({
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
   const { clearChat } = useChatActions()
+
+  const displayTitle = title || 'Untitled conversation'
 
   const handleGetSession = async () => {
     if (!(agentId || teamId || dbId)) return
@@ -101,45 +118,66 @@ const SessionItem = ({
       setIsDeleting(false)
     }
   }
+
   return (
     <>
-      <div
-        className={cn(
-          'group relative flex w-full items-center gap-2.5 px-3 py-2.5 transition-all duration-150 font-brutalist',
-          isSelected
-            ? 'bg-[#feffd6]/50 border-l-[2px] border-[#007518]'
-            : 'cursor-pointer hover:bg-[#feffd6]/30 border-l-[2px] border-transparent'
-        )}
-        onClick={handleGetSession}
-      >
-        <MessageSquare className={cn(
-          'h-4 w-4 shrink-0',
-          isSelected ? 'text-[#007518]' : 'text-[#383832]/40'
-        )} />
-        <div className="flex min-w-0 flex-1 flex-col">
-          <h4
+      {/*
+        A row, not a card. The current session is marked by an inset ink rule
+        plus a raised ground — two cues, so it survives greyscale. The delete
+        control is a real sibling button rather than an overlay, so it is
+        reachable by keyboard even though it only becomes visible on hover.
+      */}
+      <div className="group relative flex w-full items-stretch">
+        <button
+          type="button"
+          onClick={handleGetSession}
+          aria-current={isSelected ? 'true' : undefined}
+          title={displayTitle}
+          className={cn(
+            'flex min-w-0 flex-1 flex-col items-start gap-0.5 py-2 pl-3 pr-8 text-left transition-colors',
+            'rounded-[var(--radius-sm)]',
+            focusRing,
+            isSelected
+              ? 'bg-[var(--surface-raised)] shadow-[inset_2px_0_0_0_var(--ink)]'
+              : 'hover:bg-[var(--bg-secondary)]'
+          )}
+        >
+          <span
             className={cn(
-              'truncate text-[12px] leading-5 font-bold',
-              isSelected ? 'text-[#383832]' : 'text-[#383832]/70'
+              'w-full truncate text-[length:var(--text-sm)] leading-5',
+              isSelected
+                ? 'font-medium text-[var(--text)]'
+                : 'text-[var(--text-secondary)]'
             )}
           >
-            {title || 'New conversation'}
-          </h4>
+            {displayTitle}
+          </span>
           {created_at && (
-            <span className="text-[10px] text-[#383832]/40 tracking-wider">
-              Legal Scout · {timeAgo(created_at)}
+            <span
+              className="text-[length:var(--text-2xs)] tabular-nums text-[var(--text-muted)]"
+              title={exactTime(created_at)}
+            >
+              {timeAgo(created_at)}
             </span>
           )}
-        </div>
+        </button>
         <button
-          className="absolute right-2 top-1/2 -translate-y-1/2 p-1 opacity-0 transition-opacity duration-150 hover:bg-[#be2d06]/10 hover:text-[#be2d06] group-hover:opacity-100"
+          type="button"
+          className={cn(
+            'absolute right-1 top-1/2 grid h-7 w-7 -translate-y-1/2 place-items-center',
+            'rounded-[var(--radius-sm)] text-[var(--text-muted)] transition-colors',
+            'opacity-0 group-hover:opacity-100 focus-visible:opacity-100',
+            'hover:bg-[color-mix(in_srgb,var(--danger-strong)_12%,transparent)] hover:text-[var(--danger-strong)]',
+            focusRing
+          )}
           onClick={(e) => {
             e.stopPropagation()
             setIsDeleteModalOpen(true)
           }}
+          aria-label={`Delete conversation: ${displayTitle}`}
           title="Delete conversation"
         >
-          <Trash2 className="h-3.5 w-3.5" />
+          <Trash2 className="h-3.5 w-3.5" aria-hidden />
         </button>
       </div>
       <DeleteSessionModal
@@ -147,6 +185,7 @@ const SessionItem = ({
         onClose={() => setIsDeleteModalOpen(false)}
         onDelete={handleDeleteSession}
         isDeleting={isDeleting}
+        sessionTitle={displayTitle}
       />
     </>
   )

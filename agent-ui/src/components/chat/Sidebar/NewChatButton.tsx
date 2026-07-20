@@ -1,23 +1,28 @@
 'use client'
 
-import { Button } from '@/components/ui/button'
-import Icon from '@/components/ui/icon'
+import { Plus } from 'lucide-react'
 import useChatActions from '@/hooks/useChatActions'
 import { useStore } from '@/store'
+import { Button } from '@/components/ui/kit'
 
-function NewChatButton() {
+/**
+ * The one accented action in the sidebar. It carries the brand fill precisely
+ * because nothing else here does — the moment a second control competes for
+ * the same weight, neither reads as primary.
+ */
+function NewChatButton({ onClick }: { onClick?: () => void }) {
   const { clearChat } = useChatActions()
   const { messages } = useStore()
+
   return (
     <Button
-      className="z-10 cursor-pointer rounded bg-brand px-4 py-2 font-bold text-primary hover:bg-brand/80 disabled:cursor-not-allowed disabled:opacity-50"
-      onClick={clearChat}
+      variant="primary"
+      className="w-full justify-center"
+      onClick={onClick ?? clearChat}
       disabled={messages.length === 0}
+      icon={<Plus className="h-4 w-4" aria-hidden />}
     >
-      <div className="flex items-center gap-2">
-        <p>New Chat</p>{' '}
-        <Icon type="plus-icon" size="xs" className="text-background" />
-      </div>
+      New chat
     </Button>
   )
 }

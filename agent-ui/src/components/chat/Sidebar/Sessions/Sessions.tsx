@@ -1,6 +1,6 @@
 'use client'
 
-import { FC, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { FC, useCallback, useEffect, useMemo, useState } from 'react'
 import { useQueryState } from 'nuqs'
 
 import { useStore } from '@/store'
@@ -9,7 +9,7 @@ import useSessionLoader from '@/hooks/useSessionLoader'
 import SessionItem from './SessionItem'
 import SessionBlankState from './SessionBlankState'
 import { Skeleton } from '@/components/ui/skeleton'
-import { cn } from '@/lib/utils'
+import { Label, Badge } from '@/components/ui/kit'
 
 interface SkeletonListProps {
   skeletonCount: number
@@ -20,16 +20,38 @@ const SkeletonList: FC<SkeletonListProps> = ({ skeletonCount }) => {
     [skeletonCount]
   )
 
+  // Rows fade out down the list so the placeholder reads as "loading", not as
+  // content. rounded-[var(--radius-sm)] rather than rounded-lg: globals.css
+  // squares off the standard Tailwind rounding classes.
   return list.map((k, idx) => (
     <Skeleton
       key={k}
-      className={cn(
-        'mb-1 h-11 rounded-lg px-3 py-2',
-        idx > 0 && 'bg-background-secondary'
-      )}
+      className="mb-1 h-11 rounded-[var(--radius-sm)] bg-[var(--bg-secondary)]"
+      style={{ opacity: 1 - idx * 0.15 }}
     />
   ))
 }
+
+/** One band: a sticky caption with a count, then the scrolling list. */
+const SessionsShell = ({
+  count,
+  children
+}: {
+  count?: number
+  children: React.ReactNode
+}) => (
+  <div className="flex h-full min-h-0 w-full flex-col">
+    <div className="mb-1.5 flex shrink-0 items-center justify-between gap-2 px-1">
+      <Label>History</Label>
+      {count !== undefined && count > 0 && (
+        <Badge tone="neutral" className="tabular-nums">
+          {count}
+        </Badge>
+      )}
+    </div>
+    {children}
+  </div>
+)
 
 const Sessions = () => {
   const [agentId] = useQueryState('agent', {
@@ -51,34 +73,11 @@ const Sessions = () => {
     isSessionsLoading
   } = useStore()
 
-  const [isScrolling, setIsScrolling] = useState(false)
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(
     null
   )
 
   const { getSessions, getSession } = useSessionLoader()
-  const scrollTimeoutRef = useRef<ReturnType<typeof setTimeout>>(null)
-
-  const handleScroll = () => {
-    setIsScrolling(true)
-
-    if (scrollTimeoutRef.current) {
-      clearTimeout(scrollTimeoutRef.current)
-    }
-
-    scrollTimeoutRef.current = setTimeout(() => {
-      setIsScrolling(false)
-    }, 1500)
-  }
-
-  // Cleanup the scroll timeout when component unmounts
-  useEffect(() => {
-    return () => {
-      if (scrollTimeoutRef.current) {
-        clearTimeout(scrollTimeoutRef.current)
-      }
-    }
-  }, [])
 
   useEffect(() => {
     if (hydrated && sessionId && selectedEndpoint && (agentId || teamId)) {
@@ -123,39 +122,32 @@ const Sessions = () => {
 
   if (isSessionsLoading || isEndpointLoading) {
     return (
-      <div className="w-full">
-        <div className="mb-2 text-xs font-medium uppercase">Sessions</div>
-        <div className="mt-4 h-[calc(100vh-325px)] w-full overflow-y-auto">
+      <SessionsShell>
+        <div className="min-h-0 flex-1 overflow-hidden" aria-busy>
           <SkeletonList skeletonCount={5} />
         </div>
-      </div>
+      </SessionsShell>
     )
   }
 
+  const isEmpty =
+    !isEndpointActive || !sessionsData || sessionsData.length === 0
+
   return (
-    <div className="w-full">
-      <div className="mb-2 flex items-center justify-between">
-        <span className="text-[10px] font-black uppercase tracking-[0.15em] text-[#383832]/60 font-brutalist">Chat History</span>
-        {sessionsData && sessionsData.length > 0 && (
-          <span className="text-[10px] font-bold text-[#383832]/40 font-brutalist">{sessionsData.length}</span>
-        )}
-      </div>
-      <div
-        className={`h-[calc(100vh-345px)] overflow-y-auto font-geist transition-all duration-300 [&::-webkit-scrollbar]:w-1 [&::-webkit-scrollbar]:transition-opacity [&::-webkit-scrollbar]:duration-300 ${
-          isScrolling
-            ? '[&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-accent [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar]:opacity-0'
-            : '[&::-webkit-scrollbar]:opacity-100'
-        }`}
-        onScroll={handleScroll}
-        onMouseOver={() => setIsScrolling(true)}
-        onMouseLeave={handleScroll}
+    <SessionsShell count={sessionsData?.length}>
+      {/*
+        The list owns its own scroll and is sized by the flex parent. The old
+        h-[calc(100vh-345px)] guessed at the height of everything above it and
+        broke whenever a band was added.
+      */}
+      <nav
+        aria-label="Conversation history"
+        className="min-h-0 flex-1 overflow-y-auto pr-0.5 [&::-webkit-scrollbar-thumb]:bg-[var(--border)] [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar]:w-1"
       >
-        {!isEndpointActive ||
-        (!isSessionsLoading &&
-          (!sessionsData || sessionsData?.length === 0)) ? (
+        {isEmpty ? (
           <SessionBlankState />
         ) : (
-          <div className="flex flex-col gap-y-0.5 pr-1">
+          <div className="flex flex-col gap-y-0.5">
             {sessionsData?.map((entry, idx) => (
               <SessionItem
                 key={`${entry?.session_id}-${idx}`}
@@ -169,8 +161,8 @@ const Sessions = () => {
             ))}
           </div>
         )}
-      </div>
-    </div>
+      </nav>
+    </SessionsShell>
   )
 }
 

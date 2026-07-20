@@ -1,17 +1,16 @@
 'use client'
 
 import * as React from 'react'
-import {
-  Select,
-  SelectTrigger,
-  SelectValue,
-  SelectContent,
-  SelectItem
-} from '@/components/ui/select'
 import { useStore } from '@/store'
 import { useQueryState } from 'nuqs'
 import useChatActions from '@/hooks/useChatActions'
+import { Label, Segmented } from '@/components/ui/kit'
 
+/**
+ * Two options only, so a dropdown is the wrong control: it hides half the
+ * choice behind a click and renders the live one as plain text. A segmented
+ * control shows both and marks which one the next run will use.
+ */
 export function ModeSelector() {
   const { mode, setMode, setMessages, setSelectedModel } = useStore()
   const { clearChat } = useChatActions()
@@ -33,25 +32,17 @@ export function ModeSelector() {
   }
 
   return (
-    <>
-      <Select
-        defaultValue={mode}
-        value={mode}
-        onValueChange={(value) => handleModeChange(value as 'agent' | 'team')}
-      >
-        <SelectTrigger className="h-9 w-full rounded-xl border border-primary/10 bg-primaryAccent text-xs font-medium uppercase">
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent className="border-none bg-primaryAccent font-dmmono shadow-lg">
-          <SelectItem value="agent" className="cursor-pointer">
-            <div className="text-xs font-medium uppercase">Agent</div>
-          </SelectItem>
-
-          <SelectItem value="team" className="cursor-pointer">
-            <div className="text-xs font-medium uppercase">Team</div>
-          </SelectItem>
-        </SelectContent>
-      </Select>
-    </>
+    <div className="w-full">
+      <Label className="mb-1">Mode</Label>
+      <Segmented<'agent' | 'team'>
+        label="Run against a single agent or a team"
+        value={mode === 'team' ? 'team' : 'agent'}
+        onChange={handleModeChange}
+        options={[
+          { value: 'agent', label: 'Agent' },
+          { value: 'team', label: 'Team' }
+        ]}
+      />
+    </div>
   )
 }

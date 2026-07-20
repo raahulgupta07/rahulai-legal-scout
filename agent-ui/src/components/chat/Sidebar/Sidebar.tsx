@@ -1,57 +1,66 @@
 'use client'
-import { Button } from '@/components/ui/button'
 import { ModeSelector } from '@/components/chat/Sidebar/ModeSelector'
 import { EntitySelector } from '@/components/chat/Sidebar/EntitySelector'
 import useChatActions from '@/hooks/useChatActions'
 import { useStore } from '@/store'
-import { motion, AnimatePresence } from 'framer-motion'
+import { motion } from 'framer-motion'
 import { useState, useEffect } from 'react'
-import Icon from '@/components/ui/icon'
-import { getProviderIcon } from '@/lib/modelProvider'
 import Sessions from './Sessions'
 import AuthToken from './AuthToken'
-import { isValidUrl } from '@/lib/utils'
+import NewChatButton from './NewChatButton'
+import { isValidUrl, cn, truncateText } from '@/lib/utils'
 import { toast } from 'sonner'
 import { useQueryState } from 'nuqs'
-import { truncateText } from '@/lib/utils'
 import { Skeleton } from '@/components/ui/skeleton'
 import Link from 'next/link'
+import {
+  ChevronRight,
+  LayoutGrid,
+  LogOut,
+  PanelLeft,
+  Pencil,
+  RefreshCw,
+  Check,
+  X
+} from 'lucide-react'
+import {
+  Label,
+  Badge,
+  IconButton,
+  Input,
+  focusRing
+} from '@/components/ui/kit'
 
-const ENDPOINT_PLACEHOLDER = 'NO ENDPOINT ADDED'
+const ENDPOINT_PLACEHOLDER = 'No endpoint set'
+
+/**
+ * Identity mark. A solid ink block with the initials is enough — a sidebar
+ * this narrow cannot spare a row for decoration.
+ */
 const SidebarHeader = () => (
-    <div className="flex items-center gap-2">
-    <div className="w-6 h-6 bg-[#383832] flex items-center justify-center shrink-0">
-      <span className="text-[#feffd6] font-black text-[10px]">LS</span>
-    </div>
-    <span className="text-xs font-black uppercase text-[#383832] tracking-wider font-brutalist">Legal Scout</span>
+  <div className="flex items-center gap-2">
+    <span
+      aria-hidden
+      className="grid h-6 w-6 shrink-0 place-items-center bg-[var(--surface-inverse)] text-[length:var(--text-2xs)] font-semibold text-[var(--text-inverse)]"
+    >
+      LS
+    </span>
+    <span className="truncate font-[family-name:var(--font-display)] text-[length:var(--text-sm)] font-semibold tracking-[-0.01em] text-[var(--text)]">
+      Legal Scout
+    </span>
   </div>
 )
 
-const NewChatButton = ({
-  disabled,
-  onClick
-}: {
-  disabled: boolean
-  onClick: () => void
-}) => (
-  <Button
-    onClick={onClick}
-    disabled={disabled}
-    size="lg"
-    className="h-9 w-full border-[2px] border-[#383832] bg-[#00fc40] text-xs font-black text-[#383832] uppercase tracking-wider hover:bg-[#00e639] font-brutalist cursor-pointer"
-  >
-    <Icon type="plus-icon" size="xs" className="text-background" />
-    <span className="uppercase">New Chat</span>
-  </Button>
-)
-
+/** Read-only footnote under the entity picker; never a control. */
 const ModelDisplay = ({ model }: { model: string }) => (
-  <div className="flex h-9 w-full items-center gap-3 rounded-xl border border-primary/10 bg-accent p-3 text-xs font-medium uppercase text-muted">
-    {(() => {
-      const icon = getProviderIcon(model)
-      return icon ? <Icon type={icon} className="shrink-0" size="xs" /> : null
-    })()}
-    {model}
+  <div className="flex items-baseline justify-between gap-2 px-0.5">
+    <Label className="shrink-0">Model</Label>
+    <span
+      className="truncate font-[family-name:var(--font-mono)] text-[length:var(--text-2xs)] text-[var(--text-muted)]"
+      title={model}
+    >
+      {model}
+    </span>
   </div>
 )
 
@@ -68,7 +77,6 @@ const Endpoint = () => {
   const [isEditing, setIsEditing] = useState(false)
   const [endpointValue, setEndpointValue] = useState('')
   const [isMounted, setIsMounted] = useState(false)
-  const [isHovering, setIsHovering] = useState(false)
   const [isRotating, setIsRotating] = useState(false)
   const [, setAgentId] = useQueryState('agent')
   const [, setSessionId] = useQueryState('session')
@@ -77,9 +85,6 @@ const Endpoint = () => {
     setEndpointValue(selectedEndpoint)
     setIsMounted(true)
   }, [selectedEndpoint])
-
-  const getStatusColor = (isActive: boolean) =>
-    isActive ? 'bg-positive' : 'bg-destructive'
 
   const handleSave = async () => {
     if (!isValidUrl(endpointValue)) {
@@ -91,7 +96,6 @@ const Endpoint = () => {
     setAgentId(null)
     setSessionId(null)
     setIsEditing(false)
-    setIsHovering(false)
     setAgents([])
     setSessionsData([])
     setMessages([])
@@ -100,7 +104,6 @@ const Endpoint = () => {
   const handleCancel = () => {
     setEndpointValue(selectedEndpoint)
     setIsEditing(false)
-    setIsHovering(false)
   }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -118,86 +121,66 @@ const Endpoint = () => {
   }
 
   return (
-    <div className="flex flex-col items-start gap-2">
-      <div className="text-xs font-medium uppercase text-primary">Legal Scout</div>
+    <div className="w-full">
+      <div className="mb-1 flex items-center justify-between gap-2">
+        <Label>Endpoint</Label>
+        {isMounted && (
+          <Badge tone={isEndpointActive ? 'ok' : 'danger'} dot>
+            {isEndpointActive ? 'Connected' : 'Offline'}
+          </Badge>
+        )}
+      </div>
+
       {isEditing ? (
-        <div className="flex w-full items-center gap-1">
-          <input
+        <div className="flex items-center gap-1">
+          <Input
             type="text"
             value={endpointValue}
             onChange={(e) => setEndpointValue(e.target.value)}
             onKeyDown={handleKeyDown}
-            className="flex h-9 w-full items-center text-ellipsis rounded-xl border border-primary/10 bg-accent p-3 text-xs font-medium text-muted"
+            aria-label="Endpoint URL"
             autoFocus
+            className="h-8 py-0 text-[length:var(--text-xs)]"
           />
-          <Button
-            variant="ghost"
-            size="icon"
+          <IconButton
+            aria-label="Save endpoint"
+            title="Save endpoint"
             onClick={handleSave}
-            className="hover:cursor-pointer hover:bg-transparent"
-          >
-            <Icon type="save" size="xs" />
-          </Button>
+            icon={<Check className="h-3.5 w-3.5" />}
+          />
+          <IconButton
+            aria-label="Cancel"
+            title="Cancel"
+            onClick={handleCancel}
+            icon={<X className="h-3.5 w-3.5" />}
+          />
         </div>
       ) : (
-        <div className="flex w-full items-center gap-1">
-          <motion.div
-            className="relative flex h-9 w-full cursor-pointer items-center justify-between rounded-xl border border-primary/10 bg-accent p-3 uppercase"
-            onMouseEnter={() => setIsHovering(true)}
-            onMouseLeave={() => setIsHovering(false)}
+        <div className="flex items-center gap-1">
+          <p
+            className="min-w-0 flex-1 truncate border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-1.5 font-[family-name:var(--font-mono)] text-[length:var(--text-xs)] text-[var(--text-secondary)] rounded-[var(--radius-sm)]"
+            title={selectedEndpoint}
+          >
+            {isMounted
+              ? truncateText(selectedEndpoint, 26) || ENDPOINT_PLACEHOLDER
+              : 'Loading…'}
+          </p>
+          <IconButton
+            aria-label="Edit endpoint"
+            title="Edit endpoint"
             onClick={() => setIsEditing(true)}
-            transition={{ type: 'spring', stiffness: 400, damping: 10 }}
-          >
-            <AnimatePresence mode="wait">
-              {isHovering ? (
-                <motion.div
-                  key="endpoint-display-hover"
-                  className="absolute inset-0 flex items-center justify-center"
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  exit={{ opacity: 0 }}
-                  transition={{ duration: 0.2 }}
-                >
-                  <p className="flex items-center gap-2 whitespace-nowrap text-xs font-medium text-primary">
-                    <Icon type="edit" size="xxs" /> EDIT AGENTOS
-                  </p>
-                </motion.div>
-              ) : (
-                <motion.div
-                  key="endpoint-display"
-                  className="absolute inset-0 flex items-center justify-between px-3"
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  exit={{ opacity: 0 }}
-                  transition={{ duration: 0.2 }}
-                >
-                  <p className="text-xs font-medium text-muted">
-                    {isMounted
-                      ? truncateText(selectedEndpoint, 21) ||
-                        ENDPOINT_PLACEHOLDER
-                      : 'Loading...'}
-                  </p>
-                  <div
-                    className={`size-2 shrink-0 rounded-full ${getStatusColor(isEndpointActive)}`}
-                  />
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </motion.div>
-          <Button
-            variant="ghost"
-            size="icon"
+            icon={<Pencil className="h-3 w-3" />}
+          />
+          <IconButton
+            aria-label="Reconnect"
+            title="Reconnect"
             onClick={handleRefresh}
-            className="hover:cursor-pointer hover:bg-transparent"
-          >
-            <motion.div
-              key={isRotating ? 'rotating' : 'idle'}
-              animate={{ rotate: isRotating ? 360 : 0 }}
-              transition={{ duration: 0.5, ease: 'easeInOut' }}
-            >
-              <Icon type="refresh" size="xs" />
-            </motion.div>
-          </Button>
+            icon={
+              <RefreshCw
+                className={cn('h-3.5 w-3.5', isRotating && 'animate-spin')}
+              />
+            }
+          />
         </div>
       )}
     </div>
@@ -213,17 +196,24 @@ const Sidebar = ({
 }) => {
   const [isCollapsed, setIsCollapsed] = useState(false)
   const [showDevConfig, setShowDevConfig] = useState(false)
-  const [userRole, setUserRole] = useState("user")
+  const [userRole, setUserRole] = useState('user')
+  const [user, setUser] = useState({ name: 'User', email: '' })
 
   useEffect(() => {
     try {
-      const raw = localStorage.getItem("ls_user")
-      if (raw) setUserRole(JSON.parse(raw).role || "user")
+      const raw = localStorage.getItem('ls_user')
+      if (!raw) return
+      const parsed = JSON.parse(raw)
+      setUserRole(parsed.role || 'user')
+      setUser({
+        name: parsed.name || parsed.email?.split('@')[0] || 'User',
+        email: parsed.email || ''
+      })
     } catch {}
   }, [])
+
   const { clearChat, focusChatInput, initialize } = useChatActions()
   const {
-    messages,
     selectedEndpoint,
     isEndpointActive,
     selectedModel,
@@ -246,140 +236,152 @@ const Sidebar = ({
     focusChatInput()
   }
 
+  const handleLogout = () => {
+    localStorage.removeItem('ls_token')
+    localStorage.removeItem('ls_user')
+    window.location.href = '/login'
+  }
+
   return (
     <motion.aside
-      className="brutalist relative flex h-screen shrink-0 grow-0 flex-col overflow-hidden border-r border-[#e0e0d8] px-2 py-3 font-brutalist bg-white"
+      className="relative flex h-screen shrink-0 grow-0 flex-col overflow-hidden border-r border-[var(--border)] bg-[var(--surface)] px-2 py-3"
       initial={{ width: '16rem' }}
-      animate={{ width: isCollapsed ? '2.5rem' : '16rem' }}
+      animate={{ width: isCollapsed ? '2.75rem' : '16rem' }}
       transition={{ type: 'spring', stiffness: 300, damping: 30 }}
     >
-      <motion.button
+      <button
         onClick={() => setIsCollapsed(!isCollapsed)}
-        className="absolute right-2 top-2 z-10 p-1"
+        className={cn(
+          'absolute right-1.5 top-2.5 z-10 grid h-6 w-6 place-items-center',
+          'rounded-[var(--radius-sm)] text-[var(--text-muted)] transition-colors',
+          'hover:bg-[var(--bg-secondary)] hover:text-[var(--text)]',
+          focusRing
+        )}
         aria-label={isCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+        aria-expanded={!isCollapsed}
         type="button"
-        whileTap={{ scale: 0.95 }}
       >
-        <Icon
-          type="sheet"
-          size="xs"
-          className={`transform ${isCollapsed ? 'rotate-180' : 'rotate-0'}`}
-        />
-      </motion.button>
+        <PanelLeft className="h-4 w-4" aria-hidden />
+      </button>
+
       <motion.div
-        className="flex h-full w-60 flex-col overflow-hidden"
+        className="flex h-full w-60 min-h-0 flex-col overflow-hidden"
         initial={{ opacity: 0, x: -20 }}
         animate={{ opacity: isCollapsed ? 0 : 1, x: isCollapsed ? -20 : 0 }}
         transition={{ duration: 0.3, ease: 'easeInOut' }}
         style={{ pointerEvents: isCollapsed ? 'none' : 'auto' }}
+        aria-hidden={isCollapsed}
       >
-        {/* Top: fixed items */}
-        <div className="space-y-3 shrink-0">
+        {/* Identity + the two things you can start from here. */}
+        <div className="shrink-0 space-y-2.5 pr-7">
           <SidebarHeader />
-          <NewChatButton disabled={messages.length === 0} onClick={handleNewChat} />
-          {(
-            <Link
-              href="/admin/dashboard"
-              className="flex items-center gap-2 w-full px-3 py-2.5 text-xs font-black text-[#feffd6] bg-[#383832] uppercase tracking-wider hover:bg-[#2a2a25] transition-all ink-border stamp-press font-brutalist"
-            >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" />
-              </svg>
-              Legal Dashboard
-            </Link>
-          )}
+        </div>
+        <div className="mt-3 shrink-0 space-y-1.5">
+          <NewChatButton onClick={handleNewChat} />
+          <Link
+            href="/admin/dashboard"
+            className={cn(
+              'flex w-full items-center gap-2 px-2.5 py-2 transition-colors',
+              'rounded-[var(--radius-sm)] border border-[var(--border)]',
+              'bg-[var(--bg-secondary)] text-[length:var(--text-sm)] text-[var(--text-secondary)]',
+              'hover:bg-[var(--surface)] hover:text-[var(--text)]',
+              focusRing
+            )}
+          >
+            <LayoutGrid className="h-4 w-4 shrink-0" aria-hidden />
+            Legal dashboard
+          </Link>
         </div>
 
-        {/* Middle: sessions (scrollable) */}
-        <div className="flex-1 overflow-y-auto mt-3 min-h-0">
+        {/* The list users come back to. Takes every pixel left over. */}
+        <div className="mt-4 min-h-0 flex-1">
           {isMounted && isEndpointActive && <Sessions />}
         </div>
 
-        {/* Profile + Logout */}
+        {/* Who you are, and the way out. */}
         {isMounted && (
-          <div className="shrink-0 pt-2 border-t border-gray-300">
-            {(() => {
-              let userName = "User"
-              let userEmail = ""
-              try {
-                const raw = localStorage.getItem("ls_user")
-                if (raw) {
-                  const u = JSON.parse(raw)
-                  userName = u.name || u.email?.split("@")[0] || "User"
-                  userEmail = u.email || ""
-                }
-              } catch {}
-              const roleBadge = userRole === "admin"
-                ? "bg-red-500/10 text-red-700"
-                : userRole === "editor"
-                ? "bg-blue-500/10 text-blue-700"
-                : "bg-gray-100 text-gray-600"
-              return (
-                <div className="px-2 py-2">
-                  <div className="flex items-center gap-2.5 mb-2">
-                    <div className="w-7 h-7 bg-[#383832] flex items-center justify-center shrink-0">
-                      <span className="text-[#feffd6] text-[10px] font-black">{userName[0]?.toUpperCase()}</span>
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <p className="text-xs font-medium text-primary truncate">{userName}</p>
-                      <div className="flex items-center gap-1">
-                        <span className="tag-label">{userRole}</span>
-                      </div>
-                    </div>
-                  </div>
-                  <button
-                    onClick={() => {
-                      localStorage.removeItem("ls_token")
-                      localStorage.removeItem("ls_user")
-                      window.location.href = "/login"
-                    }}
-                    className="flex items-center gap-2 w-full px-2 py-1.5 text-xs font-black text-[#be2d06] uppercase tracking-wider hover:bg-[#be2d06]/10 transition-colors font-brutalist"
-                  >
-                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
-                    </svg>
-                    Logout
-                  </button>
-                </div>
-              )
-            })()}
+          <div className="mt-2 shrink-0 border-t border-[var(--border)] pt-2">
+            <div className="flex items-center gap-2.5 px-1 py-1.5">
+              <span
+                aria-hidden
+                className="grid h-7 w-7 shrink-0 place-items-center bg-[var(--surface-inverse)] text-[length:var(--text-2xs)] font-semibold text-[var(--text-inverse)]"
+              >
+                {user.name[0]?.toUpperCase()}
+              </span>
+              <div className="min-w-0 flex-1">
+                <p
+                  className="truncate text-[length:var(--text-sm)] font-medium text-[var(--text)]"
+                  title={user.email || user.name}
+                >
+                  {user.name}
+                </p>
+                <p className="truncate text-[length:var(--text-2xs)] uppercase tracking-[var(--tracking-tag)] text-[var(--text-muted)]">
+                  {userRole}
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={handleLogout}
+              className={cn(
+                'mt-0.5 flex w-full items-center gap-2 px-2.5 py-1.5 transition-colors',
+                'rounded-[var(--radius-sm)] text-[length:var(--text-xs)] text-[var(--text-muted)]',
+                'hover:bg-[color-mix(in_srgb,var(--danger-strong)_10%,transparent)] hover:text-[var(--danger-strong)]',
+                focusRing
+              )}
+            >
+              <LogOut className="h-3.5 w-3.5 shrink-0" aria-hidden />
+              Sign out
+            </button>
           </div>
         )}
 
-        {/* Bottom: developer toggle (admin only) */}
-        {isMounted && userRole === "admin" && (
-          <div className="shrink-0 pt-2 border-t border-gray-300">
+        {/* Connection internals. Folded away — admins only, rarely touched. */}
+        {isMounted && userRole === 'admin' && (
+          <div className="shrink-0 border-t border-[var(--border)] pt-2">
             <button
+              type="button"
               onClick={() => setShowDevConfig(!showDevConfig)}
-              className="flex items-center gap-1.5 w-full px-2 py-1.5 text-[10px] font-medium uppercase tracking-wider text-muted hover:text-primary transition-colors"
+              aria-expanded={showDevConfig}
+              className={cn(
+                'flex w-full items-center gap-1.5 px-2 py-1.5 transition-colors',
+                'rounded-[var(--radius-sm)] text-[length:var(--text-2xs)] font-semibold uppercase tracking-[var(--tracking-tag)]',
+                'text-[var(--text-muted)] hover:text-[var(--text)]',
+                focusRing
+              )}
             >
-              <svg className={`w-3 h-3 transition-transform ${showDevConfig ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-              </svg>
-              {showDevConfig ? 'Hide Config' : 'Developer'}
+              <ChevronRight
+                className={cn(
+                  'h-3 w-3 transition-transform',
+                  showDevConfig && 'rotate-90'
+                )}
+                aria-hidden
+              />
+              Connection
             </button>
             {showDevConfig && (
-              <div className="mt-2 space-y-3 max-h-[40vh] overflow-y-auto pb-2">
+              <div className="mt-2 max-h-[40vh] space-y-3 overflow-y-auto px-1 pb-2">
                 <Endpoint />
                 <AuthToken hasEnvToken={hasEnvToken} envToken={envToken} />
-                {isEndpointActive && (
-                  <div className="flex w-full flex-col items-start gap-2">
-                    <div className="text-xs font-medium uppercase text-primary">Mode</div>
-                    {isEndpointLoading ? (
-                      <div className="flex w-full flex-col gap-2">
-                        {Array.from({ length: 3 }).map((_, index) => (
-                          <Skeleton key={index} className="h-9 w-full rounded-xl" />
-                        ))}
-                      </div>
-                    ) : (
-                      <>
-                        <ModeSelector />
-                        <EntitySelector />
-                        {selectedModel && (agentId || teamId) && <ModelDisplay model={selectedModel} />}
-                      </>
-                    )}
-                  </div>
-                )}
+                {isEndpointActive &&
+                  (isEndpointLoading ? (
+                    <div className="flex w-full flex-col gap-2">
+                      {Array.from({ length: 3 }).map((_, index) => (
+                        <Skeleton
+                          key={index}
+                          className="h-9 w-full rounded-[var(--radius-sm)] bg-[var(--bg-secondary)]"
+                        />
+                      ))}
+                    </div>
+                  ) : (
+                    <>
+                      <ModeSelector />
+                      <EntitySelector />
+                      {selectedModel && (agentId || teamId) && (
+                        <ModelDisplay model={selectedModel} />
+                      )}
+                    </>
+                  ))}
               </div>
             )}
           </div>
