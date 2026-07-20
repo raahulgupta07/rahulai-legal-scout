@@ -1,8 +1,31 @@
 "use client"
 
-import { useEffect, useState } from "react"
-import { Mail, Loader2, CheckCircle, XCircle, Paperclip, ChevronDown, ChevronUp, Send } from "lucide-react"
+import { useEffect, useMemo, useState } from "react"
+import { Download, Mail, Paperclip, RefreshCw } from "lucide-react"
 import { authFetch } from "@/lib/api-client"
+import { toast } from "sonner"
+import {
+  Badge,
+  Button,
+  type Column,
+  DataTable,
+  DetailList,
+  EmptyState,
+  LoadingScreen,
+  Modal,
+  Notice,
+  Page,
+  PageBody,
+  PageHeader,
+  SearchInput,
+  Segmented,
+  StatRow,
+  StatTile,
+  Toolbar,
+  dateSort,
+  ensureOk,
+  formatDateTime,
+} from "@/components/ui/kit"
 
 const API = process.env.NEXT_PUBLIC_API_URL || ""
 
@@ -19,153 +42,279 @@ interface EmailLog {
   time: string | null
 }
 
+type Filter = "all" | "sent" | "failed"
+
 export default function EmailsPage() {
   const [emails, setEmails] = useState<EmailLog[]>([])
   const [loading, setLoading] = useState(true)
-  const [expandedId, setExpandedId] = useState<number | null>(null)
+  const [refreshing, setRefreshing] = useState(false)
+  const [loadError, setLoadError] = useState("")
+  const [searchTerm, setSearchTerm] = useState("")
+  const [filter, setFilter] = useState<Filter>("all")
+  const [selected, setSelected] = useState<EmailLog | null>(null)
 
-  useEffect(() => { fetchEmails() }, [])
+  useEffect(() => {
+    fetchEmails()
+  }, [])
 
   const fetchEmails = async () => {
+    setRefreshing(true)
+    setLoadError("")
     try {
       const res = await authFetch(`${API}/api/admin/emails?limit=200`)
+      await ensureOk(res, "Failed to load emails")
       const data = await res.json()
-      if (data.success) setEmails(data.emails || [])
-    } catch {} finally { setLoading(false) }
+      setEmails(data.emails || [])
+    } catch (e: any) {
+      console.error("Fetch emails error:", e)
+      setLoadError(e?.message || "Failed to load emails")
+      toast.error(e?.message || "Failed to load emails")
+    } finally {
+      setLoading(false)
+      setRefreshing(false)
+    }
   }
 
-  if (loading) return (
-    <div className="flex items-center justify-center h-full">
-      <Loader2 className="w-8 h-8 animate-spin text-brand" />
-    </div>
-  )
+  const stats = useMemo(() => {
+    const sent = emails.filter((e) => e.status === "sent").length
+    const withAttachment = emails.filter((e) => e.attachment).length
+    return { total: emails.length, sent, failed: emails.length - sent, withAttachment }
+  }, [emails])
+
+  const term = searchTerm.trim().toLowerCase()
+  const filtered = useMemo(() => {
+    let rows = emails
+    if (filter === "sent") rows = rows.filter((e) => e.status === "sent")
+    if (filter === "failed") rows = rows.filter((e) => e.status !== "sent")
+    if (term) {
+      rows = rows.filter(
+        (e) =>
+          e.to?.toLowerCase().includes(term) ||
+          e.subject?.toLowerCase().includes(term) ||
+          e.sent_by?.toLowerCase().includes(term)
+      )
+    }
+    return rows
+  }, [emails, filter, term])
+
+  if (loading) return <LoadingScreen label="Loading emails" />
+
+  const columns: Column<EmailLog>[] = [
+    {
+      key: "status",
+      header: "Status",
+      width: "1%",
+      sortValue: (e) => e.status,
+      render: (e) =>
+        e.status === "sent" ? (
+          <Badge tone="ok" dot>
+            Sent
+          </Badge>
+        ) : (
+          <Badge tone="danger" dot>
+            Failed
+          </Badge>
+        ),
+    },
+    {
+      key: "time",
+      header: "Date",
+      sortValue: (e) => dateSort(e.time),
+      render: (e) => <span className="tabular-nums whitespace-nowrap">{formatDateTime(e.time)}</span>,
+    },
+    {
+      key: "to",
+      header: "To",
+      sortValue: (e) => e.to,
+      render: (e) => <span className="font-medium text-[var(--text)]">{e.to}</span>,
+    },
+    {
+      key: "subject",
+      header: "Subject",
+      sortValue: (e) => e.subject,
+      render: (e) => <span className="block max-w-[280px] truncate">{e.subject || "—"}</span>,
+    },
+    {
+      key: "attachment",
+      header: "Attachment",
+      hideBelow: "md",
+      render: (e) =>
+        e.attachment ? (
+          <span className="inline-flex items-center gap-1 text-[var(--text-secondary)]">
+            <Paperclip className="w-3 h-3 shrink-0" />
+            <span className="truncate max-w-[160px]">{e.attachment}</span>
+          </span>
+        ) : (
+          <span className="text-[var(--text-muted)]">—</span>
+        ),
+    },
+    {
+      key: "sent_by",
+      header: "Sent by",
+      hideBelow: "lg",
+      sortValue: (e) => e.sent_by,
+      render: (e) => e.sent_by || "—",
+    },
+  ]
 
   return (
-    <div className="flex flex-col h-full">
-      {/* Header */}
-      <div className="flex items-center justify-between p-4 border-b border-gray-200 bg-card">
-        <div className="flex items-center gap-3">
-          <h1 className="text-lg font-semibold text-primary">Emails Sent</h1>
-          <span className="text-xs text-muted bg-accent rounded-full px-2 py-0.5">{emails.length}</span>
-        </div>
-        <button onClick={() => { setLoading(true); fetchEmails() }}
-          className="flex items-center gap-1.5 px-3 py-2 text-xs font-medium border border-gray-300 rounded-lg hover:bg-accent">
-          <Send className="w-3.5 h-3.5" /> Refresh
-        </button>
-      </div>
+    <Page>
+      <PageHeader
+        title="Emails"
+        meta={
+          <>
+            <Badge tone="neutral">{emails.length}</Badge>
+            {stats.failed > 0 && (
+              <Badge tone="danger" dot>
+                {stats.failed} failed
+              </Badge>
+            )}
+          </>
+        }
+        description="Every email the agent has sent, including delivery failures and their reasons."
+        actions={
+          <Button onClick={fetchEmails} loading={refreshing} icon={<RefreshCw className="w-4 h-4" />}>
+            Refresh
+          </Button>
+        }
+      />
 
-      {/* Email List */}
-      <div className="flex-1 overflow-auto">
+      {emails.length > 0 && (
+        <Toolbar>
+          <SearchInput
+            label="Search emails"
+            placeholder="Recipient, subject or sender…"
+            value={searchTerm}
+            onChange={setSearchTerm}
+          />
+          <Segmented<Filter>
+            label="Filter by delivery status"
+            value={filter}
+            onChange={setFilter}
+            options={[
+              { value: "all", label: "All", count: stats.total },
+              { value: "sent", label: "Sent", count: stats.sent, tone: "ok" },
+              { value: "failed", label: "Failed", count: stats.failed, tone: "danger" },
+            ]}
+          />
+          <span className="ml-auto text-[length:var(--text-xs)] text-[var(--text-muted)] tabular-nums">
+            {filtered.length} of {emails.length}
+          </span>
+        </Toolbar>
+      )}
+
+      <PageBody className="space-y-4">
+        {loadError && <Notice tone="danger" title="Could not load emails">{loadError}</Notice>}
+
         {emails.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-64 text-muted">
-            <Mail className="w-12 h-12 mb-3 opacity-30" />
-            <p className="text-sm">No emails sent yet</p>
-            <p className="text-xs mt-1">Emails sent from the chat will appear here</p>
-          </div>
+          <EmptyState
+            icon={<Mail className="w-4 h-4" />}
+            title="No emails sent yet"
+            description="Emails sent by the agent from chat will be logged here, with their attachments and any delivery errors."
+          />
         ) : (
-          <table className="w-full">
-            <thead className="bg-gray-50 sticky top-0">
-              <tr className="text-xs font-medium text-gray-500">
-                <th className="text-left px-4 py-3">Status</th>
-                <th className="text-left px-4 py-3">Date</th>
-                <th className="text-left px-4 py-3">To</th>
-                <th className="text-left px-4 py-3">Subject</th>
-                <th className="text-left px-4 py-3">Attachment</th>
-                <th className="text-left px-4 py-3">Sent By</th>
-                <th className="text-left px-4 py-3 w-10"></th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {emails.map(email => (
-                <>
-                  <tr
-                    key={email.id}
-                    className="hover:bg-gray-50 cursor-pointer"
-                    onClick={() => setExpandedId(expandedId === email.id ? null : email.id)}
+          <>
+            <StatRow>
+              <StatTile label="Emails" value={stats.total} />
+              <StatTile label="Delivered" value={stats.sent} tone={stats.sent > 0 ? "ok" : undefined} />
+              <StatTile
+                label="Failed"
+                value={stats.failed}
+                tone={stats.failed > 0 ? "danger" : undefined}
+                hint={stats.failed > 0 ? "Open a row for the reason" : "No delivery failures"}
+              />
+              <StatTile label="With attachment" value={stats.withAttachment} />
+            </StatRow>
+
+            <DataTable
+              rows={filtered}
+              columns={columns}
+              rowKey={(e) => e.id}
+              onRowClick={setSelected}
+              caption="Sent emails"
+              rowTone={(e) => (e.status === "sent" ? null : "var(--danger-strong)")}
+              empty={
+                <div className="py-2">
+                  <p className="text-[length:var(--text-sm)] text-[var(--text)]">No emails match the filters.</p>
+                  <Button
+                    size="sm"
+                    className="mt-3"
+                    onClick={() => {
+                      setSearchTerm("")
+                      setFilter("all")
+                    }}
                   >
-                    <td className="px-4 py-3">
-                      {email.status === "sent" ? (
-                        <CheckCircle className="w-4 h-4 text-green-500" />
-                      ) : (
-                        <XCircle className="w-4 h-4 text-red-500" />
-                      )}
-                    </td>
-                    <td className="px-4 py-3 text-xs text-gray-500 whitespace-nowrap">
-                      {email.time ? new Date(email.time).toLocaleString([], {
-                        month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"
-                      }) : "—"}
-                    </td>
-                    <td className="px-4 py-3 text-sm text-gray-900">{email.to}</td>
-                    <td className="px-4 py-3 text-sm text-gray-700 max-w-xs truncate">{email.subject || "—"}</td>
-                    <td className="px-4 py-3">
-                      {email.attachment ? (
-                        <span className="flex items-center gap-1 text-xs text-blue-600">
-                          <Paperclip className="w-3 h-3" /> {email.attachment}
-                        </span>
-                      ) : (
-                        <span className="text-xs text-gray-400">—</span>
-                      )}
-                    </td>
-                    <td className="px-4 py-3 text-xs text-gray-500">{email.sent_by}</td>
-                    <td className="px-4 py-3">
-                      {expandedId === email.id ? (
-                        <ChevronUp className="w-4 h-4 text-gray-400" />
-                      ) : (
-                        <ChevronDown className="w-4 h-4 text-gray-400" />
-                      )}
-                    </td>
-                  </tr>
-                  {/* Expanded Detail */}
-                  {expandedId === email.id && (
-                    <tr key={`${email.id}-detail`}>
-                      <td colSpan={7} className="px-4 py-0">
-                        <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 my-2 space-y-3">
-                          <div className="grid grid-cols-2 gap-4 text-sm">
-                            <div>
-                              <span className="text-xs font-medium text-gray-500">To:</span>
-                              <p className="text-gray-900">{email.to}</p>
-                            </div>
-                            <div>
-                              <span className="text-xs font-medium text-gray-500">Sent By:</span>
-                              <p className="text-gray-900">{email.sent_by}</p>
-                            </div>
-                          </div>
-                          <div>
-                            <span className="text-xs font-medium text-gray-500">Subject:</span>
-                            <p className="text-sm text-gray-900">{email.subject || "—"}</p>
-                          </div>
-                          <div>
-                            <span className="text-xs font-medium text-gray-500">Body:</span>
-                            <div className="mt-1 p-3 bg-white border border-gray-200 rounded-lg text-sm text-gray-700 whitespace-pre-wrap">
-                              {email.body || "No body content"}
-                            </div>
-                          </div>
-                          {email.attachment && (
-                            <div className="flex items-center gap-2">
-                              <Paperclip className="w-4 h-4 text-gray-400" />
-                              <span className="text-sm text-gray-700">{email.attachment}</span>
-                              {email.attachment_path && (
-                                <a href={`${API}${email.attachment_path}`} download
-                                  className="text-xs text-blue-600 hover:underline ml-2">Download</a>
-                              )}
-                            </div>
-                          )}
-                          {email.error && (
-                            <div className="p-3 bg-red-50 border border-red-200 rounded-lg">
-                              <span className="text-xs font-medium text-red-600">Error:</span>
-                              <p className="text-sm text-red-700 mt-1">{email.error}</p>
-                            </div>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  )}
-                </>
-              ))}
-            </tbody>
-          </table>
+                    Clear filters
+                  </Button>
+                </div>
+              }
+            />
+          </>
         )}
-      </div>
-    </div>
+      </PageBody>
+
+      <Modal
+        open={!!selected}
+        onOpenChange={(o) => !o && setSelected(null)}
+        title={selected?.subject || "Email"}
+        description={selected ? `To ${selected.to}` : undefined}
+        footer={
+          selected?.attachment_path ? (
+            <Button
+              onClick={() => window.open(`${API}${selected.attachment_path}`, "_blank")}
+              icon={<Download className="w-3.5 h-3.5" />}
+            >
+              Download attachment
+            </Button>
+          ) : undefined
+        }
+      >
+        {selected && (
+          <div className="space-y-3">
+            {selected.error && (
+              <Notice tone="danger" title="Delivery failed">
+                {selected.error}
+              </Notice>
+            )}
+
+            <DetailList
+              items={[
+                ["To", selected.to],
+                ["Sent by", selected.sent_by],
+                ["Sent at", formatDateTime(selected.time)],
+                [
+                  "Status",
+                  selected.status === "sent" ? (
+                    <Badge tone="ok" dot>
+                      Sent
+                    </Badge>
+                  ) : (
+                    <Badge tone="danger" dot>
+                      Failed
+                    </Badge>
+                  ),
+                ],
+              ]}
+            />
+
+            {selected.attachment && (
+              <p className="flex items-center gap-1.5 text-[length:var(--text-sm)] text-[var(--text-secondary)]">
+                <Paperclip className="w-3.5 h-3.5" />
+                {selected.attachment}
+              </p>
+            )}
+
+            <div>
+              <p className="mb-1 text-[length:var(--text-2xs)] font-semibold uppercase tracking-[var(--tracking-tag)] text-[var(--text-muted)]">
+                Body
+              </p>
+              <div className="p-3 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-[var(--radius-sm)] text-[length:var(--text-sm)] text-[var(--text)] whitespace-pre-wrap">
+                {selected.body || "No body content"}
+              </div>
+            </div>
+          </div>
+        )}
+      </Modal>
+    </Page>
   )
 }

@@ -1,14 +1,60 @@
 "use client"
 
-import React, { useEffect, useState, useRef } from "react"
-import { FileText, Upload, Sparkles, Trash2, X, CheckCircle, Loader2, Terminal, Square, Download, Eye } from "lucide-react"
+import React, { useEffect, useMemo, useRef, useState } from "react"
+import {
+  ArrowLeft,
+  Download,
+  Eye,
+  FileText,
+  Loader2,
+  Sparkles,
+  Square,
+  Terminal,
+  Trash2,
+  Upload,
+} from "lucide-react"
 import apiClient, { authFetch } from "@/lib/api-client"
+import { toast } from "sonner"
 import DocViewer from "@/components/ui/DocViewer"
+import { cn } from "@/lib/utils"
+import {
+  Badge,
+  Button,
+  Card,
+  type Column,
+  ConfirmButton,
+  DataTable,
+  DetailList,
+  EmptyState,
+  IconButton,
+  Input,
+  LoadingScreen,
+  Modal,
+  Notice,
+  Page,
+  PageBody,
+  PageHeader,
+  SearchInput,
+  StatRow,
+  StatTile,
+  type Tone,
+  Toolbar,
+  assertSuccess,
+  ensureOk,
+  errorMessage,
+  formatDateTime,
+} from "@/components/ui/kit"
+import {
+  TrainingProgress,
+  applyStepEvent,
+  freshSteps,
+  type PipelineStep,
+} from "../components/TrainingProgress"
 
 interface Template {
   name: string
   path: string
-  fields: any[]
+  fields: any
   total_fields: number
   category?: string
   keywords?: string
@@ -30,35 +76,71 @@ interface Template {
   ai_trained?: boolean
   ai_analyzed?: boolean
   uploaded_by_email?: string
+  training_confidence?: number
 }
 
 interface TerminalLine {
   id: number
   text: string
-  type: 'info' | 'success' | 'error' | 'processing' | 'ai'
+  type: "info" | "success" | "error" | "processing" | "ai"
   timestamp: string
+}
+
+const isTrained = (t: Template) => !!(t.ai_trained || t.ai_analyzed)
+
+const confidenceTone = (n: number): Tone => (n >= 80 ? "ok" : n >= 50 ? "warn" : "danger")
+
+const LINE_TONE: Record<TerminalLine["type"], string> = {
+  success: "text-[var(--ok-strong)]",
+  error: "text-[var(--danger-strong)]",
+  processing: "text-[var(--warn)]",
+  ai: "text-[var(--brand)]",
+  info: "text-[var(--text-secondary)]",
+}
+
+/** Chip list used for prerequisites, attachments, approvals. */
+function ChipList({ items, tone = "neutral" }: { items: any[]; tone?: Tone }) {
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {items.map((item, i) => (
+        <Badge key={i} tone={tone}>
+          {typeof item === "string" ? item : item?.name || JSON.stringify(item)}
+        </Badge>
+      ))}
+    </div>
+  )
 }
 
 export default function TemplatesPage() {
   const [templates, setTemplates] = useState<Template[]>([])
   const [selectedTemplate, setSelectedTemplate] = useState<Template | null>(null)
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [searchTerm, setSearchTerm] = useState("")
+
   const [isTraining, setIsTraining] = useState(false)
   const [trainingComplete, setTrainingComplete] = useState(false)
+  const [trainingStale, setTrainingStale] = useState(false)
   const [lastTrained, setLastTrained] = useState<string | null>(null)
   const [terminalLogs, setTerminalLogs] = useState<TerminalLine[]>([])
-  const [uploading, setUploading] = useState(false)
-  const [showDeleteModal, setShowDeleteModal] = useState<Template | null>(null)
   const [showLogModal, setShowLogModal] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [showTranscript, setShowTranscript] = useState(false)
+
+  // Live view of the 15-step pipeline for the template being trained.
+  const [steps, setSteps] = useState<PipelineStep[]>(freshSteps())
+  const [currentTemplate, setCurrentTemplate] = useState<string>("")
+  const [queuePos, setQueuePos] = useState({ index: 0, total: 0 })
+
+  const [uploading, setUploading] = useState(false)
   const [showDeleteAllModal, setShowDeleteAllModal] = useState(false)
   const [deleteAllConfirm, setDeleteAllConfirm] = useState("")
   const [deletingAll, setDeletingAll] = useState(false)
-  const [trainingStale, setTrainingStale] = useState(false)
   const [duplicateError, setDuplicateError] = useState<{
-    name: string; error: string;
+    name: string
+    error: string
     existing?: { name: string; fields: number; category: string; trained: boolean; uploaded_at: string | null }
   } | null>(null)
+
   const terminalRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const logIdRef = useRef(0)
@@ -67,92 +149,79 @@ export default function TemplatesPage() {
   useEffect(() => {
     fetchTemplates()
     checkTrainingStatus()
+    return () => abortControllerRef.current?.abort()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   useEffect(() => {
-    if (terminalRef.current) {
-      terminalRef.current.scrollTop = terminalRef.current.scrollHeight
-    }
+    if (terminalRef.current) terminalRef.current.scrollTop = terminalRef.current.scrollHeight
   }, [terminalLogs])
 
-  // Save training logs to DB when training completes
   useEffect(() => {
     if (trainingComplete && terminalLogs.length > 0 && !isTraining) {
-      authFetch(`${process.env.NEXT_PUBLIC_API_URL || ''}/api/training/save-logs`, {
+      authFetch(`${process.env.NEXT_PUBLIC_API_URL || ""}/api/training/save-logs`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ type: "templates", logs: terminalLogs })
-      }).catch((e) => { console.error("Save training logs error:", e) })
+        body: JSON.stringify({ type: "templates", logs: terminalLogs }),
+      }).catch((e) => console.error("Save training logs error:", e))
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [trainingComplete])
 
   const checkTrainingStatus = async () => {
     try {
       const res = await authFetch(apiClient.getTrainingStatus())
-      if (!res.ok) throw new Error(`Request failed: ${res.status}`)
+      await ensureOk(res, "Failed to read training status")
       const data = await res.json()
-      if (data.success && data.data?.templates) {
-        if (data.data.templates.last_trained) {
-          setLastTrained(new Date(data.data.templates.last_trained).toLocaleString())
-        }
-        // Check if training is stale
-        if (data.data.templates.status === 'stale') {
-          setTrainingStale(true)
-          setTrainingComplete(false)
-        }
-        // Load persisted training logs
-        if (data.data.templates.logs && data.data.templates.logs.length > 0) {
-          setTerminalLogs(data.data.templates.logs)
-          if (data.data.templates.status !== 'stale') {
-            setTrainingComplete(true)
-          }
-        }
+      const t = data.data?.templates
+      if (!t) return
+      if (t.last_trained) setLastTrained(new Date(t.last_trained).toLocaleString())
+      if (t.status === "stale") {
+        setTrainingStale(true)
+        setTrainingComplete(false)
       }
-    } catch (e) { console.error("Training status check error:", e) }
+      if (t.logs?.length > 0) {
+        setTerminalLogs(t.logs)
+        if (t.status !== "stale") setTrainingComplete(true)
+      }
+    } catch (e) {
+      console.error("Training status check error:", e)
+    }
   }
 
-  const addLog = (text: string, type: TerminalLine['type'] = 'info') => {
-    const now = new Date()
-    const timestamp = now.toLocaleTimeString('en-US', { hour12: false })
-    setTerminalLogs(prev => [...prev, { id: logIdRef.current++, text, type, timestamp }])
+  const addLog = (text: string, type: TerminalLine["type"] = "info") => {
+    const timestamp = new Date().toLocaleTimeString("en-US", { hour12: false })
+    setTerminalLogs((prev) => [...prev, { id: logIdRef.current++, text, type, timestamp }])
   }
 
   const fetchTemplates = async () => {
     try {
       setError(null)
       const res = await authFetch(apiClient.getDashboardTemplates())
-      if (!res.ok) throw new Error(`Request failed: ${res.status}`)
+      await ensureOk(res, "Failed to load templates")
       const data = await res.json()
       setTemplates(data.templates || [])
-    } catch (error) {
-      console.error("Failed to fetch templates:", error)
-      setError("Failed to load templates")
+    } catch (e: any) {
+      console.error("Failed to fetch templates:", e)
+      setError(e?.message || "Failed to load templates")
     } finally {
       setLoading(false)
     }
   }
 
-  const handleSelectTemplate = (template: Template) => {
-    setSelectedTemplate(selectedTemplate?.name === template.name ? null : template)
-  }
+  const untrained = useMemo(() => templates.filter((t) => !isTrained(t)), [templates])
 
   const startTraining = async (trainAll = false) => {
     if (templates.length === 0) return
-
-    const toTrain = trainAll
-      ? templates
-      : templates.filter(t => !t.ai_trained && !t.ai_analyzed)
-
+    const toTrain = trainAll ? templates : untrained
     if (toTrain.length === 0) {
-      // All trained — ask if user wants to retrain
-      if (!confirm("All templates are already trained. Retrain all?")) return
-      return startTraining(true)
+      toast.info("Every template is already trained. Use Retrain all to run them again.")
+      return
     }
 
     const token = localStorage.getItem("ls_token")
     if (!token) {
-      const { toast } = await import("sonner")
-      toast.error("Please log in again")
+      toast.error("Please sign in again")
       return
     }
 
@@ -160,42 +229,34 @@ export default function TemplatesPage() {
     setTrainingComplete(false)
     setTerminalLogs([])
     setShowLogModal(true)
+    setQueuePos({ index: 0, total: toTrain.length })
 
     const controller = new AbortController()
     abortControllerRef.current = controller
-
-    const API_BASE = process.env.NEXT_PUBLIC_API_URL || ''
+    const API_BASE = process.env.NEXT_PUBLIC_API_URL || ""
 
     const skipped = templates.length - toTrain.length
-    addLog("━".repeat(55), 'info')
-    addLog("LEGAL SCOUT — AI TRAINING", 'info')
-    addLog(`Training ${toTrain.length} template(s)${skipped > 0 ? ` (${skipped} already trained, skipped)` : ''}...`, 'info')
-    addLog("━".repeat(55), 'info')
+    addLog(`Training ${toTrain.length} template(s)${skipped > 0 ? ` — ${skipped} already trained, skipped` : ""}`, "info")
 
     try {
       let successCount = 0
 
       for (let i = 0; i < toTrain.length; i++) {
         const t = toTrain[i]
-        addLog("", 'info')
-        addLog(`╔══ [${i + 1}/${toTrain.length}] ${t.name}`, 'ai')
+        setCurrentTemplate(t.name)
+        setQueuePos({ index: i + 1, total: toTrain.length })
+        setSteps(freshSteps())
+        addLog(`[${i + 1}/${toTrain.length}] ${t.name}`, "ai")
 
         try {
-          // SSE streaming — each step appears live
           const res = await fetch(`${API_BASE}/api/knowledge/train-stream/${encodeURIComponent(t.name)}`, {
-            headers: { "Authorization": `Bearer ${token}` },
+            headers: { Authorization: `Bearer ${token}` },
             signal: controller.signal,
           })
 
-          if (!res.ok) {
-            addLog(`  ✗ Training failed: ${res.status}`, 'error')
-            addLog(`╚══ ❌ Failed`, 'error')
-            continue
-          }
-
-          if (!res.body) {
-            addLog(`  ✗ No response body`, 'error')
-            addLog(`╚══ ❌ Failed`, 'error')
+          if (!res.ok || !res.body) {
+            const msg = await errorMessage(res, "Training request failed")
+            addLog(msg, "error")
             continue
           }
 
@@ -208,8 +269,6 @@ export default function TemplatesPage() {
             const { value, done } = await reader.read()
             if (done) break
             buffer += decoder.decode(value, { stream: true })
-
-            // Parse SSE events from buffer
             const lines = buffer.split("\n")
             buffer = lines.pop() || ""
 
@@ -217,148 +276,89 @@ export default function TemplatesPage() {
               if (!line.startsWith("data: ")) continue
               try {
                 const step = JSON.parse(line.slice(6))
-                const s = step.step
-                const m = step.msg
+                const s: string = step.step
+                const m: string = step.msg
 
-                if (s === "extract_start") addLog(`  📋 ${m}`, 'processing')
-                else if (s === "extract") {
-                  addLog(`  📋 ${m}`, 'success')
-                  if (step.fields?.length > 0)
-                    addLog(`    Fields: ${step.fields.slice(0, 8).join(', ')}${step.fields.length > 8 ? '...' : ''}`, 'info')
+                // Drive the visual pipeline…
+                setSteps((prev) => applyStepEvent(prev, s, m))
+
+                // …and keep the full transcript for the detail underneath.
+                if (s === "done") {
+                  templateDone = true
+                } else if (s === "error" || s?.endsWith("_warn")) {
+                  addLog(m, "error")
+                } else if (s?.endsWith("_start")) {
+                  addLog(m, "processing")
+                } else if (s === "extract") {
+                  addLog(m, "success")
+                  if (step.fields?.length > 0) {
+                    addLog(`Fields: ${step.fields.slice(0, 8).join(", ")}${step.fields.length > 8 ? "…" : ""}`, "info")
+                  }
+                } else if (s === "ai_analysis") {
+                  addLog(m, "ai")
+                  if (step.purpose) addLog(`Purpose: ${step.purpose}`, "success")
+                  if (step.legal_refs?.length > 0) addLog(`Legal: ${step.legal_refs.join(", ")}`, "info")
+                  if (step.required > 0) addLog(`Required fields: ${step.required}`, "info")
+                  if (step.optional > 0) addLog(`Optional fields: ${step.optional}`, "info")
+                } else if (s === "classify") {
+                  addLog(m, "ai")
+                  if (step.db_fields) addLog(`Auto-fill (${step.db_fields.length}): ${step.db_fields.join(", ")}`, "success")
+                  if (step.user_input_fields) {
+                    addLog(`User input (${step.user_input_fields.length}): ${step.user_input_fields.join(", ")}`, "ai")
+                  }
+                } else if (s === "field_detail") {
+                  addLog(
+                    `${step.field} (${step.detail?.data_type || "text"}) ${step.detail?.required ? "required" : "optional"}`,
+                    "ai"
+                  )
+                } else if (s === "field_found") {
+                  addLog(step.field, "info")
+                } else {
+                  addLog(m, "success")
                 }
-                else if (s === "read_start") addLog(`  📄 ${m}`, 'processing')
-                else if (s === "read") addLog(`  📄 ${m}`, 'info')
-                else if (s === "ai_start") addLog(`  🧠 ${m}`, 'processing')
-                else if (s === "ai_done") addLog(`  🧠 ${m}`, 'success')
-                else if (s === "ai_warn") addLog(`  ⚠ ${m}`, 'error')
-                else if (s === "ai_analysis") {
-                  addLog(`  🧠 ${m}`, 'ai')
-                  if (step.purpose) addLog(`    📌 Purpose: ${step.purpose}`, 'success')
-                  if (step.legal_refs?.length > 0) addLog(`    📜 Legal: ${step.legal_refs.join(', ')}`, 'info')
-                  if (step.required > 0) addLog(`    🔴 Required fields: ${step.required}`, 'info')
-                  if (step.optional > 0) addLog(`    🟢 Optional fields: ${step.optional}`, 'info')
-                }
-                else if (s === "save_start") addLog(`  💾 ${m}`, 'processing')
-                else if (s === "save_warn") addLog(`  ⚠ ${m}`, 'error')
-                else if (s === "metadata") addLog(`  ✓ ${m}`, 'success')
-                else if (s === "classify_start") addLog(`  🤖 ${m}`, 'processing')
-                else if (s === "classify") {
-                  addLog(`  🤖 ${m}`, 'ai')
-                  if (step.db_fields) addLog(`    Auto-fill (${step.db_fields.length}): ${step.db_fields.join(', ')}`, 'success')
-                  if (step.user_input_fields) addLog(`    User input (${step.user_input_fields.length}): ${step.user_input_fields.join(', ')}`, 'ai')
-                }
-                else if (s === "classify_warn") addLog(`  ⚠ ${m}`, 'error')
-                else if (s === "kb_start") addLog(`  💾 ${m}`, 'processing')
-                else if (s === "knowledge") addLog(`  💾 ${m}`, 'success')
-                else if (s === "kb_warn") addLog(`  ⚠ ${m}`, 'error')
-                else if (s === "embed_start") addLog(`  🔢 ${m}`, 'processing')
-                else if (s === "embedding") addLog(`  🔢 ${m}`, 'success')
-                else if (s === "embed_skip" || s === "embed_warn") addLog(`  ⚠ ${m}`, 'processing')
-                else if (s === "pdf_start") addLog(`  📄 ${m}`, 'processing')
-                else if (s === "pdf") addLog(`  📄 ${m}`, 'success')
-                else if (s === "pdf_warn") addLog(`  ⚠ ${m}`, 'processing')
-
-                // Per-field discovery (enhanced Step 1)
-                else if (s === "field_found") addLog(`    → ${step.field}`, 'info')
-
-                // Step 5.5: Field mapping
-                else if (s === "mapping_start") addLog(`  🗺 ${m}`, 'processing')
-                else if (s === "mapping") addLog(`  🗺 ${m}`, 'success')
-                else if (s === "mapping_warn") addLog(`  ⚠ ${m}`, 'error')
-
-                // Step 9: Field deep analysis
-                else if (s === "field_deep_start") addLog(`  🔬 ${m}`, 'processing')
-                else if (s === "field_detail") addLog(`    → ${step.field} (${step.detail?.data_type || 'text'}) ${step.detail?.required ? '● required' : '○ optional'}`, 'ai')
-                else if (s === "field_deep") addLog(`  🔬 ${m}`, 'success')
-                else if (s === "field_deep_warn") addLog(`  ⚠ ${m}`, 'error')
-
-                // Step 10: Legal references
-                else if (s === "legal_ref_start") addLog(`  ⚖ ${m}`, 'processing')
-                else if (s === "legal_ref") addLog(`  ⚖ ${m}`, 'success')
-                else if (s === "legal_ref_warn") addLog(`  ⚠ ${m}`, 'error')
-
-                // Step 11: Sample filled document
-                else if (s === "sample_start") addLog(`  📝 ${m}`, 'processing')
-                else if (s === "sample") addLog(`  📝 ${m}`, 'success')
-                else if (s === "sample_warn") addLog(`  ⚠ ${m}`, 'error')
-
-                // Step 12: Document workflow
-                else if (s === "workflow_start") addLog(`  🔄 ${m}`, 'processing')
-                else if (s === "workflow") addLog(`  🔄 ${m}`, 'success')
-                else if (s === "workflow_warn") addLog(`  ⚠ ${m}`, 'error')
-
-                // Step 13: Q&A pairs
-                else if (s === "qa_start") addLog(`  ❓ ${m}`, 'processing')
-                else if (s === "qa") addLog(`  ❓ ${m}`, 'success')
-                else if (s === "qa_warn") addLog(`  ⚠ ${m}`, 'error')
-
-                // Step 14: Cross-template relationships
-                else if (s === "cross_ref_start") addLog(`  🔗 ${m}`, 'processing')
-                else if (s === "cross_ref") addLog(`  🔗 ${m}`, 'success')
-                else if (s === "cross_ref_warn") addLog(`  ⚠ ${m}`, 'error')
-
-                // Step 15: Confidence scoring
-                else if (s === "confidence_start") addLog(`  📊 ${m}`, 'processing')
-                else if (s === "confidence") addLog(`  📊 ${m}`, 'success')
-                else if (s === "confidence_warn") addLog(`  ⚠ ${m}`, 'error')
-
-                else if (s === "done") templateDone = true
-                else if (s === "error") addLog(`  ✗ ${m}`, 'error')
-                else addLog(`  ${m}`, 'info')
-              } catch (e) { console.error("SSE parse error:", e) }
+              } catch (e) {
+                console.error("SSE parse error:", e)
+              }
             }
           }
 
           if (templateDone) {
             successCount++
-            addLog(`╚══ ✅ Done`, 'success')
+            addLog(`${t.name} — done`, "success")
           } else {
-            addLog(`╚══ ❌ Failed`, 'error')
+            addLog(`${t.name} — failed`, "error")
           }
-        } catch (e) {
-          addLog(`  ✗ Connection error`, 'error')
-          addLog(`╚══ ❌ Failed`, 'error')
+        } catch (e: any) {
+          if (e?.name === "AbortError") throw e
+          console.error("Template training error:", e)
+          addLog(`${t.name} — connection error`, "error")
         }
       }
 
-      // Refresh agent knowledge
-      addLog("", 'info')
-      addLog("Refreshing agent knowledge...", 'processing')
+      addLog("Refreshing agent knowledge…", "processing")
       try {
         const dtRes = await authFetch(`${API_BASE}/api/knowledge/deep-train`, { method: "POST" })
-        if (!dtRes.ok) throw new Error(`Deep train failed: ${dtRes.status}`)
-      } catch (e) { console.error("Deep train error:", e) }
-      addLog("✓ Agent knowledge updated", 'success')
+        await ensureOk(dtRes, "Deep train failed")
+        addLog("Agent knowledge updated", "success")
+      } catch (e: any) {
+        console.error("Deep train error:", e)
+        addLog(e?.message || "Agent knowledge refresh failed", "error")
+      }
 
-      // Summary
-      addLog("", 'info')
-      addLog("━".repeat(55), 'success')
-      addLog("✅ TRAINING COMPLETE — Deep Training (15 Steps)", 'success')
-      addLog("━".repeat(55), 'success')
-      addLog("", 'info')
-      addLog("  📋 Templates trained:        " + `${successCount}/${toTrain.length}${skipped > 0 ? ` (${skipped} skipped)` : ''}`, 'success')
-      addLog("  🤖 AI model:                 Configured model (via OpenRouter)", 'ai')
-      addLog("  🔬 Field deep analysis:      Complete", 'success')
-      addLog("  ⚖  Legal references:         Myanmar Companies Law 2017", 'success')
-      addLog("  📝 Sample documents:         Generated", 'success')
-      addLog("  🔄 Document workflows:       Mapped", 'success')
-      addLog("  ❓ Q&A pairs:                Generated for knowledge base", 'success')
-      addLog("  🔗 Cross-template links:     Mapped", 'success')
-      addLog("  📊 Confidence scores:        Calculated", 'success')
-      addLog("  📄 PDF previews:             Generated (placeholders highlighted)", 'success')
-      addLog("  🧠 Agent knowledge:          Refreshed", 'success')
-      addLog("", 'info')
-      addLog("━".repeat(55), 'success')
-      
+      addLog(
+        `Training complete — ${successCount}/${toTrain.length} template(s)${skipped > 0 ? `, ${skipped} skipped` : ""}`,
+        "success"
+      )
+
       setTrainingComplete(true)
       setTrainingStale(false)
       setLastTrained(new Date().toLocaleString())
       await fetchTemplates()
-      
-    } catch (error) {
-      console.error("Process error:", error)
-      addLog("", 'error')
-      addLog("✗ ERROR: Training failed", 'error')
+    } catch (e: any) {
+      if (e?.name !== "AbortError") {
+        console.error("Process error:", e)
+        addLog("Training failed", "error")
+      }
     } finally {
       abortControllerRef.current = null
       setIsTraining(false)
@@ -366,30 +366,28 @@ export default function TemplatesPage() {
   }
 
   const stopTraining = () => {
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort()
-      abortControllerRef.current = null
-    }
+    abortControllerRef.current?.abort()
+    abortControllerRef.current = null
     setIsTraining(false)
-    addLog("", 'error')
-    addLog("⚠️ TRAINING STOPPED BY USER", 'error')
+    addLog("Training stopped by the operator", "error")
   }
 
-  const deleteTemplate = async () => {
-    if (!showDeleteModal) return
+  const deleteTemplate = async (template: Template) => {
     try {
-      const res = await authFetch(apiClient.deleteTemplate(showDeleteModal.name), { method: "DELETE" })
-      if (!res.ok) throw new Error(`Request failed: ${res.status}`)
+      const res = await authFetch(apiClient.deleteTemplate(template.name), { method: "DELETE" })
+      if (!res.ok) throw new Error(await errorMessage(res, "Failed to delete template"))
+      await assertSuccess(res, "Failed to delete template")
       const data = await res.json()
       if (data.training_invalidated) {
         setTrainingStale(true)
         setTrainingComplete(false)
       }
+      toast.success(`"${template.name}" deleted`)
+      if (selectedTemplate?.name === template.name) setSelectedTemplate(null)
       await fetchTemplates()
-    } catch (error) {
-      console.error("Failed to delete:", error)
-    } finally {
-      setShowDeleteModal(null)
+    } catch (e: any) {
+      console.error("Failed to delete:", e)
+      toast.error(e?.message || "Failed to delete template")
     }
   }
 
@@ -400,773 +398,849 @@ export default function TemplatesPage() {
     setUploading(true)
     try {
       for (const file of Array.from(files)) {
-        if (!file.name.endsWith(".doc") && !file.name.endsWith(".docx") && !file.name.endsWith(".pdf")) continue
+        if (!/\.(doc|docx|pdf)$/i.test(file.name)) {
+          toast.error(`${file.name} is not a .doc, .docx or .pdf file`)
+          continue
+        }
         const formData = new FormData()
         formData.append("file", file)
         const res = await authFetch(apiClient.uploadTemplate(), { method: "POST", body: formData })
-        if (!res.ok) throw new Error(`Upload failed: ${res.status}`)
+        if (!res.ok) throw new Error(await errorMessage(res, "Upload failed"))
         const data = await res.json()
         if (!data.success) {
           if (data.exists) {
-            setDuplicateError({
-              name: file.name,
-              error: data.error,
-              existing: data.existing_template,
-            })
+            setDuplicateError({ name: file.name, error: data.error, existing: data.existing_template })
           } else {
-            // Other error
-            const { toast } = await import("sonner")
             toast.error(data.error || "Upload failed")
           }
+        } else {
+          toast.success(`"${file.name}" uploaded — train it to make the agent aware of it`)
         }
       }
       await fetchTemplates()
-    } catch (error) {
-      console.error("Failed to upload:", error)
+    } catch (err: any) {
+      console.error("Failed to upload:", err)
+      toast.error(err?.message || "Failed to upload template")
     } finally {
       setUploading(false)
       if (fileInputRef.current) fileInputRef.current.value = ""
     }
   }
 
-  const getLogColor = (type: TerminalLine['type']) => {
-    switch (type) {
-      case 'success': return 'text-green-700'
-      case 'error': return 'text-red-700'
-      case 'processing': return 'text-yellow-700'
-      case 'ai': return 'text-purple-700'
-      default: return 'text-gray-300'
+  const deleteAllTemplates = async () => {
+    setDeletingAll(true)
+    try {
+      const res = await authFetch(`${process.env.NEXT_PUBLIC_API_URL || ""}/api/admin/reset/templates`, {
+        method: "POST",
+      })
+      if (!res.ok) throw new Error(await errorMessage(res, "Failed to delete templates"))
+      await assertSuccess(res, "Failed to delete templates")
+      toast.success("All templates deleted")
+      await fetchTemplates()
+      setShowDeleteAllModal(false)
+      setDeleteAllConfirm("")
+    } catch (e: any) {
+      console.error("Delete all error:", e)
+      toast.error(e?.message || "Failed to delete templates")
+    } finally {
+      setDeletingAll(false)
     }
   }
 
-  if (loading) {
+  const term = searchTerm.trim().toLowerCase()
+  const filtered = useMemo(
+    () =>
+      term
+        ? templates.filter(
+            (t) =>
+              t.name.toLowerCase().includes(term) ||
+              (t.category || "").toLowerCase().includes(term) ||
+              (t.keywords || "").toLowerCase().includes(term)
+          )
+        : templates,
+    [templates, term]
+  )
+
+  const stats = useMemo(() => {
+    const trained = templates.filter(isTrained)
+    const confidences = trained.map((t) => t.training_confidence || 0).filter((n) => n > 0)
+    const avg = confidences.length ? Math.round(confidences.reduce((a, b) => a + b, 0) / confidences.length) : 0
+    const lowConfidence = trained.filter((t) => (t.training_confidence || 0) > 0 && (t.training_confidence || 0) < 50).length
+    return { total: templates.length, trained: trained.length, untrained: untrained.length, avg, lowConfidence }
+  }, [templates, untrained])
+
+  if (loading) return <LoadingScreen label="Loading templates" />
+
+  const hiddenInput = (
+    <input
+      ref={fileInputRef}
+      type="file"
+      accept=".doc,.docx,.pdf"
+      multiple
+      onChange={handleUpload}
+      className="hidden"
+    />
+  )
+
+  // ── Training modal, available from either view ──
+  const trainingModal = (
+    <Modal
+      open={showLogModal}
+      onOpenChange={setShowLogModal}
+      size="lg"
+      title="Template training"
+      description="Fifteen steps per template. Each one is an AI or database stage that the agent later reads from."
+      footer={
+        <>
+          {isTraining ? (
+            <Button variant="danger" onClick={stopTraining} icon={<Square className="w-3.5 h-3.5" />}>
+              Stop training
+            </Button>
+          ) : (
+            <Button variant="ghost" onClick={() => setShowLogModal(false)}>
+              Close
+            </Button>
+          )}
+          <Button onClick={() => setShowTranscript((s) => !s)} icon={<Terminal className="w-3.5 h-3.5" />}>
+            {showTranscript ? "Hide transcript" : `Transcript (${terminalLogs.length})`}
+          </Button>
+        </>
+      }
+    >
+      {!isTraining && terminalLogs.length === 0 ? (
+        <p className="py-8 text-center text-[length:var(--text-sm)] text-[var(--text-muted)]">
+          No training run yet. Start training to watch the pipeline.
+        </p>
+      ) : (
+        <div className="space-y-3">
+          <TrainingProgress
+            steps={steps}
+            templateName={currentTemplate}
+            index={queuePos.index || undefined}
+            total={queuePos.total || undefined}
+            running={isTraining}
+          />
+
+          {showTranscript && (
+            <div
+              ref={terminalRef}
+              role="log"
+              aria-live="polite"
+              className="max-h-64 overflow-y-auto p-3 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-[var(--radius-sm)] font-[family-name:var(--font-mono)] text-[length:var(--text-2xs)] leading-5"
+            >
+              {terminalLogs.map((log) => (
+                <div key={log.id} className="flex gap-2">
+                  <span className="text-[var(--text-muted)] shrink-0 tabular-nums">{log.timestamp}</span>
+                  <span className={cn("whitespace-pre-wrap break-words", LINE_TONE[log.type])}>{log.text}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </Modal>
+  )
+
+  // ── Template detail ──
+  if (selectedTemplate) {
+    const t = selectedTemplate
+    const confidence = t.training_confidence || 0
+
+    let fields: any = t.fields
+    if (typeof fields === "string") {
+      try {
+        fields = JSON.parse(fields)
+      } catch {
+        fields = []
+      }
+    }
+    const classified = fields && !Array.isArray(fields) && fields?.db_fields
+    const dbFields: string[] = classified ? fields.db_fields || [] : []
+    const userFields: string[] = classified ? fields.user_input_fields || [] : []
+    const rawFields: any[] = Array.isArray(fields) ? fields : fields?.all_fields || []
+    const deepAnalysis = (t as any).field_deep_analysis || {}
+    const workflow = (t as any).document_workflow
+    const relations: any[] = (t as any).cross_template_relationships || []
+    const sample = (t as any).sample_filled_document || {}
+
     return (
-      <div className="flex items-center justify-center h-full">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
-      </div>
+      <>
+        {hiddenInput}
+        <Page>
+          <PageHeader
+            back={
+              <IconButton
+                aria-label="Back to templates"
+                onClick={() => setSelectedTemplate(null)}
+                icon={<ArrowLeft className="w-4 h-4" />}
+              />
+            }
+            title={t.name}
+            meta={
+              <>
+                {isTrained(t) ? (
+                  <Badge tone="ok" dot>
+                    Trained
+                  </Badge>
+                ) : (
+                  <Badge tone="warn" dot>
+                    Untrained
+                  </Badge>
+                )}
+                {confidence > 0 && <Badge tone={confidenceTone(confidence)}>{confidence}% confidence</Badge>}
+                <Badge tone="neutral">{t.total_fields || rawFields.length || 0} placeholders</Badge>
+              </>
+            }
+            actions={
+              <>
+                <Button
+                  onClick={() => window.open(apiClient.downloadTemplate(t.name), "_blank")}
+                  icon={<Download className="w-3.5 h-3.5" />}
+                >
+                  Download
+                </Button>
+                <Button variant="primary" onClick={() => window.open("/", "_blank")}>
+                  Generate document
+                </Button>
+              </>
+            }
+          />
+
+          <div className="flex flex-1 min-h-0 split-view-mobile">
+            <div className="w-1/2 flex flex-col min-w-0 border-r border-[var(--border)]">
+              <div className="flex items-center gap-2 px-4 py-2 border-b border-[var(--border)] bg-[var(--surface)]">
+                <Eye className="w-3.5 h-3.5 text-[var(--text-muted)]" />
+                <span className="text-[length:var(--text-xs)] font-medium text-[var(--text-secondary)]">
+                  Preview — placeholders highlighted
+                </span>
+              </div>
+              <DocViewer
+                url={`${apiClient.previewTemplatePdf(t.name)}?token=${
+                  typeof window !== "undefined" ? localStorage.getItem("ls_token") || "" : ""
+                }`}
+                forceFormat="pdf"
+                className="flex-1 w-full"
+              />
+            </div>
+
+            <div className="w-1/2 flex flex-col min-w-0 overflow-y-auto bg-[var(--bg-secondary)]">
+              <div className="p-4 space-y-3">
+                <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5">
+                  {[
+                    ["Category", t.category],
+                    ["Complexity", t.complexity],
+                    ["Est. time", t.estimated_time],
+                    ["Jurisdiction", t.jurisdiction],
+                  ].map(([label, value]) => (
+                    <div
+                      key={label as string}
+                      className="bg-[var(--surface)] border border-[var(--border)] rounded-[var(--radius-sm)] px-3 py-2 min-w-0"
+                    >
+                      <p className="text-[length:var(--text-2xs)] font-semibold uppercase tracking-[var(--tracking-tag)] text-[var(--text-muted)]">
+                        {label}
+                      </p>
+                      <p className="mt-0.5 text-[length:var(--text-sm)] text-[var(--text)] truncate">
+                        {(value as string) || "Not set"}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+
+                {confidence > 0 && (
+                  <Card title="Training confidence">
+                    <div className="flex items-center gap-3">
+                      <div className="flex-1 h-1.5 bg-[var(--bg-secondary)] overflow-hidden">
+                        <div
+                          className="h-full"
+                          style={{
+                            width: `${confidence}%`,
+                            background:
+                              confidence >= 80
+                                ? "var(--ok-strong)"
+                                : confidence >= 50
+                                  ? "var(--warn)"
+                                  : "var(--danger-strong)",
+                          }}
+                        />
+                      </div>
+                      <span className="font-[family-name:var(--font-display)] text-[length:var(--text-lg)] font-semibold tabular-nums text-[var(--text)]">
+                        {confidence}%
+                      </span>
+                    </div>
+                    <p className="mt-2 text-[length:var(--text-xs)] text-[var(--text-muted)]">
+                      Share of the fifteen training steps that completed cleanly for this template.
+                    </p>
+                  </Card>
+                )}
+
+                <Card title="Purpose">
+                  <p className="text-[length:var(--text-sm)] text-[var(--text)]">
+                    {t.purpose || t.description || "Not set"}
+                  </p>
+                  {t.when_to_use && (
+                    <>
+                      <p className="mt-3 text-[length:var(--text-2xs)] font-semibold uppercase tracking-[var(--tracking-tag)] text-[var(--text-muted)]">
+                        When to use
+                      </p>
+                      <p className="mt-0.5 text-[length:var(--text-sm)] text-[var(--text)]">{t.when_to_use}</p>
+                    </>
+                  )}
+                </Card>
+
+                {t.how_to_use && t.how_to_use.length > 0 && (
+                  <Card title="How to use">
+                    <ol className="space-y-1.5">
+                      {t.how_to_use.map((step: any, i: number) => (
+                        <li key={i} className="flex gap-2.5 text-[length:var(--text-sm)]">
+                          <span className="w-5 h-5 shrink-0 grid place-items-center bg-[var(--bg-secondary)] border border-[var(--border)] text-[length:var(--text-2xs)] tabular-nums text-[var(--text-secondary)]">
+                            {i + 1}
+                          </span>
+                          <span className="text-[var(--text)]">{step}</span>
+                        </li>
+                      ))}
+                    </ol>
+                  </Card>
+                )}
+
+                <Card title="Placeholders" meta={<Badge tone="neutral">{classified ? dbFields.length + userFields.length : rawFields.length}</Badge>}>
+                  {classified ? (
+                    <>
+                      <div className="flex flex-wrap gap-1.5">
+                        {dbFields.map((f, i) => (
+                          <Badge key={`db-${i}`} tone="ok" dot>
+                            {f}
+                          </Badge>
+                        ))}
+                        {userFields.map((f, i) => (
+                          <Badge key={`ui-${i}`} tone="accent" dot>
+                            {f}
+                          </Badge>
+                        ))}
+                      </div>
+                      <p className="mt-2.5 flex flex-wrap gap-x-4 gap-y-1 text-[length:var(--text-2xs)] text-[var(--text-muted)]">
+                        <span>Auto-filled from the database ({dbFields.length})</span>
+                        <span>Asked of the user ({userFields.length})</span>
+                      </p>
+
+                      {fields.field_descriptions && Object.keys(fields.field_descriptions).length > 0 && (
+                        <dl className="mt-3 pt-3 border-t border-[var(--border)] space-y-1">
+                          {Object.entries(fields.field_descriptions).map(([key, desc]: [string, any]) => (
+                            <div key={key} className="flex gap-2 text-[length:var(--text-xs)]">
+                              <dt className="font-medium text-[var(--text)] shrink-0 font-mono">{key}</dt>
+                              <dd className="text-[var(--text-muted)]">{desc}</dd>
+                            </div>
+                          ))}
+                        </dl>
+                      )}
+
+                      {fields.static_text_warnings?.length > 0 && (
+                        <div className="mt-3">
+                          <Notice tone="warn" title="Static text warnings">
+                            <ul className="mt-1 space-y-0.5">
+                              {fields.static_text_warnings.map((w: string, i: number) => (
+                                <li key={i}>{w}</li>
+                              ))}
+                            </ul>
+                          </Notice>
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      <p className="mb-2 text-[length:var(--text-xs)] text-[var(--text-muted)]">
+                        Not classified yet. Train this template to split placeholders into auto-filled and user-input.
+                      </p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {rawFields.map((f: any, i: number) => (
+                          <Badge key={i} tone="neutral">
+                            {typeof f === "string" ? f : f.name || JSON.stringify(f)}
+                          </Badge>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </Card>
+
+                {Object.keys(deepAnalysis).length > 0 && (
+                  <Card title="Field analysis" padded={false}>
+                    <DataTable
+                      maxHeight="16rem"
+                      className="border-0 rounded-none"
+                      rows={Object.entries(deepAnalysis).map(([name, info]: [string, any]) => ({ name, ...info }))}
+                      rowKey={(r: any) => r.name}
+                      columns={[
+                        { key: "name", header: "Field", render: (r: any) => <span className="font-mono">{r.name}</span> },
+                        { key: "data_type", header: "Type", render: (r: any) => r.data_type || "—" },
+                        { key: "format", header: "Format", hideBelow: "sm", render: (r: any) => r.format || "—" },
+                        {
+                          key: "required",
+                          header: "Required",
+                          align: "right",
+                          render: (r: any) =>
+                            r.required ? <Badge tone="danger">Required</Badge> : <Badge tone="neutral">Optional</Badge>,
+                        },
+                      ]}
+                    />
+                  </Card>
+                )}
+
+                {(t.prerequisites?.length || t.required_attachments?.length || t.approval_chain?.length) ? (
+                  <Card title="Before you file">
+                    <div className="space-y-3">
+                      {t.prerequisites && t.prerequisites.length > 0 && (
+                        <div>
+                          <p className="mb-1.5 text-[length:var(--text-2xs)] font-semibold uppercase tracking-[var(--tracking-tag)] text-[var(--text-muted)]">
+                            Prerequisites
+                          </p>
+                          <ChipList items={t.prerequisites} tone="warn" />
+                        </div>
+                      )}
+                      {t.required_attachments && t.required_attachments.length > 0 && (
+                        <div>
+                          <p className="mb-1.5 text-[length:var(--text-2xs)] font-semibold uppercase tracking-[var(--tracking-tag)] text-[var(--text-muted)]">
+                            Required attachments
+                          </p>
+                          <ChipList items={t.required_attachments} tone="ok" />
+                        </div>
+                      )}
+                      {t.approval_chain && t.approval_chain.length > 0 && (
+                        <div>
+                          <p className="mb-1.5 text-[length:var(--text-2xs)] font-semibold uppercase tracking-[var(--tracking-tag)] text-[var(--text-muted)]">
+                            Approval chain
+                          </p>
+                          <ChipList items={t.approval_chain} tone="info" />
+                        </div>
+                      )}
+                    </div>
+                  </Card>
+                ) : null}
+
+                <Card title="Filing">
+                  <DetailList
+                    items={[
+                      ["Filing deadline", t.filing_deadline || "Not set"],
+                      ["Fees", t.fees || "Not set"],
+                      ["Validity period", t.validity_period || "Not set"],
+                      ["Keywords", t.keywords || "Not set"],
+                    ]}
+                  />
+                </Card>
+
+                {t.common_mistakes && t.common_mistakes.length > 0 && (
+                  <Notice tone="danger" title="Common mistakes">
+                    <ul className="mt-1 space-y-0.5">
+                      {t.common_mistakes.map((m: any, i: number) => (
+                        <li key={i}>{m}</li>
+                      ))}
+                    </ul>
+                  </Notice>
+                )}
+
+                {workflow && (
+                  <Card title="Document workflow">
+                    {workflow.trigger && (
+                      <p className="mb-2 text-[length:var(--text-xs)] text-[var(--text-muted)]">
+                        Trigger: {workflow.trigger}
+                      </p>
+                    )}
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      {(workflow.before || []).map((d: string, i: number) => (
+                        <Badge key={`b${i}`} tone="info">
+                          {d}
+                        </Badge>
+                      ))}
+                      {(workflow.before || []).length > 0 && <span className="text-[var(--text-muted)]">→</span>}
+                      <Badge tone="accent" solid>
+                        {t.name.replace(".docx", "")}
+                      </Badge>
+                      {(workflow.after || []).length > 0 && <span className="text-[var(--text-muted)]">→</span>}
+                      {(workflow.after || []).map((d: string, i: number) => (
+                        <Badge key={`a${i}`} tone="ok">
+                          {d}
+                        </Badge>
+                      ))}
+                    </div>
+                  </Card>
+                )}
+
+                {relations.length > 0 && (
+                  <Card title="Related templates">
+                    <ul className="space-y-1.5">
+                      {relations.map((rel: any, i: number) => (
+                        <li key={i} className="flex items-center gap-2 text-[length:var(--text-xs)] flex-wrap">
+                          <Badge
+                            tone={
+                              rel.relationship === "prerequisite"
+                                ? "info"
+                                : rel.relationship === "follow_up"
+                                  ? "ok"
+                                  : rel.relationship === "alternative"
+                                    ? "warn"
+                                    : "neutral"
+                            }
+                          >
+                            {rel.relationship}
+                          </Badge>
+                          <span className="font-medium text-[var(--text)]">{rel.template}</span>
+                          <span className="text-[var(--text-muted)]">{rel.description}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </Card>
+                )}
+
+                {Object.keys(sample).length > 0 && (
+                  <Card title="Sample values" meta={<Badge tone="neutral">AI generated</Badge>}>
+                    <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1">
+                      {Object.entries(sample)
+                        .slice(0, 12)
+                        .map(([key, val]: [string, any]) => (
+                          <div key={key} className="flex gap-2 text-[length:var(--text-xs)] min-w-0">
+                            <dt className="text-[var(--text-muted)] font-mono shrink-0">{key}</dt>
+                            <dd className="text-[var(--text)] truncate">{String(val)}</dd>
+                          </div>
+                        ))}
+                    </dl>
+                  </Card>
+                )}
+              </div>
+            </div>
+          </div>
+        </Page>
+        {trainingModal}
+      </>
     )
   }
 
+  // ── List ──
+  const columns: Column<Template>[] = [
+    {
+      key: "name",
+      header: "Template",
+      sortValue: (t) => t.name,
+      render: (t) => (
+        <div className="flex items-center gap-2.5 min-w-0">
+          <span className="w-7 h-7 shrink-0 grid place-items-center bg-[var(--bg-secondary)] border border-[var(--border)] rounded-[var(--radius-sm)]">
+            <FileText className="w-3.5 h-3.5 text-[var(--text-muted)]" />
+          </span>
+          <span className="min-w-0">
+            <span className="block font-medium text-[var(--text)] truncate max-w-[280px]">{t.name}</span>
+            {t.category && (
+              <span className="block text-[length:var(--text-2xs)] text-[var(--text-muted)]">{t.category}</span>
+            )}
+          </span>
+        </div>
+      ),
+    },
+    {
+      key: "total_fields",
+      header: "Placeholders",
+      numeric: true,
+      sortValue: (t) => t.total_fields || 0,
+      render: (t) => t.total_fields || t.fields?.length || 0,
+    },
+    {
+      key: "status",
+      header: "Status",
+      sortValue: (t) => (isTrained(t) ? 1 : 0),
+      render: (t) =>
+        isTrained(t) ? (
+          <Badge tone="ok" dot>
+            Trained
+          </Badge>
+        ) : (
+          <Badge tone="warn" dot>
+            Untrained
+          </Badge>
+        ),
+    },
+    {
+      key: "training_confidence",
+      header: "Confidence",
+      align: "right",
+      sortValue: (t) => t.training_confidence || null,
+      render: (t) =>
+        t.training_confidence ? (
+          <Badge tone={confidenceTone(t.training_confidence)}>{t.training_confidence}%</Badge>
+        ) : (
+          <span className="text-[var(--text-muted)]">—</span>
+        ),
+    },
+    {
+      key: "uploaded_by_email",
+      header: "Uploaded by",
+      hideBelow: "lg",
+      sortValue: (t) => t.uploaded_by_email,
+      render: (t) => t.uploaded_by_email || "—",
+    },
+    {
+      key: "actions",
+      header: "",
+      align: "right",
+      width: "1%",
+      stopClickPropagation: true,
+      render: (t) => (
+        <ConfirmButton
+          compact
+          label={`Delete ${t.name}`}
+          icon={<Trash2 className="w-3.5 h-3.5" />}
+          onConfirm={() => deleteTemplate(t)}
+        />
+      ),
+    },
+  ]
+
   return (
-    <div className="flex flex-col h-full">
-      <input ref={fileInputRef} type="file" accept=".doc,.docx,.pdf" multiple onChange={handleUpload} className="hidden" />
-
-      <div className="flex items-center justify-between p-4 border-b border-gray-400 dark:border-primary/10 bg-card">
-        <div className="flex items-center gap-4">
-          <h1 className="text-lg font-semibold text-primary">Templates</h1>
-          <span className="text-xs text-muted bg-accent rounded-full px-2 py-0.5">{templates.length}</span>
-          {isTraining && (
-            <div className="flex items-center gap-2 px-3 py-1.5 bg-orange-500/10 rounded-lg">
-              <Loader2 className="w-4 h-4 animate-spin text-orange-500" />
-              <span className="text-xs text-orange-500">Training in progress...</span>
-            </div>
-          )}
-          {trainingComplete && (
-            <div className="flex items-center gap-2 px-3 py-1.5 bg-green-500/10 rounded-lg">
-              <CheckCircle className="w-4 h-4 text-green-500" />
-              <span className="text-xs text-green-500">Training Complete!</span>
-            </div>
-          )}
-        </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => setShowLogModal(true)}
-            className="flex items-center gap-2 px-3 py-2 text-xs font-medium border border-gray-400 dark:border-primary/10 rounded-lg hover:bg-accent"
-          >
-            <Terminal className="w-4 h-4" />
-            {isTraining ? 'View Progress' : trainingComplete ? 'View Last Training' : 'Training Logs'}
-            {isTraining && <span className="w-2 h-2 bg-orange-500 rounded-full animate-pulse"></span>}
-          </button>
-          <button
-            onClick={() => startTraining(false)}
-            disabled={isTraining || templates.length === 0}
-            className="flex items-center gap-2 px-4 py-2 text-xs font-medium bg-gradient-to-r from-orange-500 to-red-600 text-white rounded-lg hover:from-orange-600 hover:to-red-700 disabled:opacity-50"
-          >
-            <Sparkles className={`w-4 h-4 ${isTraining ? "animate-spin" : ""}`} />
-            {isTraining ? "Training..." : templates.some(t => !t.ai_trained && !t.ai_analyzed) ? `Train New (${templates.filter(t => !t.ai_trained && !t.ai_analyzed).length})` : "Start Training"}
-          </button>
-          <button
-            onClick={() => setShowDeleteAllModal(true)}
-            disabled={isTraining || templates.length === 0}
-            className="flex items-center gap-2 px-3 py-2 text-xs font-medium text-red-600 border border-red-300 rounded-lg hover:bg-red-50 disabled:opacity-50"
-            title="Delete all templates"
-          >
-            <Trash2 className="w-3.5 h-3.5" />
-          </button>
-          <button
-            onClick={() => fileInputRef.current?.click()}
-            disabled={uploading}
-            className="flex items-center gap-2 px-4 py-2 text-xs font-medium bg-primary text-white rounded-lg hover:bg-primary/80 disabled:opacity-50"
-          >
-            <Upload className="w-4 h-4" />
-            {uploading ? "Uploading..." : "Upload"}
-          </button>
-        </div>
-      </div>
-
-      {!selectedTemplate && trainingStale && (
-        <div className="px-4 py-2.5 bg-amber-500/10 border-b border-amber-500/20 text-xs text-amber-700 flex items-center justify-between">
-          <span>⚠ Training is outdated — templates or companies have changed. Re-training required for AI to use latest data.</span>
-          <button onClick={() => startTraining(true)}
-            className="px-3 py-1 text-xs font-medium bg-amber-600 text-white rounded-lg hover:bg-amber-700 shrink-0 ml-3">
-            Retrain Now
-          </button>
-        </div>
-      )}
-      {!selectedTemplate && lastTrained && !trainingStale && (
-        <div className="px-4 py-2 bg-green-500/10 border-b border-green-500/20 text-xs text-green-700">
-          ✓ Last trained: {lastTrained}
-        </div>
-      )}
-
-      {!selectedTemplate && error && <div className="px-4 py-2 bg-red-500/10 text-red-500 text-sm">{error}</div>}
-
-      {!selectedTemplate && <div className="flex-1 overflow-auto p-4">
-        <div className="space-y-3">
-          <div className="flex justify-between items-center">
-            <h2 className="text-sm font-semibold">All Templates ({templates.length})</h2>
-          </div>
-
-          <div className="border border-gray-400 dark:border-primary/10 bg-card rounded-xl overflow-hidden">
-            <table className="w-full">
-              <thead>
-                <tr className="border-b border-gray-400 dark:border-primary/10">
-                  <th className="text-left px-4 py-3 text-xs font-medium text-muted">Template Name</th>
-                  <th className="text-left px-4 py-3 text-xs font-medium text-muted">Placeholders</th>
-                  <th className="text-left px-4 py-3 text-xs font-medium text-muted">Status</th>
-                  <th className="text-left px-4 py-3 text-xs font-medium text-muted">Uploaded By</th>
-                  <th className="text-left px-4 py-3 text-xs font-medium text-muted">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {templates.map((template) => (
-                  <tr
-                    key={template.name}
-                    className="border-b border-gray-400 dark:border-primary/10 last:border-0 hover:bg-accent/30 cursor-pointer"
-                    onClick={() => handleSelectTemplate(template)}
-                  >
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-3">
-                        <div className="p-2 bg-primary/10 rounded-lg"><FileText className="w-4 h-4 text-primary" /></div>
-                        <span className="text-sm font-medium">{template.name}</span>
-                      </div>
-                    </td>
-                    <td className="px-4 py-3">
-                      <span className="text-xs px-2 py-1 bg-green-500/10 text-green-700 rounded">
-                        {template.total_fields || template.fields?.length || 0}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-2">
-                      {template.ai_trained || template.ai_analyzed ? (
-                        <span className="text-xs px-2 py-1 bg-emerald-500/10 text-emerald-700 rounded-full flex items-center gap-1 w-fit">
-                          <CheckCircle className="w-3 h-3" /> Trained
-                        </span>
-                      ) : (
-                        <span className="text-xs px-2 py-1 bg-yellow-500/10 text-yellow-700 rounded-full w-fit">
-                          Untrained
-                        </span>
-                      )}
-                      {(template as any).training_confidence > 0 && (
-                        <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
-                          (template as any).training_confidence >= 80 ? 'bg-green-500/20 text-green-700' :
-                          (template as any).training_confidence >= 50 ? 'bg-yellow-500/20 text-yellow-700' :
-                          'bg-red-500/20 text-red-700'
-                        }`}>
-                          {(template as any).training_confidence}%
-                        </span>
-                      )}
-                      </div>
-                    </td>
-                    <td className="px-4 py-3">
-                      <span className="text-xs text-gray-500">{template.uploaded_by_email || "—"}</span>
-                    </td>
-                    <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
-                      <button onClick={() => setShowDeleteModal(template)} className="p-1.5 text-muted hover:text-red-700 hover:bg-red-500/10 rounded-lg" title="Delete">
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-                {templates.length === 0 && (
-                  <tr>
-                    <td colSpan={5} className="px-4 py-12 text-center text-muted">
-                      <FileText className="w-10 h-10 mx-auto mb-3 opacity-50" />
-                      <p className="text-sm">No templates available</p>
-                      <button onClick={() => fileInputRef.current?.click()} className="text-xs hover:underline mt-2">Upload a template</button>
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </div>}
-
-          {/* Template Details — Split View */}
-          {selectedTemplate && (
-            <div className="flex flex-col h-[calc(100vh-60px)]">
-              {/* Header */}
-              <div className="flex items-center justify-between p-4 border-b border-gray-300 bg-card shrink-0">
-                <div className="flex items-center gap-3">
-                  <button onClick={() => setSelectedTemplate(null)} className="p-1.5 rounded-lg hover:bg-accent text-muted hover:text-primary">
-                    <X className="w-4 h-4" />
-                  </button>
-                  <FileText className="w-5 h-5 text-brand" />
-                  <h3 className="text-sm font-semibold text-primary truncate max-w-[400px]">{selectedTemplate.name}</h3>
-                </div>
-                <div className="flex items-center gap-2">
-                  <a href={apiClient.downloadTemplate(selectedTemplate.name)} download
-                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-primary text-white rounded-lg hover:bg-primary/80">
-                    <Download className="w-3.5 h-3.5" /> Download
-                  </a>
-                  <button onClick={() => window.open('/', '_blank')}
-                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-gradient-to-r from-orange-500 to-red-600 text-white rounded-lg hover:from-orange-600 hover:to-red-700">
-                    Generate Document
-                  </button>
-                </div>
-              </div>
-
-              {/* Split View */}
-              <div className="flex flex-1 overflow-hidden">
-                {/* Left — PDF Preview */}
-                <div className="w-1/2 flex flex-col border-r border-gray-300">
-                  <div className="flex items-center gap-2 px-4 py-2.5 border-b border-gray-200 bg-gray-50 shrink-0">
-                    <Eye className="w-4 h-4 text-brand" />
-                    <span className="text-xs font-semibold text-gray-700">Document Preview</span>
-                  </div>
-                  <DocViewer
-                    url={`${apiClient.previewTemplatePdf(selectedTemplate.name)}?token=${typeof window !== 'undefined' ? (localStorage.getItem('ls_token') || '') : ''}`}
-                    forceFormat="pdf"
-                    className="flex-1 w-full"
-                  />
-                </div>
-
-                {/* Right — Metadata */}
-                <div className="w-1/2 flex flex-col">
-                  <div className="flex items-center gap-2 px-4 py-2.5 border-b border-gray-200 bg-gray-50 shrink-0">
-                    <FileText className="w-4 h-4 text-brand" />
-                    <span className="text-xs font-semibold text-gray-700">Template Details</span>
-                  </div>
-                  <div className="flex-1 overflow-auto p-6">
-                    <div className="space-y-6">
-                    {/* Basic Info */}
-                    <div className="grid grid-cols-4 gap-4">
-                      <div className="p-4 bg-muted/20 rounded-lg">
-                        <h4 className="text-xs font-semibold text-gray-500 mb-1">Category</h4>
-                        <p className="text-sm text-gray-900">{selectedTemplate.category || 'Not set'}</p>
-                      </div>
-                      <div className="p-4 bg-muted/20 rounded-lg">
-                        <h4 className="text-xs font-semibold text-gray-500 mb-1">Complexity</h4>
-                        <p className="text-sm text-gray-900">{selectedTemplate.complexity || 'Not set'}</p>
-                      </div>
-                      <div className="p-4 bg-muted/20 rounded-lg">
-                        <h4 className="text-xs font-semibold text-gray-500 mb-1">Est. Time</h4>
-                        <p className="text-sm text-gray-900">{selectedTemplate.estimated_time || 'Not set'}</p>
-                      </div>
-                      <div className="p-4 bg-muted/20 rounded-lg">
-                        <h4 className="text-xs font-semibold text-gray-500 mb-1">Jurisdiction</h4>
-                        <p className="text-sm text-gray-900">{selectedTemplate.jurisdiction || 'Not set'}</p>
-                      </div>
-                    </div>
-                    
-                    {/* Purpose */}
-                    <div className="p-4 bg-blue-500/10 border border-blue-500/20 rounded-lg">
-                      <h4 className="text-xs font-medium text-blue-700 mb-2">Purpose</h4>
-                      <p className="text-sm text-gray-900">{selectedTemplate.purpose || selectedTemplate.description || 'Not set'}</p>
-                    </div>
-                    
-                    {/* When to Use */}
-                    <div>
-                      <h4 className="text-xs font-semibold text-gray-500 mb-2">When to Use</h4>
-                      <p className="text-sm text-gray-900">{selectedTemplate.when_to_use || 'Not set'}</p>
-                    </div>
-                    
-                    {/* How to Use - Step by Step */}
-                    {selectedTemplate.how_to_use && selectedTemplate.how_to_use.length > 0 && (
-                      <div>
-                        <h4 className="text-xs font-semibold text-gray-500 mb-2">How to Use (Step by Step)</h4>
-                        <div className="space-y-2">
-                          {selectedTemplate.how_to_use.map((step: any, idx: number) => (
-                            <div key={idx} className="flex gap-3 text-sm">
-                              <span className="text-orange-700 font-medium">{idx + 1}.</span>
-                              <span className="text-gray-900">{step}</span>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                    
-                    {/* Prerequisites */}
-                    {selectedTemplate.prerequisites && selectedTemplate.prerequisites.length > 0 && (
-                      <div>
-                        <h4 className="text-xs font-semibold text-gray-500 mb-2">Prerequisites</h4>
-                        <div className="flex flex-wrap gap-2">
-                          {selectedTemplate.prerequisites.map((item: any, idx: number) => (
-                            <span key={idx} className="px-3 py-1 text-xs bg-yellow-500/10 text-yellow-700 rounded-lg border border-yellow-500/20">
-                              {item}
-                            </span>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                    
-                    {/* Signatures & Approval Chain */}
-                    {selectedTemplate.approval_chain && selectedTemplate.approval_chain.length > 0 && (
-                      <div>
-                        <h4 className="text-xs font-semibold text-gray-500 mb-2">Approval Chain</h4>
-                        <div className="flex flex-wrap gap-2">
-                          {selectedTemplate.approval_chain.map((item: any, idx: number) => (
-                            <span key={idx} className="px-3 py-1 text-xs bg-purple-500/10 text-purple-700 rounded-lg border border-purple-500/20">
-                              {typeof item === 'string' ? item : item.name || JSON.stringify(item)}
-                            </span>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                    
-                    {/* Filing Deadline & Fees */}
-                    <div className="grid grid-cols-2 gap-4">
-                      <div className="p-4 bg-muted/20 rounded-lg">
-                        <h4 className="text-xs font-semibold text-gray-500 mb-1">Filing Deadline</h4>
-                        <p className="text-sm text-gray-900">{selectedTemplate.filing_deadline || 'Not set'}</p>
-                      </div>
-                      <div className="p-4 bg-muted/20 rounded-lg">
-                        <h4 className="text-xs font-semibold text-gray-500 mb-1">Fees</h4>
-                        <p className="text-sm text-gray-900">{selectedTemplate.fees || 'Not set'}</p>
-                      </div>
-                    </div>
-                    
-                    {/* Validity Period */}
-                    <div>
-                      <h4 className="text-xs font-semibold text-gray-500 mb-2">Validity Period</h4>
-                      <p className="text-sm text-gray-900">{selectedTemplate.validity_period || 'Not set'}</p>
-                    </div>
-                    
-                    {/* Common Mistakes */}
-                    {selectedTemplate.common_mistakes && selectedTemplate.common_mistakes.length > 0 && (
-                      <div className="p-4 bg-red-500/10 border border-red-500/20 rounded-lg">
-                        <h4 className="text-xs font-medium text-red-700 mb-2">Common Mistakes to Avoid</h4>
-                        <ul className="space-y-1">
-                          {selectedTemplate.common_mistakes.map((mistake: any, idx: number) => (
-                            <li key={idx} className="text-sm text-primary flex gap-2">
-                              <span className="text-red-700">•</span>
-                              {mistake}
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-                    
-                    {/* Required Attachments */}
-                    {selectedTemplate.required_attachments && selectedTemplate.required_attachments.length > 0 && (
-                      <div>
-                        <h4 className="text-xs font-semibold text-gray-500 mb-2">Required Attachments</h4>
-                        <div className="flex flex-wrap gap-2">
-                          {selectedTemplate.required_attachments.map((item: any, idx: number) => (
-                            <span key={idx} className="px-3 py-1 text-xs bg-green-500/10 text-green-700 rounded-lg border border-green-500/20">
-                              {item}
-                            </span>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                    
-                    {/* Keywords */}
-                    <div>
-                      <h4 className="text-xs font-semibold text-gray-500 mb-2">Keywords</h4>
-                      <p className="text-sm text-gray-900">{selectedTemplate.keywords || 'Not set'}</p>
-                    </div>
-                    
-                    {/* Field Classification */}
-                    {(() => {
-                      // Parse fields — could be string, array, or classified object
-                      let fields = selectedTemplate.fields
-                      if (typeof fields === 'string') {
-                        try { fields = JSON.parse(fields) } catch { fields = [] }
-                      }
-
-                      const isClassified = fields && !Array.isArray(fields) && (fields as any)?.db_fields
-
-                      if (isClassified) {
-                        const f = fields as any
-                        const allPlaceholders = [...(f.db_fields || []), ...(f.user_input_fields || [])]
-                        return (
-                          <>
-                            {/* All Placeholders */}
-                            <div>
-                              <h4 className="text-sm font-semibold text-gray-700 mb-2">
-                                All Placeholders ({allPlaceholders.length})
-                              </h4>
-                              <div className="flex flex-wrap gap-2">
-                                {allPlaceholders.map((field: string, idx: number) => (
-                                  <span key={idx} className={`px-3 py-1.5 text-xs rounded-lg border ${
-                                    (f.db_fields || []).includes(field)
-                                      ? 'bg-green-500/10 text-green-700 border-green-500/20'
-                                      : 'bg-blue-500/10 text-blue-700 border-blue-500/20'
-                                  }`}>
-                                    {field}
-                                    {(f.db_fields || []).includes(field) && <span className="ml-1 text-green-500">●</span>}
-                                    {(f.user_input_fields || []).includes(field) && <span className="ml-1 text-blue-500">●</span>}
-                                  </span>
-                                ))}
-                              </div>
-                              <div className="flex gap-4 mt-2 text-xs text-gray-500">
-                                <span className="flex items-center gap-1"><span className="text-green-500">●</span> Auto-filled from DB ({(f.db_fields || []).length})</span>
-                                <span className="flex items-center gap-1"><span className="text-blue-500">●</span> User input required ({(f.user_input_fields || []).length})</span>
-                              </div>
-                            </div>
-
-                            {/* Field Descriptions */}
-                            {f.field_descriptions && Object.keys(f.field_descriptions).length > 0 && (
-                              <div>
-                                <h4 className="text-xs font-semibold text-gray-500 mb-2">Field Descriptions</h4>
-                                <div className="space-y-1">
-                                  {Object.entries(f.field_descriptions).map(([key, desc]: [string, any]) => (
-                                    <div key={key} className="flex gap-2 text-sm">
-                                      <span className="font-medium text-gray-700 shrink-0">{key}:</span>
-                                      <span className="text-gray-500">{desc}</span>
-                                    </div>
-                                  ))}
-                                </div>
-                              </div>
-                            )}
-
-                            {/* Static Text Warnings */}
-                            {f.static_text_warnings?.length > 0 && (
-                              <div className="p-4 bg-yellow-500/10 border border-yellow-500/20 rounded-lg">
-                                <h4 className="text-xs font-medium text-yellow-700 mb-2">Static Text Warnings</h4>
-                                <ul className="space-y-1">
-                                  {f.static_text_warnings.map((w: string, idx: number) => (
-                                    <li key={idx} className="text-sm text-gray-800 flex gap-2">
-                                      <span className="text-yellow-600">⚠</span> {w}
-                                    </li>
-                                  ))}
-                                </ul>
-                              </div>
-                            )}
-                          </>
-                        )
-                      }
-
-                      // Fallback: not classified yet — show raw placeholders
-                      const rawFields = Array.isArray(fields) ? fields : (fields as any)?.all_fields || []
-                      return (
-                        <div>
-                          <h4 className="text-sm font-semibold text-gray-500 mb-3">
-                            Placeholders ({rawFields.length})
-                          </h4>
-                          <p className="text-xs text-gray-400 mb-2">Click "Start Training" to classify fields as auto-fill vs user-input</p>
-                          <div className="flex flex-wrap gap-2">
-                            {rawFields.map((field: any, idx: number) => (
-                              <span key={idx} className="px-3 py-1.5 text-xs bg-gray-100 text-gray-700 rounded-lg border border-gray-200">
-                                {typeof field === 'string' ? field : field.name || JSON.stringify(field)}
-                              </span>
-                            ))}
-                          </div>
-                        </div>
-                      )
-                    })()}
-
-                    {/* ── Deep Training Sections ── */}
-
-                    {/* Field Deep Analysis */}
-                    {(selectedTemplate as any).field_deep_analysis && Object.keys((selectedTemplate as any).field_deep_analysis).length > 0 && (
-                      <div className="mt-4">
-                        <h4 className="text-sm font-semibold text-primary mb-2">Field Analysis</h4>
-                        <div className="overflow-auto max-h-48">
-                          <table className="w-full text-xs">
-                            <thead><tr className="border-b border-primary/10">
-                              <th className="text-left py-1 px-2 text-muted">Field</th>
-                              <th className="text-left py-1 px-2 text-muted">Type</th>
-                              <th className="text-left py-1 px-2 text-muted">Format</th>
-                              <th className="text-left py-1 px-2 text-muted">Required</th>
-                            </tr></thead>
-                            <tbody>
-                              {Object.entries((selectedTemplate as any).field_deep_analysis).map(([name, info]: [string, any]) => (
-                                <tr key={name} className="border-b border-primary/5">
-                                  <td className="py-1 px-2 font-medium">{name}</td>
-                                  <td className="py-1 px-2 text-muted">{info?.data_type || '—'}</td>
-                                  <td className="py-1 px-2 text-muted">{info?.format || '—'}</td>
-                                  <td className="py-1 px-2">{info?.required ? <span className="text-red-600">Yes</span> : <span className="text-green-600">Optional</span>}</td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Sample Filled Document */}
-                    {(selectedTemplate as any).sample_filled_document && Object.keys((selectedTemplate as any).sample_filled_document).length > 0 && (
-                      <div className="mt-4">
-                        <h4 className="text-sm font-semibold text-primary mb-2">Sample Values</h4>
-                        <div className="grid grid-cols-2 gap-1">
-                          {Object.entries((selectedTemplate as any).sample_filled_document).slice(0, 12).map(([key, val]: [string, any]) => (
-                            <div key={key} className="flex gap-2 text-xs py-1">
-                              <span className="text-muted">{key}:</span>
-                              <span className="font-medium truncate">{String(val)}</span>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Document Workflow */}
-                    {(selectedTemplate as any).document_workflow && (
-                      <div className="mt-4">
-                        <h4 className="text-sm font-semibold text-primary mb-2">Document Workflow</h4>
-                        {(selectedTemplate as any).document_workflow.trigger && (
-                          <p className="text-xs text-muted mb-2">Trigger: {(selectedTemplate as any).document_workflow.trigger}</p>
-                        )}
-                        <div className="flex items-center gap-2 flex-wrap">
-                          {((selectedTemplate as any).document_workflow.before || []).map((d: string, i: number) => (
-                            <span key={`b${i}`} className="text-xs px-2 py-1 bg-blue-500/10 text-blue-700 rounded">{d}</span>
-                          ))}
-                          {((selectedTemplate as any).document_workflow.before || []).length > 0 && <span className="text-muted">→</span>}
-                          <span className="text-xs px-2 py-1 bg-brand/20 text-brand font-semibold rounded">{selectedTemplate.name.replace('.docx','')}</span>
-                          {((selectedTemplate as any).document_workflow.after || []).length > 0 && <span className="text-muted">→</span>}
-                          {((selectedTemplate as any).document_workflow.after || []).map((d: string, i: number) => (
-                            <span key={`a${i}`} className="text-xs px-2 py-1 bg-green-500/10 text-green-700 rounded">{d}</span>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Cross-Template Relationships */}
-                    {(selectedTemplate as any).cross_template_relationships?.length > 0 && (
-                      <div className="mt-4">
-                        <h4 className="text-sm font-semibold text-primary mb-2">Related Templates</h4>
-                        <div className="space-y-1">
-                          {(selectedTemplate as any).cross_template_relationships.map((rel: any, i: number) => (
-                            <div key={i} className="flex items-center gap-2 text-xs">
-                              <span className={`px-2 py-0.5 rounded text-white ${
-                                rel.relationship === 'prerequisite' ? 'bg-blue-500' :
-                                rel.relationship === 'follow_up' ? 'bg-green-500' :
-                                rel.relationship === 'alternative' ? 'bg-yellow-500' : 'bg-gray-500'
-                              }`}>{rel.relationship}</span>
-                              <span className="font-medium">{rel.template}</span>
-                              <span className="text-muted">{rel.description}</span>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Confidence Score */}
-                    {(selectedTemplate as any).training_confidence > 0 && (
-                      <div className="mt-4">
-                        <h4 className="text-sm font-semibold text-primary mb-2">Training Confidence</h4>
-                        <div className="flex items-center gap-3">
-                          <div className="flex-1 h-2 bg-gray-200 rounded-full overflow-hidden">
-                            <div className={`h-full rounded-full ${
-                              (selectedTemplate as any).training_confidence >= 80 ? 'bg-green-500' :
-                              (selectedTemplate as any).training_confidence >= 50 ? 'bg-yellow-500' : 'bg-red-500'
-                            }`} style={{ width: `${(selectedTemplate as any).training_confidence}%` }} />
-                          </div>
-                          <span className="text-sm font-bold">{(selectedTemplate as any).training_confidence}%</span>
-                        </div>
-                      </div>
-                    )}
-
-                  </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-
-      {/* Terminal Log Modal - Smaller Popup */}
-      {showLogModal && (
-        <div className="fixed bottom-4 right-4 w-[500px] max-h-[70vh] bg-[#0d1117] border border-gray-700 rounded-xl shadow-2xl flex flex-col z-50">
-          <div className="flex items-center justify-between p-3 border-b border-gray-700 bg-[#161b22] rounded-t-xl">
-            <div className="flex items-center gap-2">
-              <Terminal className="w-5 h-5 text-green-700" />
-              <span className="text-sm font-medium text-primary">Training Progress</span>
-              {isTraining && <span className="w-2 h-2 bg-orange-500 rounded-full animate-pulse"></span>}
-            </div>
-            <div className="flex items-center gap-2">
+    <>
+      {hiddenInput}
+      <Page>
+        <PageHeader
+          title="Templates"
+          meta={
+            <>
+              <Badge tone="neutral">{templates.length}</Badge>
               {isTraining && (
-                <button
-                  onClick={stopTraining}
-                  className="flex items-center gap-1 px-2 py-1 text-xs font-medium bg-red-500/20 text-red-700 rounded hover:bg-red-500/30"
-                >
-                  <Square className="w-3 h-3" />
-                  Stop
-                </button>
+                <Badge tone="warn" dot>
+                  Training {queuePos.index}/{queuePos.total}
+                </Badge>
               )}
-              <button onClick={() => setShowLogModal(false)} className="p-1 hover:bg-gray-700 rounded">
-                <X className="w-4 h-4 text-gray-400" />
-              </button>
-            </div>
-          </div>
-          
-          <div ref={terminalRef} className="flex-1 overflow-auto p-3 font-mono text-xs space-y-1 max-h-96">
-            {terminalLogs.length === 0 ? (
-              <div className="text-gray-500 text-center py-8">
-                <Terminal className="w-10 h-10 mx-auto mb-2 opacity-50" />
-                <p>Click "Start Training" to begin</p>
-              </div>
-            ) : (
-              terminalLogs.map((log) => (
-                <div key={log.id} className={`${getLogColor(log.type)} flex gap-2`}>
-                  <span className="text-gray-600 shrink-0">[{log.timestamp}]</span>
-                  <span className="whitespace-pre-wrap">{log.text}</span>
-                </div>
-              ))
-            )}
-          </div>
-
-          <div className="flex items-center justify-between p-2 border-t border-gray-700 bg-[#161b22] rounded-b-xl">
-            <div className="text-xs text-gray-500">
-              {terminalLogs.length} lines
-            </div>
-            {trainingComplete && (
-              <span className="text-xs text-green-700 flex items-center gap-1">
-                <CheckCircle className="w-3 h-3" /> Complete
-              </span>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Duplicate Template Error Modal */}
-      {duplicateError && (
-        <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50">
-          <div className="bg-card border border-orange-300 rounded-xl p-6 w-full max-w-md mx-4">
-            <div className="flex items-center gap-3 mb-4">
-              <div className="p-3 bg-orange-500/10 rounded-lg">
-                <FileText className="w-6 h-6 text-orange-500" />
-              </div>
-              <div>
-                <h2 className="text-lg font-semibold text-orange-700">Template Already Exists</h2>
-                <p className="text-xs text-muted">Cannot upload duplicate template</p>
-              </div>
-            </div>
-
-            <div className="bg-orange-50 border border-orange-200 rounded-lg p-4 mb-4 space-y-2">
-              <div className="flex justify-between text-sm">
-                <span className="text-gray-600">File Name:</span>
-                <span className="font-medium text-gray-900">{duplicateError.name}</span>
-              </div>
-              {duplicateError.existing && (
-                <>
-                  <div className="flex justify-between text-sm">
-                    <span className="text-gray-600">Category:</span>
-                    <span className="font-medium text-gray-900">{duplicateError.existing.category}</span>
-                  </div>
-                  <div className="flex justify-between text-sm">
-                    <span className="text-gray-600">Placeholders:</span>
-                    <span className="font-medium text-gray-900">{duplicateError.existing.fields}</span>
-                  </div>
-                  <div className="flex justify-between text-sm">
-                    <span className="text-gray-600">Status:</span>
-                    <span className={`font-medium ${duplicateError.existing.trained ? 'text-green-700' : 'text-yellow-700'}`}>
-                      {duplicateError.existing.trained ? '✓ Trained' : 'Untrained'}
-                    </span>
-                  </div>
-                  {duplicateError.existing.uploaded_at && (
-                    <div className="flex justify-between text-sm">
-                      <span className="text-gray-600">Uploaded:</span>
-                      <span className="font-medium text-gray-900">{new Date(duplicateError.existing.uploaded_at).toLocaleString()}</span>
-                    </div>
-                  )}
-                </>
+              {trainingStale && !isTraining && (
+                <Badge tone="warn" dot>
+                  Out of date
+                </Badge>
               )}
-            </div>
-
-            <p className="text-xs text-gray-500 mb-4">
-              To re-upload, delete the existing template first, then upload the new version.
-            </p>
-
-            <div className="flex gap-3">
-              <button onClick={() => setDuplicateError(null)}
-                className="flex-1 px-4 py-2 text-xs font-medium border border-gray-300 rounded-lg hover:bg-accent">
-                OK
-              </button>
-              <button onClick={() => {
-                const name = duplicateError.name
-                setDuplicateError(null)
-                const t = templates.find(t => t.name === name)
-                if (t) setShowDeleteModal(t)
-              }}
-                className="flex-1 px-4 py-2 text-xs font-medium bg-red-500 text-white rounded-lg hover:bg-red-600">
-                Delete & Re-upload
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Delete ALL Templates Modal — double verification */}
-      {showDeleteAllModal && (
-        <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50">
-          <div className="bg-card border border-red-300 rounded-xl p-6 w-full max-w-md mx-4">
-            <div className="flex items-center gap-3 mb-4">
-              <div className="p-3 bg-red-500/10 rounded-lg"><Trash2 className="w-6 h-6 text-red-500" /></div>
-              <div>
-                <h2 className="text-lg font-semibold text-red-700">Delete ALL Templates</h2>
-                <p className="text-xs text-muted">This will remove all {templates.length} templates permanently</p>
-              </div>
-            </div>
-            <p className="text-sm mb-4 text-gray-700">
-              Type <span className="font-mono font-bold text-red-600">DELETE ALL</span> to confirm:
-            </p>
-            <input
-              value={deleteAllConfirm}
-              onChange={e => setDeleteAllConfirm(e.target.value)}
-              placeholder="Type DELETE ALL"
-              className="w-full px-3 py-2 text-sm border border-red-300 rounded-lg mb-4 focus:outline-none focus:border-red-500"
-            />
-            <div className="flex gap-3">
-              <button onClick={() => { setShowDeleteAllModal(false); setDeleteAllConfirm("") }}
-                className="flex-1 px-4 py-2 text-xs font-medium border border-gray-300 rounded-lg hover:bg-accent">
-                Cancel
-              </button>
-              <button
-                onClick={async () => {
-                  setDeletingAll(true)
-                  try {
-                    const API_BASE = process.env.NEXT_PUBLIC_API_URL || ''
-                    const res = await authFetch(`${API_BASE}/api/admin/reset/templates`, { method: "POST" })
-                    if (!res.ok) throw new Error(`Request failed: ${res.status}`)
-                    const data = await res.json()
-                    if (data.success) {
-                      await fetchTemplates()
-                      setShowDeleteAllModal(false)
-                      setDeleteAllConfirm("")
-                    }
-                  } catch (e) { console.error("Delete all error:", e) } finally { setDeletingAll(false) }
-                }}
-                disabled={deleteAllConfirm !== "DELETE ALL" || deletingAll}
-                className="flex-1 px-4 py-2 text-xs font-medium bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50"
+            </>
+          }
+          description="Word templates the agent fills. Training reads each one through a fifteen-step pipeline so the agent knows what it is for and which fields it needs."
+          actions={
+            <>
+              <Button onClick={() => setShowLogModal(true)} icon={<Terminal className="w-4 h-4" />}>
+                {isTraining ? "View progress" : "Training log"}
+              </Button>
+              <Button
+                onClick={() => startTraining(false)}
+                loading={isTraining}
+                disabled={templates.length === 0}
+                icon={<Sparkles className="w-4 h-4" />}
               >
-                {deletingAll ? "Deleting..." : "Delete All Templates"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+                {isTraining ? "Training" : untrained.length > 0 ? `Train new (${untrained.length})` : "Retrain all"}
+              </Button>
+              <Button
+                variant="primary"
+                onClick={() => fileInputRef.current?.click()}
+                loading={uploading}
+                icon={<Upload className="w-4 h-4" />}
+              >
+                Upload
+              </Button>
+            </>
+          }
+        />
 
-      {/* Delete Confirmation Modal */}
-      {showDeleteModal && (
-        <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50">
-          <div className="bg-card border border-gray-400 dark:border-primary/10 rounded-xl p-6 w-full max-w-md mx-4">
-            <div className="flex items-center gap-3 mb-4">
-              <div className="p-3 bg-red-500/10 rounded-lg"><Trash2 className="w-6 h-6 text-red-500" /></div>
-              <div>
-                <h2 className="text-lg font-semibold">Delete Template</h2>
-                <p className="text-xs text-muted">This action cannot be undone</p>
+        {templates.length > 0 && (
+          <Toolbar>
+            <SearchInput
+              label="Search templates"
+              placeholder="Name, category or keyword…"
+              value={searchTerm}
+              onChange={setSearchTerm}
+            />
+            <div className="ml-auto flex items-center gap-2">
+              {lastTrained && (
+                <span className="text-[length:var(--text-xs)] text-[var(--text-muted)]">
+                  Last trained {lastTrained}
+                </span>
+              )}
+              <Button
+                size="sm"
+                variant="ghost"
+                className="text-[var(--danger-strong)]"
+                onClick={() => setShowDeleteAllModal(true)}
+                disabled={isTraining}
+                icon={<Trash2 className="w-3.5 h-3.5" />}
+              >
+                Delete all
+              </Button>
+            </div>
+          </Toolbar>
+        )}
+
+        <PageBody className="space-y-4">
+          {trainingStale && (
+            <Notice tone="warn" title="Training is out of date">
+              <div className="flex items-center justify-between gap-3 flex-wrap">
+                <span>
+                  Templates or companies have changed since the last run. The agent is still answering from the old
+                  training data.
+                </span>
+                <Button size="sm" onClick={() => startTraining(true)}>
+                  Retrain now
+                </Button>
               </div>
-            </div>
-            <p className="text-sm mb-6">Are you sure you want to delete <span className="font-medium">{showDeleteModal.name}</span>?</p>
-            <div className="flex gap-3">
-              <button onClick={() => setShowDeleteModal(null)} className="flex-1 px-4 py-2 text-xs font-medium border border-gray-400 dark:border-primary/10 rounded-lg hover:bg-accent">Cancel</button>
-              <button onClick={deleteTemplate} className="flex-1 px-4 py-2 text-xs font-medium bg-red-500 text-white rounded-lg hover:bg-red-600">Delete</button>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
+            </Notice>
+          )}
+
+          {error && <Notice tone="danger" title="Could not load templates">{error}</Notice>}
+
+          {templates.length === 0 ? (
+            <EmptyState
+              icon={<FileText className="w-4 h-4" />}
+              title="No templates yet"
+              description="A template is a Word document with placeholders the agent fills from company data."
+              steps={[
+                { title: "Upload a .docx", body: "Placeholders can be written {{field}}, {field} or [field]." },
+                { title: "Train it", body: "Fifteen steps extract the fields, classify them and teach the agent what the document is for." },
+                { title: "Generate", body: "Ask the agent in chat and it produces the filled document." },
+              ]}
+              action={
+                <Button variant="primary" onClick={() => fileInputRef.current?.click()} icon={<Upload className="w-4 h-4" />}>
+                  Upload the first template
+                </Button>
+              }
+            />
+          ) : (
+            <>
+              <StatRow>
+                <StatTile label="Templates" value={stats.total} />
+                <StatTile label="Trained" value={stats.trained} tone={stats.trained > 0 ? "ok" : undefined} />
+                <StatTile
+                  label="Untrained"
+                  value={stats.untrained}
+                  tone={stats.untrained > 0 ? "warn" : undefined}
+                  hint={stats.untrained > 0 ? "Agent cannot use these yet" : "Everything is trained"}
+                />
+                <StatTile
+                  label="Average confidence"
+                  value={stats.avg ? `${stats.avg}%` : "—"}
+                  tone={stats.lowConfidence > 0 ? "warn" : undefined}
+                  hint={stats.lowConfidence > 0 ? `${stats.lowConfidence} below 50%` : undefined}
+                />
+              </StatRow>
+
+              <DataTable
+                rows={filtered}
+                columns={columns}
+                rowKey={(t) => t.name}
+                onRowClick={setSelectedTemplate}
+                caption="Templates"
+                rowTone={(t) => (isTrained(t) ? null : "var(--warn)")}
+                empty={
+                  <div className="py-2">
+                    <p className="text-[length:var(--text-sm)] text-[var(--text)]">
+                      No match for &ldquo;{searchTerm}&rdquo;
+                    </p>
+                    <Button size="sm" className="mt-3" onClick={() => setSearchTerm("")}>
+                      Clear search
+                    </Button>
+                  </div>
+                }
+              />
+            </>
+          )}
+        </PageBody>
+      </Page>
+
+      {trainingModal}
+
+      {/* Duplicate upload */}
+      <Modal
+        open={!!duplicateError}
+        onOpenChange={(o) => !o && setDuplicateError(null)}
+        size="sm"
+        title="That template already exists"
+        description="Templates are keyed by file name, so this one was not uploaded."
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setDuplicateError(null)}>
+              Cancel
+            </Button>
+            <Button
+              variant="danger"
+              onClick={() => {
+                const name = duplicateError?.name
+                setDuplicateError(null)
+                const t = templates.find((x) => x.name === name)
+                if (t) deleteTemplate(t)
+              }}
+            >
+              Delete the existing one
+            </Button>
+          </>
+        }
+      >
+        {duplicateError && (
+          <DetailList
+            columns={1}
+            items={[
+              ["File name", duplicateError.name],
+              ["Category", duplicateError.existing?.category || "—"],
+              ["Placeholders", duplicateError.existing?.fields ?? "—"],
+              [
+                "Status",
+                duplicateError.existing?.trained ? (
+                  <Badge tone="ok" dot>
+                    Trained
+                  </Badge>
+                ) : (
+                  <Badge tone="warn" dot>
+                    Untrained
+                  </Badge>
+                ),
+              ],
+              ["Uploaded", formatDateTime(duplicateError.existing?.uploaded_at)],
+            ]}
+          />
+        )}
+      </Modal>
+
+      {/* Delete all — typed confirmation */}
+      <Modal
+        open={showDeleteAllModal}
+        onOpenChange={(o) => {
+          if (!o) {
+            setShowDeleteAllModal(false)
+            setDeleteAllConfirm("")
+          }
+        }}
+        size="sm"
+        title="Delete every template"
+        description={`This removes all ${templates.length} templates and their training data. It cannot be undone.`}
+        footer={
+          <>
+            <Button
+              variant="ghost"
+              onClick={() => {
+                setShowDeleteAllModal(false)
+                setDeleteAllConfirm("")
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="danger"
+              onClick={deleteAllTemplates}
+              loading={deletingAll}
+              disabled={deleteAllConfirm !== "DELETE ALL"}
+            >
+              Delete all templates
+            </Button>
+          </>
+        }
+      >
+        <Notice tone="danger" title="Destructive">
+          Generated documents keep working, but the agent will have no templates to fill until you upload and train
+          again.
+        </Notice>
+        <p className="mt-3 mb-1.5 text-[length:var(--text-sm)] text-[var(--text)]">
+          Type <span className="font-mono font-semibold">DELETE ALL</span> to confirm.
+        </p>
+        <Input
+          value={deleteAllConfirm}
+          onChange={(e) => setDeleteAllConfirm(e.target.value)}
+          placeholder="DELETE ALL"
+          aria-label="Type DELETE ALL to confirm"
+        />
+      </Modal>
+    </>
   )
 }

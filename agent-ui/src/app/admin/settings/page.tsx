@@ -1,25 +1,155 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import { Settings, Mail, Save, Send, CheckCircle, Loader2, Download, Eye, EyeOff, Trash2, Database, AlertTriangle, HardDrive, Activity, Brain, ExternalLink, BarChart3, Clock, User, FileText, Cloud, Upload } from "lucide-react"
+import {
+  Activity,
+  AlertTriangle,
+  BarChart3,
+  Brain,
+  Cloud,
+  Database,
+  Download,
+  Eye,
+  EyeOff,
+  HardDrive,
+  Mail,
+  Save,
+  Send,
+  Settings as SettingsIcon,
+  Trash2,
+  Upload,
+  User,
+} from "lucide-react"
 import { authFetch } from "@/lib/api-client"
 import { toast } from "sonner"
+import { cn } from "@/lib/utils"
+import {
+  Badge,
+  Button,
+  Card,
+  DataTable,
+  IconButton,
+  Input,
+  LoadingScreen,
+  Modal,
+  Notice,
+  Page,
+  PageBody,
+  PageHeader,
+  Select,
+  StatRow,
+  StatTile,
+  TextField,
+  Toggle,
+  Toolbar,
+  type Tone,
+  assertSuccess,
+  dateSort,
+  ensureOk,
+  errorMessage,
+  focusRing,
+  formatDateTime,
+} from "@/components/ui/kit"
 
 const API = process.env.NEXT_PUBLIC_API_URL || ""
 
 const SMTP_PRESETS = [
-  { name: "Gmail", host: "smtp.gmail.com", port: "587", notes: "Use App Password (not regular password). Enable 2FA first → Google Account → Security → App Passwords" },
-  { name: "Outlook / Microsoft 365", host: "smtp.office365.com", port: "587", notes: "Use your Microsoft 365 email and password" },
-  { name: "Yahoo", host: "smtp.mail.yahoo.com", port: "587", notes: "Generate App Password in Yahoo Account Settings" },
-  { name: "Custom SMTP", host: "", port: "587", notes: "Enter your own SMTP server details" },
+  {
+    name: "Gmail",
+    host: "smtp.gmail.com",
+    port: "587",
+    notes: "Use an App Password, not your account password. Enable 2FA first, then Google Account → Security → App Passwords.",
+  },
+  {
+    name: "Outlook / Microsoft 365",
+    host: "smtp.office365.com",
+    port: "587",
+    notes: "Use your Microsoft 365 email address and password.",
+  },
+  {
+    name: "Yahoo",
+    host: "smtp.mail.yahoo.com",
+    port: "587",
+    notes: "Generate an App Password in Yahoo Account Settings.",
+  },
+  { name: "Custom SMTP", host: "", port: "587", notes: "Enter your own SMTP server details." },
+]
+
+const MODEL_ROWS = [
+  { key: "chat", label: "Chat agent", desc: "Answers in the chat interface" },
+  { key: "training", label: "Training & analysis", desc: "Reads and analyses templates" },
+  { key: "classification", label: "Field classification", desc: "Splits placeholders into auto-fill and user input" },
+  { key: "embedding", label: "Embeddings", desc: "Powers semantic search over the knowledge base" },
+]
+
+const TIMEZONES = [
+  { group: "Asia", zones: [
+    ["Asia/Yangon", "Asia/Yangon (Myanmar)"],
+    ["Asia/Singapore", "Asia/Singapore"],
+    ["Asia/Kuala_Lumpur", "Asia/Kuala_Lumpur (Malaysia)"],
+    ["Asia/Bangkok", "Asia/Bangkok (Thailand)"],
+    ["Asia/Ho_Chi_Minh", "Asia/Ho_Chi_Minh (Vietnam)"],
+    ["Asia/Jakarta", "Asia/Jakarta (Indonesia)"],
+    ["Asia/Manila", "Asia/Manila (Philippines)"],
+    ["Asia/Kolkata", "Asia/Kolkata (India)"],
+    ["Asia/Shanghai", "Asia/Shanghai (China)"],
+    ["Asia/Tokyo", "Asia/Tokyo (Japan)"],
+    ["Asia/Seoul", "Asia/Seoul (Korea)"],
+    ["Asia/Hong_Kong", "Asia/Hong_Kong"],
+    ["Asia/Taipei", "Asia/Taipei (Taiwan)"],
+    ["Asia/Dubai", "Asia/Dubai (UAE)"],
+  ] },
+  { group: "Other", zones: [
+    ["UTC", "UTC"],
+    ["US/Eastern", "US/Eastern"],
+    ["US/Pacific", "US/Pacific"],
+    ["Europe/London", "Europe/London"],
+    ["Australia/Sydney", "Australia/Sydney"],
+  ] },
+]
+
+type Tab = "models" | "email" | "system" | "activity"
+
+/** Each destructive reset, with the phrase that unlocks it. */
+const RESETS: { id: string; endpoint: string; label: string; blurb: string; phrase: string }[] = [
+  {
+    id: "documents",
+    endpoint: "reset/documents",
+    label: "Delete all documents",
+    blurb: "Removes every generated document. Templates and companies are untouched.",
+    phrase: "DELETE DOCUMENTS",
+  },
+  {
+    id: "companies",
+    endpoint: "reset/companies",
+    label: "Delete all companies",
+    blurb: "Removes every company record. Documents already generated are kept.",
+    phrase: "DELETE COMPANIES",
+  },
+  {
+    id: "chat",
+    endpoint: "reset/chat",
+    label: "Reset chat & memory",
+    blurb: "Clears chat sessions, agent memory and learnings. Registers are untouched.",
+    phrase: "RESET CHAT",
+  },
+  {
+    id: "all",
+    endpoint: "reset/all",
+    label: "Delete all data",
+    blurb: "Companies, documents, knowledge base, chat and memory. Everything.",
+    phrase: "DELETE EVERYTHING",
+  },
 ]
 
 export default function SettingsPage() {
   const [loading, setLoading] = useState(true)
+  const [activeTab, setActiveTab] = useState<Tab>("models")
+
+  // Email
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
   const [showPassword, setShowPassword] = useState(false)
-
   const [smtpHost, setSmtpHost] = useState("")
   const [smtpPort, setSmtpPort] = useState("587")
   const [smtpUser, setSmtpUser] = useState("")
@@ -27,80 +157,149 @@ export default function SettingsPage() {
   const [smtpFrom, setSmtpFrom] = useState("")
   const [testEmail, setTestEmail] = useState("")
   const [lastUpdated, setLastUpdated] = useState("")
-  const [healthLoading, setHealthLoading] = useState(false)
-  const [healthData, setHealthData] = useState<any>(null)
-  const [dbStats, setDbStats] = useState<any>(null)
-  const [deleting, setDeleting] = useState("")
-  const [restoring, setRestoring] = useState(false)
-  const [restoreResult, setRestoreResult] = useState<any>(null)
+
+  // Models
   const [models, setModels] = useState<Record<string, string>>({})
-  const [modelsLoading, setModelsLoading] = useState(true)
   const [modelsSaving, setModelsSaving] = useState(false)
   const [modelsEditing, setModelsEditing] = useState(false)
   const [apiKeyStatus, setApiKeyStatus] = useState<any>(null)
   const [testingModel, setTestingModel] = useState("")
-  const [testResults, setTestResults] = useState<Record<string, { ok: boolean; msg: string }>>({})
-  const [s3, setS3] = useState({ enabled: false, bucket: "", region: "ap-southeast-1", access_key: "", secret_key: "", endpoint_url: "" })
-  const [s3Saving, setS3Saving] = useState(false)
-  const [s3Testing, setS3Testing] = useState(false)
-  const [s3Syncing, setS3Syncing] = useState(false)
-  const [s3Status, setS3Status] = useState("")
   const [validatingAll, setValidatingAll] = useState(false)
   const [modelTests, setModelTests] = useState<Record<string, { model: string; ok: boolean; msg: string; time: string }>>({})
 
+  // System
+  const [healthLoading, setHealthLoading] = useState(false)
+  const [healthData, setHealthData] = useState<any>(null)
+  const [dbStats, setDbStats] = useState<any>(null)
+  const [statsLoading, setStatsLoading] = useState(false)
+  const [restoring, setRestoring] = useState(false)
+  const [restoreResult, setRestoreResult] = useState<any>(null)
+  const [deleting, setDeleting] = useState("")
+  const [resetTarget, setResetTarget] = useState<(typeof RESETS)[number] | null>(null)
+  const [resetConfirm, setResetConfirm] = useState("")
 
+  // S3
+  const [s3, setS3] = useState({
+    enabled: false, bucket: "", region: "ap-southeast-1", access_key: "", secret_key: "", endpoint_url: "",
+  })
+  const [s3Saving, setS3Saving] = useState(false)
+  const [s3Testing, setS3Testing] = useState(false)
+  const [s3Syncing, setS3Syncing] = useState(false)
+  const [s3Status, setS3Status] = useState<{ ok: boolean; msg: string } | null>(null)
+
+  // Timezone
   const [timezone, setTimezone] = useState("Asia/Yangon")
   const [tzDatetime, setTzDatetime] = useState("")
   const [tzSaving, setTzSaving] = useState(false)
-  const [activeTab, setActiveTab] = useState<"models" | "email" | "system" | "activity">("models")
+
+  // Activity
   const [activityData, setActivityData] = useState<any>(null)
   const [activityLoading, setActivityLoading] = useState(false)
 
-  useEffect(() => { loadSettings(); loadModels(); loadTimezone(); loadS3() }, [])
+  useEffect(() => {
+    loadSettings()
+    loadModels()
+    loadTimezone()
+    loadS3()
+  }, [])
 
   const loadS3 = async () => {
     try {
       const res = await authFetch(`${API}/api/admin/s3`)
+      await ensureOk(res, "Failed to load S3 settings")
       const data = await res.json()
-      if (data.success && data.config) setS3(prev => ({ ...prev, ...data.config }))
-    } catch {}
+      if (data.config) setS3((prev) => ({ ...prev, ...data.config }))
+    } catch (e) {
+      console.error("S3 settings load error:", e)
+    }
   }
 
   const loadTimezone = async () => {
     try {
       const res = await authFetch(`${API}/api/admin/timezone`)
+      await ensureOk(res, "Failed to load timezone")
       const data = await res.json()
-      if (data.success) { setTimezone(data.timezone); setTzDatetime(data.current_datetime) }
-    } catch {}
+      setTimezone(data.timezone)
+      setTzDatetime(data.current_datetime)
+    } catch (e) {
+      console.error("Timezone load error:", e)
+    }
   }
 
   const saveTimezone = async () => {
     setTzSaving(true)
     try {
       const res = await authFetch(`${API}/api/admin/timezone`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ timezone }),
       })
+      if (!res.ok) throw new Error(await errorMessage(res, "Failed to save timezone"))
+      await assertSuccess(res, "Invalid timezone")
       const data = await res.json()
-      if (data.success) { toast.success(`Timezone set to ${data.timezone}`); setTzDatetime(data.current_datetime) }
-      else toast.error(data.error || "Invalid timezone")
-    } catch { toast.error("Failed to save timezone") } finally { setTzSaving(false) }
+      toast.success(`Timezone set to ${data.timezone}`)
+      setTzDatetime(data.current_datetime)
+    } catch (e: any) {
+      toast.error(e?.message || "Failed to save timezone")
+    } finally {
+      setTzSaving(false)
+    }
   }
 
   const loadModels = async () => {
     try {
       const res = await authFetch(`${API}/api/admin/models`)
-      const data = await res.json()
-      if (data.success) setModels(data.models)
-      // Also load API key status + model test results
-      const kRes = await authFetch(`${API}/api/admin/api-keys`)
-      const kData = await kRes.json()
-      if (kData.success) setApiKeyStatus(kData.keys)
-      const tRes = await authFetch(`${API}/api/admin/model-tests`)
-      const tData = await tRes.json()
-      if (tData.success) setModelTests(tData.tests || {})
+      await ensureOk(res, "Failed to load models")
+      setModels((await res.json()).models)
 
-    } catch {} finally { setModelsLoading(false) }
+      const kRes = await authFetch(`${API}/api/admin/api-keys`)
+      await ensureOk(kRes, "Failed to load API key status")
+      setApiKeyStatus((await kRes.json()).keys)
+
+      const tRes = await authFetch(`${API}/api/admin/model-tests`)
+      await ensureOk(tRes, "Failed to load model tests")
+      setModelTests((await tRes.json()).tests || {})
+    } catch (e) {
+      console.error("Models load error:", e)
+    }
+  }
+
+  const testModel = async (key: string) => {
+    if (!models[key]) return
+    setTestingModel(key)
+    try {
+      const r = await authFetch(`${API}/api/admin/test-model`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: models[key], purpose: key === "embedding" ? "embedding" : "chat" }),
+      })
+      const d = await r.json()
+      setModelTests((p) => ({
+        ...p,
+        [key]: { model: models[key], ok: !!d.success, msg: d.message || d.error, time: new Date().toISOString() },
+      }))
+      return !!d.success
+    } catch (e) {
+      console.error("Model test error:", e)
+      setModelTests((p) => ({
+        ...p,
+        [key]: { model: models[key], ok: false, msg: "Request failed", time: new Date().toISOString() },
+      }))
+      return false
+    } finally {
+      setTestingModel("")
+    }
+  }
+
+  const validateAll = async () => {
+    setValidatingAll(true)
+    const keys = Object.keys(models).filter((k) => models[k])
+    let passed = 0
+    for (const k of keys) {
+      if (await testModel(k)) passed++
+    }
+    setValidatingAll(false)
+    toast[passed === keys.length ? "success" : "error"](`${passed}/${keys.length} models verified`)
   }
 
   const saveModels = async () => {
@@ -111,29 +310,36 @@ export default function SettingsPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ models }),
       })
-      const data = await res.json()
-      if (data.success) {
-        toast.success(data.message)
-      } else toast.error(data.error || "Save failed")
-    } catch { toast.error("Failed to save models") } finally { setModelsSaving(false) }
+      if (!res.ok) throw new Error(await errorMessage(res, "Save failed"))
+      await assertSuccess(res, "Save failed")
+      toast.success("Models saved")
+      setModelsEditing(false)
+    } catch (e: any) {
+      toast.error(e?.message || "Failed to save models")
+    } finally {
+      setModelsSaving(false)
+    }
   }
 
   const loadSettings = async () => {
     try {
       const res = await authFetch(`${API}/api/admin/settings`)
+      await ensureOk(res, "Failed to load settings")
       const data = await res.json()
-      if (data.success && data.settings) {
-        const s = data.settings
+      const s = data.settings
+      if (s) {
         setSmtpHost(s.smtp_host?.value || "")
         setSmtpPort(s.smtp_port?.value || "587")
         setSmtpUser(s.smtp_user?.value || "")
         setSmtpPass(s.smtp_pass?.value || "")
         setSmtpFrom(s.smtp_from?.value || "")
-        if (s.smtp_host?.updated_at) {
-          setLastUpdated(new Date(s.smtp_host.updated_at).toLocaleString())
-        }
+        if (s.smtp_host?.updated_at) setLastUpdated(new Date(s.smtp_host.updated_at).toLocaleString())
       }
-    } catch {} finally { setLoading(false) }
+    } catch (e) {
+      console.error("Settings load error:", e)
+    } finally {
+      setLoading(false)
+    }
   }
 
   const saveSettings = async () => {
@@ -143,20 +349,26 @@ export default function SettingsPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          smtp_host: smtpHost, smtp_port: smtpPort,
-          smtp_user: smtpUser, smtp_pass: smtpPass, smtp_from: smtpFrom,
+          smtp_host: smtpHost, smtp_port: smtpPort, smtp_user: smtpUser,
+          smtp_pass: smtpPass, smtp_from: smtpFrom,
         }),
       })
-      const data = await res.json()
-      if (data.success) {
-        toast.success("Settings saved")
-        setLastUpdated(new Date().toLocaleString())
-      } else toast.error(data.error || "Save failed")
-    } catch { toast.error("Failed to save") } finally { setSaving(false) }
+      if (!res.ok) throw new Error(await errorMessage(res, "Save failed"))
+      await assertSuccess(res, "Save failed")
+      toast.success("Email settings saved")
+      setLastUpdated(new Date().toLocaleString())
+    } catch (e: any) {
+      toast.error(e?.message || "Failed to save")
+    } finally {
+      setSaving(false)
+    }
   }
 
   const sendTestEmail = async () => {
-    if (!testEmail) { toast.error("Enter a test email address"); return }
+    if (!testEmail) {
+      toast.error("Enter an address to send the test to")
+      return
+    }
     setTesting(true)
     try {
       const res = await authFetch(`${API}/api/admin/test-email`, {
@@ -164,21 +376,20 @@ export default function SettingsPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ to_email: testEmail }),
       })
-      const data = await res.json()
-      if (data.success) toast.success(data.message)
-      else toast.error(data.error || "Test failed")
-    } catch { toast.error("Failed to send test email") } finally { setTesting(false) }
-  }
-
-  const applyPreset = (preset: typeof SMTP_PRESETS[0]) => {
-    setSmtpHost(preset.host)
-    setSmtpPort(preset.port)
-    toast.success(`Applied ${preset.name} preset`)
+      if (!res.ok) throw new Error(await errorMessage(res, "Test failed"))
+      await assertSuccess(res, "Test failed")
+      toast.success(`Test email sent to ${testEmail}`)
+    } catch (e: any) {
+      toast.error(e?.message || "Failed to send test email")
+    } finally {
+      setTesting(false)
+    }
   }
 
   const handleBackup = async () => {
     try {
       const res = await authFetch(`${API}/api/admin/backup`)
+      if (!res.ok) throw new Error(await errorMessage(res, "Backup failed"))
       const blob = await res.blob()
       const url = URL.createObjectURL(blob)
       const a = document.createElement("a")
@@ -187,792 +398,902 @@ export default function SettingsPage() {
       a.click()
       URL.revokeObjectURL(url)
       toast.success("Backup downloaded")
-    } catch { toast.error("Backup failed") }
+    } catch (e: any) {
+      toast.error(e?.message || "Backup failed")
+    }
   }
 
-  if (loading) return <div className="flex items-center justify-center h-full"><Loader2 className="w-8 h-8 animate-spin text-brand" /></div>
+  const runReset = async () => {
+    if (!resetTarget) return
+    setDeleting(resetTarget.id)
+    try {
+      const res = await authFetch(`${API}/api/admin/${resetTarget.endpoint}`, { method: "POST" })
+      if (!res.ok) throw new Error(await errorMessage(res, "Reset failed"))
+      await assertSuccess(res, "Reset failed")
+      toast.success(`${resetTarget.label} — done`)
+      setResetTarget(null)
+      setResetConfirm("")
+    } catch (e: any) {
+      toast.error(e?.message || "Reset failed")
+    } finally {
+      setDeleting("")
+    }
+  }
 
-  const tabs = [
-    { id: "models" as const, label: "AI Models", icon: <Brain className="w-4 h-4" /> },
-    { id: "email" as const, label: "Email", icon: <Mail className="w-4 h-4" /> },
-    { id: "system" as const, label: "System", icon: <HardDrive className="w-4 h-4" /> },
-    { id: "activity" as const, label: "Activity", icon: <BarChart3 className="w-4 h-4" /> },
+  const saveS3 = async () => {
+    setS3Saving(true)
+    try {
+      const res = await authFetch(`${API}/api/admin/s3`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(s3),
+      })
+      if (!res.ok) throw new Error(await errorMessage(res, "Save failed"))
+      await assertSuccess(res, "Save failed")
+      toast.success("S3 settings saved")
+    } catch (e: any) {
+      toast.error(e?.message || "Failed to save S3 settings")
+    } finally {
+      setS3Saving(false)
+    }
+  }
+
+  if (loading) return <LoadingScreen label="Loading settings" />
+
+  const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
+    { id: "models", label: "AI models", icon: <Brain className="w-3.5 h-3.5" /> },
+    { id: "email", label: "Email", icon: <Mail className="w-3.5 h-3.5" /> },
+    { id: "system", label: "System", icon: <HardDrive className="w-3.5 h-3.5" /> },
+    { id: "activity", label: "Activity", icon: <BarChart3 className="w-3.5 h-3.5" /> },
   ]
 
-  return (
-    <div className="flex flex-col h-full">
-      {/* Header */}
-      <div className="flex items-center justify-between p-4 border-b border-primary/10 bg-card">
-        <h1 className="text-lg font-semibold text-primary">Settings</h1>
-      </div>
+  const activePreset = SMTP_PRESETS.find((p) => p.host === smtpHost)
 
-      {/* Tabs */}
-      <div className="flex border-b border-gray-200 bg-card px-4">
-        {tabs.map(tab => (
+  return (
+    <Page>
+      <PageHeader
+        title="Settings"
+        description="Runtime configuration. These values live in the database, not in the environment file."
+      />
+
+      <Toolbar className="gap-0 px-5 py-0">
+        {TABS.map((tab) => (
           <button
             key={tab.id}
             onClick={() => setActiveTab(tab.id)}
-            className={`flex items-center gap-2 px-4 py-3 text-xs font-medium border-b-2 transition-colors ${
+            aria-current={activeTab === tab.id ? "page" : undefined}
+            className={cn(
+              "flex items-center gap-1.5 px-3 py-2.5 text-[length:var(--text-sm)] border-b-2 -mb-px transition-colors",
               activeTab === tab.id
-                ? "border-brand text-brand"
-                : "border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300"
-            }`}
+                ? "border-[var(--brand)] text-[var(--text)] font-medium"
+                : "border-transparent text-[var(--text-muted)] hover:text-[var(--text)]",
+              focusRing
+            )}
           >
             {tab.icon} {tab.label}
           </button>
         ))}
-      </div>
+      </Toolbar>
 
-      <div className="flex-1 overflow-auto p-6">
-        <div className="w-full">
-
-          {/* ═══════════════ TAB: AI Models ═══════════════ */}
-          {activeTab === "models" && (
+      <PageBody className="space-y-4">
+        {/* ── AI models ── */}
+        {activeTab === "models" && (
           <>
-          <div className="border border-gray-300 rounded-xl overflow-hidden">
-            <div className="flex items-center justify-between px-5 py-3 border-b border-gray-200 bg-gray-50">
-              <div className="flex items-center gap-2">
-                <Brain className="w-4 h-4 text-brand"/>
-                <div>
-                  <h2 className="text-sm font-semibold text-gray-900">AI Models</h2>
-                  <p className="text-xs text-gray-500">LLM models used for each task — all via OpenRouter</p>
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <button onClick={async () => {
-                  setValidatingAll(true)
-                  const keys = Object.keys(models).filter(k => models[k])
-                  const tests: Record<string,any> = {}
-                  for(const k of keys){
-                    try{const r=await authFetch(`${API}/api/admin/test-model`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model:models[k],purpose:k==="embedding"?"embedding":"chat"})});const d=await r.json();tests[k]={model:models[k],ok:d.success,msg:d.message||d.error,time:new Date().toISOString()}}catch{tests[k]={model:models[k],ok:false,msg:"Failed",time:new Date().toISOString()}}
-                  }
-                  setModelTests(prev=>({...prev,...tests}))
-                  const passed=Object.values(tests).filter((t:any)=>t.ok).length
-                  toast[passed===keys.length?"success":"error"](`${passed}/${keys.length} models verified`)
-                  setValidatingAll(false)
-                }} disabled={validatingAll} className="flex items-center gap-1 px-3 py-1.5 text-xs font-medium border border-green-300 text-green-700 rounded-lg hover:bg-green-50 disabled:opacity-50">
-                  {validatingAll?<Loader2 className="w-3 h-3 animate-spin"/>:<CheckCircle className="w-3 h-3"/>} Validate All
-                </button>
-                {!modelsEditing ? (
-                  <button onClick={()=>setModelsEditing(true)} className="flex items-center gap-1 px-3 py-1.5 text-xs font-medium border border-gray-300 rounded-lg hover:bg-gray-100">
-                    <Settings className="w-3 h-3"/> Edit
-                  </button>
-                ) : (
-                  <>
-                    <button onClick={async()=>{
-                      setModelsSaving(true)
-                      try{const r=await authFetch(`${API}/api/admin/models`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({models})});const d=await r.json();d.success?toast.success(d.message):toast.error(d.error)}catch{toast.error("Save failed")}finally{setModelsSaving(false);setModelsEditing(false)}
-                    }} disabled={modelsSaving} className="flex items-center gap-1 px-3 py-1.5 text-xs font-medium bg-primary text-white rounded-lg hover:bg-primary/80 disabled:opacity-50">
-                      {modelsSaving?<Loader2 className="w-3 h-3 animate-spin"/>:<Save className="w-3 h-3"/>} Save
-                    </button>
-                    <button onClick={()=>{setModelsEditing(false);loadModels()}} className="px-3 py-1.5 text-xs font-medium border border-gray-300 rounded-lg hover:bg-gray-100">Cancel</button>
-                  </>
-                )}
-              </div>
-            </div>
-            <table className="w-full">
-              <thead className="bg-gray-50"><tr className="text-xs font-medium text-gray-500">
-                <th className="text-left px-4 py-2">Purpose</th>
-                <th className="text-left px-4 py-2">Model</th>
-                <th className="text-left px-4 py-2 w-20">Status</th>
-                {modelsEditing && <th className="px-4 py-2 w-12"></th>}
-              </tr></thead>
-              <tbody className="divide-y divide-gray-100">
-                {[
-                  {key:"chat",label:"Chat Agent",desc:"Main conversation model"},
-                  {key:"training",label:"Training & Analysis",desc:"Analyzes templates"},
-                  {key:"classification",label:"Field Classification",desc:"Classifies fields"},
-                  {key:"embedding",label:"Embeddings",desc:"Vector search"},
-                ].map(({key,label})=>{
-                  const test = modelTests[key]
-                  return (
-                    <tr key={key} className="hover:bg-gray-50">
-                      <td className="px-4 py-2.5 text-sm text-gray-900">{label}</td>
-                      <td className="px-4 py-2.5">{modelsEditing?(
-                        <input value={models[key]||""} onChange={e=>setModels(p=>({...p,[key]:e.target.value}))} className="w-full px-2 py-1 text-sm border border-gray-300 rounded font-mono focus:outline-none focus:border-brand/50"/>
-                      ):(<span className="text-sm font-mono text-gray-700">{models[key]||"—"}</span>)}</td>
-                      <td className="px-4 py-2.5">{test&&<span title={test.msg} className={`text-[10px] px-1.5 py-0.5 rounded-full border ${test.ok?"bg-green-50 text-green-600 border-green-200":"bg-red-50 text-red-600 border-red-200"}`}>{test.ok?"✓ Verified":"✗ Failed"}</span>}</td>
-                      {modelsEditing&&<td className="px-4 py-2.5"><button onClick={async()=>{
-                        if(!models[key])return;setTestingModel(key)
-                        try{const r=await authFetch(`${API}/api/admin/test-model`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model:models[key],purpose:key==="embedding"?"embedding":"chat"})});const d=await r.json();setModelTests(p=>({...p,[key]:{model:models[key],ok:d.success,msg:d.message||d.error,time:new Date().toISOString()}}))}catch{setModelTests(p=>({...p,[key]:{model:models[key],ok:false,msg:"Failed",time:new Date().toISOString()}}))}finally{setTestingModel("")}
-                      }} disabled={testingModel===key} className="text-xs text-blue-600 hover:underline disabled:opacity-50">{testingModel===key?"...":"Test"}</button></td>}
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-            {apiKeyStatus&&(<div className="px-4 py-3 border-t border-gray-200"><div className="flex gap-2">{Object.entries(apiKeyStatus).map(([name,info]:[string,any])=>(<div key={name} className={`flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs border ${info.set?"bg-green-50 border-green-200 text-green-700":"bg-red-50 border-red-200 text-red-600"}`}><span className={`w-1.5 h-1.5 rounded-full ${info.set?"bg-green-500":"bg-red-400"}`}/>{name.replace("_API_KEY","").replace("_"," ")}:{info.hint}</div>))}</div></div>)}
-          </div>
+            <Card
+              title="AI models"
+              meta={<Badge tone="neutral">via OpenRouter</Badge>}
+              actions={
+                <>
+                  <Button size="sm" onClick={validateAll} loading={validatingAll}>
+                    Validate all
+                  </Button>
+                  {modelsEditing ? (
+                    <>
+                      <Button size="sm" variant="primary" onClick={saveModels} loading={modelsSaving} icon={<Save className="w-3 h-3" />}>
+                        Save
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => {
+                          setModelsEditing(false)
+                          loadModels()
+                        }}
+                      >
+                        Cancel
+                      </Button>
+                    </>
+                  ) : (
+                    <Button size="sm" onClick={() => setModelsEditing(true)} icon={<SettingsIcon className="w-3 h-3" />}>
+                      Edit
+                    </Button>
+                  )}
+                </>
+              }
+              padded={false}
+            >
+              <DataTable
+                className="border-0 rounded-none"
+                rows={MODEL_ROWS}
+                rowKey={(r) => r.key}
+                rowTone={(r) => {
+                  const t = modelTests[r.key]
+                  return t && !t.ok ? "var(--danger-strong)" : null
+                }}
+                columns={[
+                  {
+                    key: "label",
+                    header: "Purpose",
+                    render: (r) => (
+                      <span>
+                        <span className="block text-[var(--text)]">{r.label}</span>
+                        <span className="block text-[length:var(--text-2xs)] text-[var(--text-muted)]">{r.desc}</span>
+                      </span>
+                    ),
+                  },
+                  {
+                    key: "model",
+                    header: "Model",
+                    render: (r) =>
+                      modelsEditing ? (
+                        <Input
+                          value={models[r.key] || ""}
+                          onChange={(e) => setModels((p) => ({ ...p, [r.key]: e.target.value }))}
+                          className="font-mono"
+                          aria-label={`${r.label} model`}
+                        />
+                      ) : (
+                        <span className="font-mono text-[var(--text-secondary)]">{models[r.key] || "—"}</span>
+                      ),
+                  },
+                  {
+                    key: "status",
+                    header: "Status",
+                    align: "right",
+                    render: (r) => {
+                      const t = modelTests[r.key]
+                      if (!t) return <span className="text-[var(--text-muted)]">Untested</span>
+                      return (
+                        <span title={t.msg}>
+                          <Badge tone={t.ok ? "ok" : "danger"} dot>
+                            {t.ok ? "Verified" : "Failed"}
+                          </Badge>
+                        </span>
+                      )
+                    },
+                  },
+                  {
+                    key: "actions",
+                    header: "",
+                    align: "right",
+                    width: "1%",
+                    render: (r) => (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => testModel(r.key)}
+                        loading={testingModel === r.key}
+                        disabled={!models[r.key]}
+                      >
+                        Test
+                      </Button>
+                    ),
+                  },
+                ]}
+              />
 
-          {/* Timezone */}
-          <div className="border border-gray-300 rounded-xl overflow-hidden mt-6">
-            <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200 bg-gray-50">
-              <div className="flex items-center gap-2">
-                <Clock className="w-5 h-5 text-brand" />
-                <div>
-                  <h2 className="text-sm font-semibold text-gray-900">Timezone</h2>
-                  <p className="text-xs text-gray-500">Used for document dates, activity logs, and agent responses</p>
-                </div>
-              </div>
-              {tzDatetime && <span className="text-xs text-gray-500">{tzDatetime}</span>}
-            </div>
-            <div className="p-5">
-              <div className="flex items-center gap-3">
-                <select value={timezone} onChange={e => setTimezone(e.target.value)}
-                  className="px-3 py-2 text-sm border border-gray-300 rounded-lg text-gray-900 font-mono w-64 focus:outline-none focus:border-brand/50 bg-white">
-                  <optgroup label="Asia">
-                    <option value="Asia/Yangon">Asia/Yangon (Myanmar)</option>
-                    <option value="Asia/Singapore">Asia/Singapore</option>
-                    <option value="Asia/Kuala_Lumpur">Asia/Kuala_Lumpur (Malaysia)</option>
-                    <option value="Asia/Bangkok">Asia/Bangkok (Thailand)</option>
-                    <option value="Asia/Ho_Chi_Minh">Asia/Ho_Chi_Minh (Vietnam)</option>
-                    <option value="Asia/Jakarta">Asia/Jakarta (Indonesia)</option>
-                    <option value="Asia/Manila">Asia/Manila (Philippines)</option>
-                    <option value="Asia/Kolkata">Asia/Kolkata (India)</option>
-                    <option value="Asia/Shanghai">Asia/Shanghai (China)</option>
-                    <option value="Asia/Tokyo">Asia/Tokyo (Japan)</option>
-                    <option value="Asia/Seoul">Asia/Seoul (Korea)</option>
-                    <option value="Asia/Hong_Kong">Asia/Hong_Kong</option>
-                    <option value="Asia/Taipei">Asia/Taipei (Taiwan)</option>
-                    <option value="Asia/Dubai">Asia/Dubai (UAE)</option>
-                  </optgroup>
-                  <optgroup label="Other">
-                    <option value="UTC">UTC</option>
-                    <option value="US/Eastern">US/Eastern</option>
-                    <option value="US/Pacific">US/Pacific</option>
-                    <option value="Europe/London">Europe/London</option>
-                    <option value="Australia/Sydney">Australia/Sydney</option>
-                  </optgroup>
-                </select>
-                <button onClick={saveTimezone} disabled={tzSaving}
-                  className="flex items-center gap-1.5 px-4 py-2 text-xs font-medium bg-primary text-white rounded-lg hover:bg-primary/80 disabled:opacity-50">
-                  {tzSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
-                  Save
-                </button>
-              </div>
-            </div>
-          </div>
-          </>
-          )}
-
-          {/* ═══════════════ TAB: Email ═══════════════ */}
-          {activeTab === "email" && (
-          <div className="border border-gray-300 rounded-xl overflow-hidden">
-            <div className="flex items-center gap-2 px-5 py-4 border-b border-gray-200 bg-gray-50">
-              <Mail className="w-5 h-5 text-brand" />
-              <div>
-                <h2 className="text-sm font-semibold text-gray-900">Email Notifications (SMTP)</h2>
-                <p className="text-xs text-gray-500">Configure email to receive notifications when documents are generated</p>
-              </div>
-            </div>
-
-            <div className="p-5 space-y-4">
-              {/* Provider Presets */}
-              <div>
-                <label className="block text-xs font-medium text-gray-600 mb-2">Quick Setup — Select Provider</label>
-                <div className="flex flex-wrap gap-2">
-                  {SMTP_PRESETS.map((preset) => (
-                    <button key={preset.name} onClick={() => applyPreset(preset)}
-                      className={`px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors ${
-                        smtpHost === preset.host
-                          ? "bg-brand/10 border-brand/30 text-brand"
-                          : "border-gray-200 text-gray-600 hover:border-gray-300 hover:bg-gray-50"
-                      }`}>
-                      {preset.name}
-                    </button>
+              {apiKeyStatus && (
+                <div className="flex flex-wrap gap-2 px-4 py-3 border-t border-[var(--border)]">
+                  {Object.entries(apiKeyStatus).map(([name, info]: [string, any]) => (
+                    <Badge key={name} tone={info.set ? "ok" : "danger"} dot>
+                      {name.replace("_API_KEY", "").replace("_", " ")}: {info.hint}
+                    </Badge>
                   ))}
                 </div>
-                {SMTP_PRESETS.find(p => p.host === smtpHost)?.notes && (
-                  <p className="mt-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-2">
-                    💡 {SMTP_PRESETS.find(p => p.host === smtpHost)?.notes}
-                  </p>
-                )}
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs font-medium text-gray-600 mb-1">SMTP Host</label>
-                  <input value={smtpHost} onChange={e => setSmtpHost(e.target.value)} placeholder="smtp.gmail.com"
-                    className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg text-gray-900 placeholder:text-gray-400 focus:outline-none focus:border-brand/50" />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-gray-600 mb-1">Port</label>
-                  <input value={smtpPort} onChange={e => setSmtpPort(e.target.value)} placeholder="587"
-                    className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg text-gray-900 placeholder:text-gray-400 focus:outline-none focus:border-brand/50" />
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-gray-600 mb-1">Email / Username</label>
-                <input value={smtpUser} onChange={e => setSmtpUser(e.target.value)} placeholder="your-email@gmail.com" type="email"
-                  className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg text-gray-900 placeholder:text-gray-400 focus:outline-none focus:border-brand/50" />
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-gray-600 mb-1">Password / App Password</label>
-                <div className="relative">
-                  <input value={smtpPass} onChange={e => setSmtpPass(e.target.value)} placeholder="App password" type={showPassword ? "text" : "password"}
-                    className="w-full px-3 py-2 pr-10 text-sm border border-gray-300 rounded-lg text-gray-900 placeholder:text-gray-400 focus:outline-none focus:border-brand/50" />
-                  <button onClick={() => setShowPassword(!showPassword)} type="button"
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600">
-                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                  </button>
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-gray-600 mb-1">From Email (Display Name)</label>
-                <input value={smtpFrom} onChange={e => setSmtpFrom(e.target.value)} placeholder="noreply@legalscout.com"
-                  className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg text-gray-900 placeholder:text-gray-400 focus:outline-none focus:border-brand/50" />
-              </div>
-
-              {lastUpdated && (
-                <p className="text-xs text-green-700 bg-green-50 rounded-lg px-3 py-1.5">✓ Last saved: {lastUpdated}</p>
               )}
+            </Card>
 
-              <div className="flex items-center justify-between pt-2 border-t border-gray-200">
-                <button onClick={saveSettings} disabled={saving}
-                  className="flex items-center gap-1.5 px-4 py-2 text-xs font-medium bg-primary text-white rounded-lg hover:bg-primary/80 disabled:opacity-50">
-                  {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
-                  {saving ? "Saving..." : "Save Settings"}
-                </button>
+            <Card
+              title="Timezone"
+              meta={tzDatetime ? <Badge tone="neutral">{tzDatetime}</Badge> : undefined}
+            >
+              <p className="mb-3 text-[length:var(--text-xs)] text-[var(--text-muted)]">
+                Applied to document dates, activity logs and anything the agent says about &ldquo;today&rdquo;.
+              </p>
+              <div className="flex items-center gap-2 flex-wrap">
+                <select
+                  value={timezone}
+                  onChange={(e) => setTimezone(e.target.value)}
+                  aria-label="Timezone"
+                  className={cn(
+                    "w-64 bg-[var(--surface)] text-[var(--text)] border border-[var(--border-strong)]",
+                    "rounded-[var(--radius-sm)] px-2.5 py-1.5 text-[length:var(--text-sm)] font-mono",
+                    focusRing
+                  )}
+                >
+                  {TIMEZONES.map((g) => (
+                    <optgroup key={g.group} label={g.group}>
+                      {g.zones.map(([value, label]) => (
+                        <option key={value} value={value}>
+                          {label}
+                        </option>
+                      ))}
+                    </optgroup>
+                  ))}
+                </select>
+                <Button variant="primary" onClick={saveTimezone} loading={tzSaving} icon={<Save className="w-3.5 h-3.5" />}>
+                  Save
+                </Button>
+              </div>
+            </Card>
+          </>
+        )}
 
-                <div className="flex items-center gap-2">
-                  <input value={testEmail} onChange={e => setTestEmail(e.target.value)} placeholder="test@email.com" type="email"
-                    className="px-3 py-2 text-xs border border-gray-300 rounded-lg text-gray-900 placeholder:text-gray-400 w-48 focus:outline-none focus:border-brand/50" />
-                  <button onClick={sendTestEmail} disabled={testing || !smtpHost}
-                    className="flex items-center gap-1.5 px-3 py-2 text-xs font-medium border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50">
-                    {testing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
-                    {testing ? "Sending..." : "Send Test"}
-                  </button>
+        {/* ── Email ── */}
+        {activeTab === "email" && (
+          <Card
+            title="SMTP"
+            meta={
+              smtpHost ? (
+                <Badge tone="ok" dot>
+                  Configured
+                </Badge>
+              ) : (
+                <Badge tone="warn" dot>
+                  Not configured
+                </Badge>
+              )
+            }
+          >
+            <p className="mb-4 text-[length:var(--text-xs)] text-[var(--text-muted)]">
+              Required before the agent can email a generated document to anyone.
+            </p>
+
+            <div className="mb-4">
+              <p className="mb-1.5 text-[length:var(--text-2xs)] font-semibold uppercase tracking-[var(--tracking-tag)] text-[var(--text-muted)]">
+                Quick setup
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                {SMTP_PRESETS.map((preset) => (
+                  <Button
+                    key={preset.name}
+                    size="sm"
+                    variant={smtpHost === preset.host ? "primary" : "secondary"}
+                    onClick={() => {
+                      setSmtpHost(preset.host)
+                      setSmtpPort(preset.port)
+                      toast.success(`Applied the ${preset.name} preset`)
+                    }}
+                  >
+                    {preset.name}
+                  </Button>
+                ))}
+              </div>
+              {activePreset?.notes && (
+                <div className="mt-2.5">
+                  <Notice tone="warn" title={activePreset.name}>
+                    {activePreset.notes}
+                  </Notice>
+                </div>
+              )}
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-3.5">
+              <TextField label="SMTP host" value={smtpHost} onChange={setSmtpHost} placeholder="smtp.gmail.com" mono />
+              <TextField label="Port" value={smtpPort} onChange={setSmtpPort} placeholder="587" mono />
+              <TextField
+                label="Email / username"
+                type="email"
+                value={smtpUser}
+                onChange={setSmtpUser}
+                placeholder="you@example.com"
+                wide
+              />
+              <div className="md:col-span-2">
+                <label
+                  htmlFor="smtp-pass"
+                  className="block mb-1 text-[length:var(--text-2xs)] font-semibold uppercase tracking-[var(--tracking-tag)] text-[var(--text-muted)]"
+                >
+                  Password / app password
+                </label>
+                <div className="relative">
+                  <Input
+                    id="smtp-pass"
+                    value={smtpPass}
+                    onChange={(e) => setSmtpPass(e.target.value)}
+                    type={showPassword ? "text" : "password"}
+                    placeholder="App password"
+                    className="pr-10"
+                  />
+                  <div className="absolute right-1 top-1/2 -translate-y-1/2">
+                    <IconButton
+                      aria-label={showPassword ? "Hide password" : "Show password"}
+                      onClick={() => setShowPassword(!showPassword)}
+                      icon={showPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                    />
+                  </div>
                 </div>
               </div>
+              <TextField
+                label="From address"
+                value={smtpFrom}
+                onChange={setSmtpFrom}
+                placeholder="noreply@legalscout.com"
+                wide
+              />
             </div>
-          </div>
 
-          )}
+            {lastUpdated && (
+              <p className="mt-3 text-[length:var(--text-2xs)] text-[var(--text-muted)]">Last saved {lastUpdated}</p>
+            )}
 
-          {/* ═══════════════ TAB: System ═══════════════ */}
-          {activeTab === "system" && (
-          <div className="space-y-6">
-          <div className="border border-gray-300 rounded-xl overflow-hidden">
-            <div className="flex items-center gap-2 px-5 py-4 border-b border-gray-200 bg-gray-50">
-              <HardDrive className="w-5 h-5 text-brand" />
-              <div>
-                <h2 className="text-sm font-semibold text-gray-900">System Management</h2>
-                <p className="text-xs text-gray-500">Backup, health check, and data management tools</p>
+            <div className="flex items-end justify-between gap-3 flex-wrap mt-4 pt-4 border-t border-[var(--border)]">
+              <Button variant="primary" onClick={saveSettings} loading={saving} icon={<Save className="w-3.5 h-3.5" />}>
+                Save settings
+              </Button>
+              <div className="flex items-end gap-2">
+                <div className="w-56">
+                  <TextField
+                    label="Send a test to"
+                    type="email"
+                    value={testEmail}
+                    onChange={setTestEmail}
+                    placeholder="you@example.com"
+                  />
+                </div>
+                <Button
+                  onClick={sendTestEmail}
+                  loading={testing}
+                  disabled={!smtpHost}
+                  icon={<Send className="w-3.5 h-3.5" />}
+                  className="mb-[1px]"
+                >
+                  Send test
+                </Button>
               </div>
             </div>
+          </Card>
+        )}
 
-            <div className="p-5 space-y-4">
-              {/* System Health */}
-              <div>
-                <label className="block text-xs font-medium text-gray-600 mb-2">System Health</label>
-                <div className="flex items-center gap-3">
-                  <button onClick={async () => {
+        {/* ── System ── */}
+        {activeTab === "system" && (
+          <>
+            <Card title="Health">
+              <div className="flex items-center gap-3 flex-wrap">
+                <Button
+                  onClick={async () => {
                     setHealthLoading(true)
                     try {
                       const res = await fetch(`${API}/health`)
                       const data = await res.json()
                       setHealthData(data)
-                      toast.success(`System ${data.status} — DB ${data.database?.status} (${data.database?.latency_ms}ms)`)
-                    } catch { toast.error("Health check failed") } finally { setHealthLoading(false) }
-                  }} disabled={healthLoading}
-                    className="flex items-center gap-1.5 px-4 py-2 text-xs font-medium border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50">
-                    {healthLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Activity className="w-3.5 h-3.5" />}
-                    Run Health Check
-                  </button>
-                  {healthData && (
-                    <div className="flex items-center gap-2 text-xs">
-                      <span className={`w-2 h-2 rounded-full ${healthData.status === 'healthy' ? 'bg-green-500' : 'bg-red-500'}`} />
-                      <span className="text-gray-600">
-                        {healthData.status} — DB {healthData.database?.latency_ms}ms — Uptime {Math.floor((healthData.uptime_seconds || 0) / 60)}m
-                      </span>
-                    </div>
-                  )}
-                </div>
+                    } catch (e) {
+                      console.error("Health check error:", e)
+                      toast.error("Health check failed")
+                    } finally {
+                      setHealthLoading(false)
+                    }
+                  }}
+                  loading={healthLoading}
+                  icon={<Activity className="w-3.5 h-3.5" />}
+                >
+                  Run health check
+                </Button>
+                {healthData && (
+                  <Badge tone={healthData.status === "healthy" ? "ok" : "danger"} dot>
+                    {healthData.status} · DB {healthData.database?.latency_ms}ms · up{" "}
+                    {Math.floor((healthData.uptime_seconds || 0) / 60)}m
+                  </Badge>
+                )}
               </div>
 
-              {/* Database Stats */}
-              <div>
-                <label className="block text-xs font-medium text-gray-600 mb-2">Database</label>
-                <div className="flex items-center gap-2">
-                  <button onClick={async () => {
+              <div className="mt-4 pt-4 border-t border-[var(--border)]">
+                <Button
+                  onClick={async () => {
+                    setStatsLoading(true)
                     try {
                       const res = await authFetch(`${API}/api/dashboard/stats`)
-                      const data = await res.json()
-                      setDbStats(data)
-                      toast.success("Stats loaded")
-                    } catch { toast.error("Failed to load stats") }
+                      await ensureOk(res, "Failed to load stats")
+                      setDbStats(await res.json())
+                    } catch (e: any) {
+                      toast.error(e?.message || "Failed to load stats")
+                    } finally {
+                      setStatsLoading(false)
+                    }
                   }}
-                    className="flex items-center gap-1.5 px-4 py-2 text-xs font-medium border border-gray-300 rounded-lg hover:bg-gray-50">
-                    <Database className="w-3.5 h-3.5" /> Load Stats
-                  </button>
-                  {dbStats && (
-                    <span className="text-xs text-gray-600">
-                      {dbStats.templates || 0} templates, {dbStats.companies || 0} companies, {dbStats.documents || 0} documents, {dbStats.embeddings || 0} embeddings
-                    </span>
+                  loading={statsLoading}
+                  icon={<Database className="w-3.5 h-3.5" />}
+                >
+                  Load database stats
+                </Button>
+                {dbStats && (
+                  <div className="mt-3">
+                    <StatRow>
+                      <StatTile label="Templates" value={dbStats.templates || 0} />
+                      <StatTile label="Companies" value={dbStats.companies || 0} />
+                      <StatTile label="Documents" value={dbStats.documents || 0} />
+                      <StatTile label="Embeddings" value={dbStats.embeddings || 0} />
+                    </StatRow>
+                  </div>
+                )}
+              </div>
+            </Card>
+
+            <Card title="Backup & restore">
+              <div className="flex flex-wrap items-start gap-3">
+                <Button variant="primary" onClick={handleBackup} icon={<Download className="w-3.5 h-3.5" />}>
+                  Download a backup
+                </Button>
+
+                <label
+                  className={cn(
+                    "inline-flex items-center gap-1.5 h-9 px-3.5 cursor-pointer",
+                    "bg-[var(--surface)] text-[var(--text)] border border-[var(--border-strong)] rounded-[var(--radius-sm)]",
+                    "text-[length:var(--text-sm)] font-medium hover:bg-[var(--bg-secondary)] transition-colors",
+                    restoring && "opacity-50 cursor-not-allowed"
                   )}
-                </div>
-              </div>
-
-              {/* Backup & Restore */}
-              <div>
-                <label className="block text-xs font-medium text-gray-600 mb-2">Backup & Restore</label>
-                <div className="flex flex-wrap items-start gap-3">
-                  <button onClick={handleBackup}
-                    className="flex items-center gap-1.5 px-4 py-2 text-xs font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700">
-                    <Download className="w-3.5 h-3.5" /> Create & Download Backup
-                  </button>
-
-                  <div className="flex flex-col gap-2">
-                    <label className="flex items-center gap-1.5 px-4 py-2 text-xs font-medium border border-blue-300 text-blue-600 rounded-lg hover:bg-blue-50 cursor-pointer">
-                      {restoring ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Database className="w-3.5 h-3.5" />}
-                      {restoring ? "Restoring..." : "Restore from Backup"}
-                      <input type="file" accept=".json" className="hidden" disabled={restoring} onChange={async (e) => {
-                        const file = e.target.files?.[0]
-                        if (!file) return
-                        if (!confirm(`Restore data from "${file.name}"? Existing data will NOT be deleted — backup data will be added.`)) {
-                          e.target.value = ""
-                          return
-                        }
-                        setRestoring(true)
-                        setRestoreResult(null)
-                        try {
-                          const formData = new FormData()
-                          formData.append("file", file)
-                          const res = await authFetch(`${API}/api/admin/restore`, { method: "POST", body: formData })
-                          const data = await res.json()
-                          if (data.success) {
-                            toast.success(data.message)
-                            setRestoreResult(data.details)
-                          } else {
-                            toast.error(data.error || "Restore failed")
-                          }
-                        } catch { toast.error("Failed to restore") } finally {
-                          setRestoring(false)
-                          e.target.value = ""
-                        }
-                      }} />
-                    </label>
-                    {restoreResult && (
-                      <div className="text-xs text-green-700 bg-green-50 rounded-lg px-3 py-2 space-y-0.5">
-                        <p className="font-medium">Restored:</p>
-                        {Object.entries(restoreResult).map(([table, count]) => (
-                          <p key={table}>{table}: {count as number} records</p>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              {/* Danger Zone */}
-              <div className="pt-4 border-t border-red-200">
-                <label className="block text-xs font-medium text-red-600 mb-2">Danger Zone</label>
-                <div className="bg-red-50 border border-red-200 rounded-lg p-4 space-y-3">
-                  <div className="flex items-start gap-2">
-                    <AlertTriangle className="w-4 h-4 text-red-500 mt-0.5 shrink-0" />
-                    <p className="text-xs text-red-700">These actions are irreversible. Create a backup first.</p>
-                  </div>
-
-                  <div className="flex flex-wrap gap-2">
-                    <button onClick={async () => {
-                      if (!confirm("Delete ALL generated documents? This cannot be undone.")) return
-                      setDeleting("documents")
+                >
+                  <Database className="w-3.5 h-3.5" />
+                  {restoring ? "Restoring…" : "Restore from a backup"}
+                  <input
+                    type="file"
+                    accept=".json"
+                    className="hidden"
+                    disabled={restoring}
+                    onChange={async (e) => {
+                      const file = e.target.files?.[0]
+                      if (!file) return
+                      setRestoring(true)
+                      setRestoreResult(null)
                       try {
-                        const res = await authFetch(`${API}/api/admin/reset/documents`, { method: "POST" })
+                        const formData = new FormData()
+                        formData.append("file", file)
+                        const res = await authFetch(`${API}/api/admin/restore`, { method: "POST", body: formData })
+                        if (!res.ok) throw new Error(await errorMessage(res, "Restore failed"))
+                        await assertSuccess(res, "Restore failed")
                         const data = await res.json()
-                        toast.success(data.message || "Documents deleted")
-                      } catch { toast.error("Failed to delete documents") } finally { setDeleting("") }
-                    }} disabled={!!deleting}
-                      className="flex items-center gap-1.5 px-3 py-2 text-xs font-medium bg-white border border-red-300 text-red-600 rounded-lg hover:bg-red-50 disabled:opacity-50">
-                      {deleting === "documents" ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
-                      Delete All Documents
-                    </button>
+                        toast.success(data.message || "Restore complete")
+                        setRestoreResult(data.details)
+                      } catch (err: any) {
+                        toast.error(err?.message || "Failed to restore")
+                      } finally {
+                        setRestoring(false)
+                        e.target.value = ""
+                      }
+                    }}
+                  />
+                </label>
+              </div>
 
-                    <button onClick={async () => {
-                      if (!confirm("Delete ALL companies? This cannot be undone.")) return
-                      setDeleting("companies")
-                      try {
-                        const res = await authFetch(`${API}/api/admin/reset/companies`, { method: "POST" })
-                        const data = await res.json()
-                        toast.success(data.message || "Companies deleted")
-                      } catch { toast.error("Failed to delete companies") } finally { setDeleting("") }
-                    }} disabled={!!deleting}
-                      className="flex items-center gap-1.5 px-3 py-2 text-xs font-medium bg-white border border-red-300 text-red-600 rounded-lg hover:bg-red-50 disabled:opacity-50">
-                      {deleting === "companies" ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
-                      Delete All Companies
-                    </button>
+              <p className="mt-2.5 text-[length:var(--text-xs)] text-[var(--text-muted)]">
+                Restoring adds records from the backup. It does not delete what is already there.
+              </p>
 
-                    <button onClick={async () => {
-                      if (!confirm("Delete all chat sessions, AI memory, and learnings? This cannot be undone.")) return
-                      setDeleting("chat")
-                      try {
-                        const res = await authFetch(`${API}/api/admin/reset/chat`, { method: "POST" })
-                        const data = await res.json()
-                        toast.success(data.message || "Chat & memory cleared")
-                      } catch { toast.error("Failed to clear chat") } finally { setDeleting("") }
-                    }} disabled={!!deleting}
-                      className="flex items-center gap-1.5 px-3 py-2 text-xs font-medium bg-white border border-red-300 text-red-600 rounded-lg hover:bg-red-50 disabled:opacity-50">
-                      {deleting === "chat" ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
-                      Reset Chat & Memory
-                    </button>
-
-                    <button onClick={async () => {
-                      if (!confirm("DELETE ALL DATA? Companies, documents, knowledge base, chat, memory — everything. This CANNOT be undone!")) return
-                      if (!confirm("Are you REALLY sure? Type the button again to confirm.")) return
-                      setDeleting("all")
-                      try {
-                        const res = await authFetch(`${API}/api/admin/reset/all`, { method: "POST" })
-                        const data = await res.json()
-                        toast.success(data.message || "All data deleted")
-                      } catch { toast.error("Failed to reset") } finally { setDeleting("") }
-                    }} disabled={!!deleting}
-                      className="flex items-center gap-1.5 px-3 py-2 text-xs font-medium bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50">
-                      {deleting === "all" ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <AlertTriangle className="w-3.5 h-3.5" />}
-                      Delete ALL Data
-                    </button>
-                  </div>
+              {restoreResult && (
+                <div className="mt-3">
+                  <Notice tone="ok" title="Restored">
+                    <ul className="mt-1">
+                      {Object.entries(restoreResult).map(([table, count]) => (
+                        <li key={table} className="tabular-nums">
+                          {table}: {count as number} records
+                        </li>
+                      ))}
+                    </ul>
+                  </Notice>
                 </div>
-              </div>
-            </div>
-          </div>
+              )}
+            </Card>
 
-          {/* Cloud Storage (S3) */}
-          <div className="border border-gray-300 rounded-xl overflow-hidden">
-            <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200 bg-gray-50">
-              <div className="flex items-center gap-2">
-                <Cloud className="w-5 h-5 text-brand" />
-                <div>
-                  <h2 className="text-sm font-semibold text-gray-900">Cloud Storage (S3)</h2>
-                  <p className="text-xs text-gray-500">Store templates, documents, and backups in S3-compatible storage</p>
-                </div>
-              </div>
-              {s3.enabled && <span className="text-xs text-green-600 bg-green-50 px-2 py-0.5 rounded-full">Enabled</span>}
-            </div>
-            <div className="p-5 space-y-4">
-              <div className="flex items-center gap-3">
-                <label className="text-xs font-medium text-gray-600">Enable S3</label>
-                <button onClick={() => setS3(prev => ({ ...prev, enabled: !prev.enabled }))}
-                  className={`w-10 h-5 rounded-full transition-colors ${s3.enabled ? 'bg-green-500' : 'bg-gray-300'}`}>
-                  <div className={`w-4 h-4 bg-white rounded-full shadow transition-transform ${s3.enabled ? 'translate-x-5' : 'translate-x-0.5'}`} />
-                </button>
-              </div>
+            <Card title="Cloud storage (S3)" meta={s3.enabled ? <Badge tone="ok" dot>Enabled</Badge> : undefined}>
+              <Toggle
+                checked={s3.enabled}
+                onChange={(v) => setS3((prev) => ({ ...prev, enabled: v }))}
+                label="Store templates, documents and backups in S3-compatible storage"
+                hint="Local filesystem is used when this is off."
+              />
 
               {s3.enabled && (
                 <>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-xs font-medium text-gray-600 mb-1">Bucket Name</label>
-                      <input value={s3.bucket} onChange={e => setS3(prev => ({ ...prev, bucket: e.target.value }))}
-                        placeholder="my-legalscout-bucket"
-                        className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg font-mono focus:outline-none focus:border-brand/50" />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-gray-600 mb-1">Region</label>
-                      <input value={s3.region} onChange={e => setS3(prev => ({ ...prev, region: e.target.value }))}
-                        placeholder="ap-southeast-1"
-                        className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg font-mono focus:outline-none focus:border-brand/50" />
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-xs font-medium text-gray-600 mb-1">Access Key</label>
-                      <input value={s3.access_key} onChange={e => setS3(prev => ({ ...prev, access_key: e.target.value }))}
-                        placeholder="AKIA..."
-                        className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg font-mono focus:outline-none focus:border-brand/50" />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-gray-600 mb-1">Secret Key</label>
-                      <input value={s3.secret_key} onChange={e => setS3(prev => ({ ...prev, secret_key: e.target.value }))}
-                        type="password" placeholder="****"
-                        className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg font-mono focus:outline-none focus:border-brand/50" />
-                    </div>
-                  </div>
-                  <div>
-                    <label className="block text-xs font-medium text-gray-600 mb-1">Endpoint URL (optional — for MinIO, R2, B2)</label>
-                    <input value={s3.endpoint_url} onChange={e => setS3(prev => ({ ...prev, endpoint_url: e.target.value }))}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-3.5 mt-4">
+                    <TextField
+                      label="Bucket"
+                      value={s3.bucket}
+                      onChange={(v) => setS3((p) => ({ ...p, bucket: v }))}
+                      placeholder="my-legalscout-bucket"
+                      mono
+                    />
+                    <TextField
+                      label="Region"
+                      value={s3.region}
+                      onChange={(v) => setS3((p) => ({ ...p, region: v }))}
+                      placeholder="ap-southeast-1"
+                      mono
+                    />
+                    <TextField
+                      label="Access key"
+                      value={s3.access_key}
+                      onChange={(v) => setS3((p) => ({ ...p, access_key: v }))}
+                      placeholder="AKIA…"
+                      mono
+                    />
+                    <TextField
+                      label="Secret key"
+                      type="password"
+                      value={s3.secret_key}
+                      onChange={(v) => setS3((p) => ({ ...p, secret_key: v }))}
+                      placeholder="••••"
+                      mono
+                    />
+                    <TextField
+                      label="Endpoint URL"
+                      value={s3.endpoint_url}
+                      onChange={(v) => setS3((p) => ({ ...p, endpoint_url: v }))}
                       placeholder="https://minio.example.com"
-                      className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg font-mono focus:outline-none focus:border-brand/50" />
+                      hint="Only for MinIO, Cloudflare R2 or Backblaze B2"
+                      wide
+                      mono
+                    />
                   </div>
 
-                  {s3Status && <p className={`text-xs ${s3Status.startsWith('✓') ? 'text-green-600' : 'text-red-600'}`}>{s3Status}</p>}
+                  {s3Status && (
+                    <div className="mt-3">
+                      <Notice tone={s3Status.ok ? "ok" : "danger"} title={s3Status.ok ? "Connected" : "Connection failed"}>
+                        {s3Status.msg}
+                      </Notice>
+                    </div>
+                  )}
 
-                  <div className="flex items-center gap-2 pt-2 border-t border-gray-200">
-                    <button onClick={async () => {
-                      setS3Saving(true)
-                      try {
-                        const res = await authFetch(`${API}/api/admin/s3`, {
-                          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(s3) })
-                        const data = await res.json()
-                        if (data.success) toast.success(data.message)
-                        else toast.error(data.error)
-                      } catch { toast.error("Save failed") } finally { setS3Saving(false) }
-                    }} disabled={s3Saving}
-                      className="flex items-center gap-1.5 px-4 py-2 text-xs font-medium bg-primary text-white rounded-lg hover:bg-primary/80 disabled:opacity-50">
-                      {s3Saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />} Save
-                    </button>
-
-                    <button onClick={async () => {
-                      setS3Testing(true); setS3Status("")
-                      try {
-                        // Save first, then test
-                        await authFetch(`${API}/api/admin/s3`, {
-                          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(s3) })
-                        const res = await authFetch(`${API}/api/admin/s3/test`, { method: "POST" })
-                        const data = await res.json()
-                        setS3Status(data.success ? `✓ ${data.message}` : `✗ ${data.error}`)
-                      } catch { setS3Status("✗ Connection failed") } finally { setS3Testing(false) }
-                    }} disabled={s3Testing}
-                      className="flex items-center gap-1.5 px-4 py-2 text-xs font-medium border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50">
-                      {s3Testing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Cloud className="w-3.5 h-3.5" />} Test Connection
-                    </button>
-
-                    <button onClick={async () => {
-                      if (!confirm("Upload all local files to S3?")) return
-                      setS3Syncing(true)
-                      try {
-                        const res = await authFetch(`${API}/api/admin/s3/sync`, { method: "POST" })
-                        const data = await res.json()
-                        if (data.success) toast.success(`Synced ${data.synced} files`)
-                        else toast.error(data.error)
-                      } catch { toast.error("Sync failed") } finally { setS3Syncing(false) }
-                    }} disabled={s3Syncing}
-                      className="flex items-center gap-1.5 px-4 py-2 text-xs font-medium border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50">
-                      {s3Syncing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />} Sync All to S3
-                    </button>
+                  <div className="flex flex-wrap items-center gap-2 mt-4 pt-4 border-t border-[var(--border)]">
+                    <Button variant="primary" onClick={saveS3} loading={s3Saving} icon={<Save className="w-3.5 h-3.5" />}>
+                      Save
+                    </Button>
+                    <Button
+                      onClick={async () => {
+                        setS3Testing(true)
+                        setS3Status(null)
+                        try {
+                          // Settings must be persisted before the server can test them.
+                          await authFetch(`${API}/api/admin/s3`, {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify(s3),
+                          })
+                          const res = await authFetch(`${API}/api/admin/s3/test`, { method: "POST" })
+                          const data = await res.json()
+                          setS3Status({ ok: !!data.success, msg: data.message || data.error || "" })
+                        } catch (e) {
+                          console.error("S3 test error:", e)
+                          setS3Status({ ok: false, msg: "Connection failed" })
+                        } finally {
+                          setS3Testing(false)
+                        }
+                      }}
+                      loading={s3Testing}
+                      icon={<Cloud className="w-3.5 h-3.5" />}
+                    >
+                      Test connection
+                    </Button>
+                    <Button
+                      onClick={async () => {
+                        setS3Syncing(true)
+                        try {
+                          const res = await authFetch(`${API}/api/admin/s3/sync`, { method: "POST" })
+                          if (!res.ok) throw new Error(await errorMessage(res, "Sync failed"))
+                          await assertSuccess(res, "Sync failed")
+                          const data = await res.json()
+                          toast.success(`Synced ${data.synced} files`)
+                        } catch (e: any) {
+                          toast.error(e?.message || "Sync failed")
+                        } finally {
+                          setS3Syncing(false)
+                        }
+                      }}
+                      loading={s3Syncing}
+                      icon={<Upload className="w-3.5 h-3.5" />}
+                    >
+                      Upload everything to S3
+                    </Button>
                   </div>
                 </>
               )}
-            </div>
-          </div>
+            </Card>
 
-          </div>
-          )}
+            <Card title="Danger zone" meta={<Badge tone="danger" dot>Irreversible</Badge>}>
+              <Notice tone="danger" title="Take a backup first">
+                Nothing here can be undone. Each action asks you to type a confirmation phrase.
+              </Notice>
+              <ul className="mt-3 space-y-2">
+                {RESETS.map((r) => (
+                  <li
+                    key={r.id}
+                    className="flex items-center justify-between gap-3 flex-wrap px-3 py-2.5 border border-[var(--border)] rounded-[var(--radius-sm)]"
+                    style={{ boxShadow: "inset 3px 0 0 0 var(--danger-strong)" }}
+                  >
+                    <span className="min-w-0">
+                      <span className="block text-[length:var(--text-sm)] font-medium text-[var(--text)]">{r.label}</span>
+                      <span className="block text-[length:var(--text-xs)] text-[var(--text-muted)]">{r.blurb}</span>
+                    </span>
+                    <Button
+                      variant={r.id === "all" ? "danger" : "secondary"}
+                      className={r.id === "all" ? undefined : "text-[var(--danger-strong)]"}
+                      onClick={() => {
+                        setResetTarget(r)
+                        setResetConfirm("")
+                      }}
+                      disabled={!!deleting}
+                      icon={r.id === "all" ? <AlertTriangle className="w-3.5 h-3.5" /> : <Trash2 className="w-3.5 h-3.5" />}
+                    >
+                      {r.id === "all" ? "Delete everything" : "Delete"}
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+            </Card>
+          </>
+        )}
 
-          {/* ═══════════════ TAB: Activity ═══════════════ */}
-          {activeTab === "activity" && (
-          <div className="space-y-6">
-            {/* Load button */}
-            {!activityData && (
-              <div className="flex items-center justify-center py-12">
-                <button onClick={async () => {
-                  setActivityLoading(true)
-                  try {
-                    const res = await authFetch(`${API}/api/admin/activity?days=30`)
-                    const data = await res.json()
-                    if (data.success) setActivityData(data)
-                  } catch {} finally { setActivityLoading(false) }
-                }} disabled={activityLoading}
-                  className="flex items-center gap-2 px-6 py-3 text-sm font-medium bg-primary text-white rounded-lg hover:bg-primary/80 disabled:opacity-50">
-                  {activityLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <BarChart3 className="w-4 h-4" />}
-                  {activityLoading ? "Loading..." : "Load Activity (Last 30 Days)"}
-                </button>
+        {/* ── Activity ── */}
+        {activeTab === "activity" && (
+          <>
+            {!activityData ? (
+              <div className="py-12 text-center">
+                <Button
+                  variant="primary"
+                  onClick={async () => {
+                    setActivityLoading(true)
+                    try {
+                      const res = await authFetch(`${API}/api/admin/activity?days=30`)
+                      await ensureOk(res, "Failed to load activity")
+                      setActivityData(await res.json())
+                    } catch (e: any) {
+                      toast.error(e?.message || "Failed to load activity")
+                    } finally {
+                      setActivityLoading(false)
+                    }
+                  }}
+                  loading={activityLoading}
+                  icon={<BarChart3 className="w-4 h-4" />}
+                >
+                  Load the last 30 days
+                </Button>
               </div>
-            )}
-
-            {activityData && (
+            ) : (
               <>
-                {/* Summary Cards */}
-                <div className="grid grid-cols-4 gap-3">
-                  <div className="p-4 bg-blue-50 border border-blue-200 rounded-xl text-center">
-                    <p className="text-2xl font-bold text-blue-700">{activityData.summary?.total_events || 0}</p>
-                    <p className="text-xs text-blue-500 mt-1">Total Events</p>
-                  </div>
-                  <div className="p-4 bg-green-50 border border-green-200 rounded-xl text-center">
-                    <p className="text-2xl font-bold text-green-700">{Object.keys(activityData.summary?.by_user || {}).length}</p>
-                    <p className="text-xs text-green-500 mt-1">Active Users</p>
-                  </div>
-                  <div className="p-4 bg-purple-50 border border-purple-200 rounded-xl text-center">
-                    <p className="text-2xl font-bold text-purple-700">{activityData.summary?.by_action?.login || 0}</p>
-                    <p className="text-xs text-purple-500 mt-1">Logins</p>
-                  </div>
-                  <div className="p-4 bg-orange-50 border border-orange-200 rounded-xl text-center">
-                    <p className="text-2xl font-bold text-orange-700">
-                      {(activityData.summary?.by_action?.upload_template || 0) + (activityData.summary?.by_action?.add_company || 0)}
-                    </p>
-                    <p className="text-xs text-orange-500 mt-1">Uploads</p>
-                  </div>
-                </div>
+                <StatRow>
+                  <StatTile label="Events" value={activityData.summary?.total_events || 0} />
+                  <StatTile label="Active users" value={Object.keys(activityData.summary?.by_user || {}).length} />
+                  <StatTile label="Logins" value={activityData.summary?.by_action?.login || 0} />
+                  <StatTile
+                    label="Uploads"
+                    value={
+                      (activityData.summary?.by_action?.upload_template || 0) +
+                      (activityData.summary?.by_action?.add_company || 0)
+                    }
+                  />
+                </StatRow>
 
-                {/* Activity by Action — bar chart */}
-                <div className="border border-gray-300 rounded-xl overflow-hidden">
-                  <div className="px-5 py-3 border-b border-gray-200 bg-gray-50">
-                    <h3 className="text-sm font-semibold text-gray-900">Events by Type</h3>
-                  </div>
-                  <div className="p-5 space-y-2">
+                <Card title="Events by type">
+                  <ul className="space-y-1.5">
                     {Object.entries(activityData.summary?.by_action || {}).map(([action, count]: [string, any]) => {
-                      const max = Math.max(...Object.values(activityData.summary?.by_action || {}) as number[])
-                      const pct = max > 0 ? (count / max) * 100 : 0
-                      const colors: Record<string, string> = {
-                        login: "bg-blue-500", upload_template: "bg-green-500", add_company: "bg-purple-500",
-                        reset_templates: "bg-red-500", reset_companies: "bg-red-400", update_models: "bg-orange-500",
-                      }
+                      const values = Object.values(activityData.summary?.by_action || {}) as number[]
+                      const max = Math.max(...values, 1)
+                      const destructive = action.startsWith("reset") || action.startsWith("delete")
                       return (
-                        <div key={action} className="flex items-center gap-3">
-                          <span className="text-xs text-gray-500 w-36 shrink-0 text-right">{action.replace(/_/g, " ")}</span>
-                          <div className="flex-1 bg-gray-100 rounded-full h-5 overflow-hidden">
-                            <div className={`h-full rounded-full ${colors[action] || "bg-gray-400"}`} style={{ width: `${pct}%` }} />
-                          </div>
-                          <span className="text-xs font-medium text-gray-700 w-8">{count}</span>
-                        </div>
+                        <li key={action} className="flex items-center gap-3">
+                          <span className="w-36 shrink-0 text-right text-[length:var(--text-xs)] text-[var(--text-muted)]">
+                            {action.replace(/_/g, " ")}
+                          </span>
+                          <span className="flex-1 h-4 bg-[var(--bg-secondary)] overflow-hidden">
+                            <span
+                              className="block h-full"
+                              style={{
+                                width: `${(count / max) * 100}%`,
+                                background: destructive ? "var(--danger-strong)" : "var(--brand)",
+                              }}
+                            />
+                          </span>
+                          <span className="w-8 text-[length:var(--text-xs)] tabular-nums text-[var(--text)]">
+                            {count}
+                          </span>
+                        </li>
                       )
                     })}
-                  </div>
-                </div>
+                  </ul>
+                </Card>
 
-                {/* Activity Timeline — day chart */}
                 {(activityData.summary?.by_day?.length || 0) > 0 && (
-                  <div className="border border-gray-300 rounded-xl overflow-hidden">
-                    <div className="px-5 py-3 border-b border-gray-200 bg-gray-50">
-                      <h3 className="text-sm font-semibold text-gray-900">Daily Activity</h3>
-                    </div>
-                    <div className="p-5">
-                      <div className="flex items-end gap-1 h-24">
+                  <Card title="Daily activity" meta={<Badge tone="neutral">30 days</Badge>}>
+                    <div className="overflow-x-auto">
+                      <div className="flex items-end gap-1 h-24 min-w-[28rem]">
                         {(activityData.summary?.by_day || []).map((d: any, i: number) => {
-                          const max = Math.max(...(activityData.summary?.by_day || []).map((x: any) => x.count))
-                          const h = max > 0 ? (d.count / max) * 100 : 0
+                          const max = Math.max(
+                            ...(activityData.summary?.by_day || []).map((x: any) => x.count),
+                            1
+                          )
                           return (
-                            <div key={i} className="flex-1 flex flex-col items-center gap-1" title={`${d.date}: ${d.count} events`}>
-                              <span className="text-[9px] text-gray-400">{d.count}</span>
-                              <div className="w-full bg-brand/80 rounded-t" style={{ height: `${h}%`, minHeight: d.count > 0 ? "4px" : "0" }} />
+                            <div
+                              key={i}
+                              className="flex-1 flex flex-col items-center justify-end h-full gap-1"
+                              title={`${d.date}: ${d.count} events`}
+                            >
+                              <span className="text-[length:var(--text-2xs)] tabular-nums text-[var(--text-muted)]">
+                                {d.count || ""}
+                              </span>
+                              <div
+                                className="w-full"
+                                style={{
+                                  height: `${(d.count / max) * 100}%`,
+                                  minHeight: d.count > 0 ? 4 : 1,
+                                  background: d.count > 0 ? "var(--brand)" : "var(--border)",
+                                }}
+                              />
                             </div>
                           )
                         })}
                       </div>
-                      <div className="flex justify-between mt-1">
-                        <span className="text-[9px] text-gray-400">{activityData.summary?.by_day?.[0]?.date?.slice(5)}</span>
-                        <span className="text-[9px] text-gray-400">{activityData.summary?.by_day?.slice(-1)[0]?.date?.slice(5)}</span>
-                      </div>
                     </div>
-                  </div>
+                    <div className="flex justify-between mt-1.5 text-[length:var(--text-2xs)] text-[var(--text-muted)] tabular-nums">
+                      <span>{activityData.summary?.by_day?.[0]?.date}</span>
+                      <span>{activityData.summary?.by_day?.slice(-1)[0]?.date}</span>
+                    </div>
+                  </Card>
                 )}
 
-                {/* Recent Activity by Type */}
-                <div className="grid grid-cols-3 gap-4">
-                  {/* Recent Templates */}
-                  <div className="border border-gray-300 rounded-xl overflow-hidden">
-                    <div className="px-4 py-2.5 border-b border-gray-200 bg-gray-50 flex items-center gap-2">
-                      <FileText className="w-3.5 h-3.5 text-brand" />
-                      <h3 className="text-xs font-semibold text-gray-900">Templates</h3>
-                    </div>
-                    <div className="p-3 space-y-2 max-h-48 overflow-auto">
-                      {(activityData.recent?.templates || []).map((t: any, i: number) => (
-                        <div key={i} className="text-xs space-y-0.5">
-                          <p className="font-medium text-gray-800 truncate">{t.name}</p>
-                          <p className="text-gray-400 flex items-center gap-1"><User className="w-3 h-3" />{t.uploaded_by}</p>
-                        </div>
-                      ))}
-                      {(activityData.recent?.templates || []).length === 0 && <p className="text-xs text-gray-400">No templates</p>}
-                    </div>
-                  </div>
-
-                  {/* Recent Companies */}
-                  <div className="border border-gray-300 rounded-xl overflow-hidden">
-                    <div className="px-4 py-2.5 border-b border-gray-200 bg-gray-50 flex items-center gap-2">
-                      <Database className="w-3.5 h-3.5 text-brand" />
-                      <h3 className="text-xs font-semibold text-gray-900">Companies</h3>
-                    </div>
-                    <div className="p-3 space-y-2 max-h-48 overflow-auto">
-                      {(activityData.recent?.companies || []).map((c: any, i: number) => (
-                        <div key={i} className="text-xs space-y-0.5">
-                          <p className="font-medium text-gray-800 truncate">{c.name}</p>
-                          <p className="text-gray-400 flex items-center gap-1"><User className="w-3 h-3" />{c.created_by}</p>
-                        </div>
-                      ))}
-                      {(activityData.recent?.companies || []).length === 0 && <p className="text-xs text-gray-400">No companies</p>}
-                    </div>
-                  </div>
-
-                  {/* Recent Documents */}
-                  <div className="border border-gray-300 rounded-xl overflow-hidden">
-                    <div className="px-4 py-2.5 border-b border-gray-200 bg-gray-50 flex items-center gap-2">
-                      <Download className="w-3.5 h-3.5 text-brand" />
-                      <h3 className="text-xs font-semibold text-gray-900">Documents</h3>
-                    </div>
-                    <div className="p-3 space-y-2 max-h-48 overflow-auto">
-                      {(activityData.recent?.documents || []).map((d: any, i: number) => (
-                        <div key={i} className="text-xs space-y-0.5">
-                          <p className="font-medium text-gray-800 truncate">{d.file}</p>
-                          <p className="text-gray-400 flex items-center gap-1"><User className="w-3 h-3" />{d.created_by}</p>
-                        </div>
-                      ))}
-                      {(activityData.recent?.documents || []).length === 0 && <p className="text-xs text-gray-400">No documents</p>}
-                    </div>
-                  </div>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  {[
+                    ["Templates", activityData.recent?.templates || [], (x: any) => [x.name, x.uploaded_by]],
+                    ["Companies", activityData.recent?.companies || [], (x: any) => [x.name, x.created_by]],
+                    ["Documents", activityData.recent?.documents || [], (x: any) => [x.file, x.created_by]],
+                  ].map(([title, items, pick]: any) => (
+                    <Card key={title} title={title} meta={<Badge tone="neutral">{items.length}</Badge>}>
+                      {items.length === 0 ? (
+                        <p className="text-[length:var(--text-xs)] text-[var(--text-muted)]">Nothing recent.</p>
+                      ) : (
+                        <ul className="space-y-2 max-h-48 overflow-y-auto">
+                          {items.map((x: any, i: number) => {
+                            const [name, by] = pick(x)
+                            return (
+                              <li key={i} className="min-w-0">
+                                <p className="text-[length:var(--text-xs)] font-medium text-[var(--text)] truncate">
+                                  {name}
+                                </p>
+                                <p className="flex items-center gap-1 text-[length:var(--text-2xs)] text-[var(--text-muted)]">
+                                  <User className="w-3 h-3" /> {by || "—"}
+                                </p>
+                              </li>
+                            )
+                          })}
+                        </ul>
+                      )}
+                    </Card>
+                  ))}
                 </div>
 
-                {/* Full Activity Log */}
-                <div className="border border-gray-300 rounded-xl overflow-hidden">
-                  <div className="px-5 py-3 border-b border-gray-200 bg-gray-50 flex items-center justify-between">
-                    <h3 className="text-sm font-semibold text-gray-900">Event Log</h3>
-                    <button onClick={() => setActivityData(null)} className="text-xs text-gray-500 hover:text-gray-700">Refresh</button>
-                  </div>
-                  <div className="max-h-96 overflow-auto">
-                    <table className="w-full">
-                      <thead className="bg-gray-50 sticky top-0">
-                        <tr>
-                          <th className="text-left px-4 py-2 text-xs font-medium text-gray-500">Time</th>
-                          <th className="text-left px-4 py-2 text-xs font-medium text-gray-500">User</th>
-                          <th className="text-left px-4 py-2 text-xs font-medium text-gray-500">Action</th>
-                          <th className="text-left px-4 py-2 text-xs font-medium text-gray-500">Details</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-gray-100">
-                        {(activityData.logs || []).map((log: any) => (
-                          <tr key={log.id} className="hover:bg-gray-50">
-                            <td className="px-4 py-2 text-xs text-gray-500 whitespace-nowrap">
-                              {log.time ? new Date(log.time).toLocaleString([], { month:"short", day:"numeric", hour:"2-digit", minute:"2-digit" }) : "—"}
-                            </td>
-                            <td className="px-4 py-2 text-xs text-gray-700">{log.user}</td>
-                            <td className="px-4 py-2">
-                              <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
-                                log.action === "login" ? "bg-blue-100 text-blue-700" :
-                                log.action.startsWith("reset") ? "bg-red-100 text-red-700" :
-                                log.action.startsWith("upload") ? "bg-green-100 text-green-700" :
-                                log.action.startsWith("add") ? "bg-purple-100 text-purple-700" :
-                                "bg-gray-100 text-gray-700"
-                              }`}>
-                                {log.action.replace(/_/g, " ")}
-                              </span>
-                            </td>
-                            <td className="px-4 py-2 text-xs text-gray-500 max-w-xs truncate">{log.details}</td>
-                          </tr>
-                        ))}
-                        {(activityData.logs || []).length === 0 && (
-                          <tr><td colSpan={4} className="px-4 py-8 text-center text-xs text-gray-400">No activity recorded yet</td></tr>
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-
-                {/* User Activity */}
-                {Object.keys(activityData.summary?.by_user || {}).length > 0 && (
-                  <div className="border border-gray-300 rounded-xl overflow-hidden">
-                    <div className="px-5 py-3 border-b border-gray-200 bg-gray-50">
-                      <h3 className="text-sm font-semibold text-gray-900">Activity by User</h3>
-                    </div>
-                    <div className="p-5 space-y-2">
-                      {Object.entries(activityData.summary?.by_user || {}).map(([user, count]: [string, any]) => (
-                        <div key={user} className="flex items-center justify-between text-sm">
-                          <span className="flex items-center gap-2 text-gray-700">
-                            <User className="w-3.5 h-3.5 text-gray-400" /> {user}
+                <Card
+                  title="Event log"
+                  meta={<Badge tone="neutral">{(activityData.logs || []).length}</Badge>}
+                  actions={
+                    <Button size="sm" variant="ghost" onClick={() => setActivityData(null)}>
+                      Reload
+                    </Button>
+                  }
+                  padded={false}
+                >
+                  <DataTable
+                    className="border-0 rounded-none"
+                    maxHeight="24rem"
+                    rows={activityData.logs || []}
+                    rowKey={(l: any) => l.id}
+                    rowTone={(l: any) => (l.action?.startsWith("reset") ? "var(--danger-strong)" : null)}
+                    empty={<span className="text-[var(--text-muted)]">No activity recorded yet.</span>}
+                    columns={[
+                      {
+                        key: "time",
+                        header: "Time",
+                        sortValue: (l: any) => dateSort(l.time),
+                        render: (l: any) => (
+                          <span className="tabular-nums whitespace-nowrap text-[var(--text-muted)]">
+                            {formatDateTime(l.time)}
                           </span>
-                          <span className="text-xs font-medium text-gray-500">{count} events</span>
-                        </div>
+                        ),
+                      },
+                      { key: "user", header: "User", sortValue: (l: any) => l.user, render: (l: any) => l.user || "—" },
+                      {
+                        key: "action",
+                        header: "Action",
+                        sortValue: (l: any) => l.action,
+                        render: (l: any) => {
+                          const tone: Tone = l.action?.startsWith("reset")
+                            ? "danger"
+                            : l.action?.startsWith("upload")
+                              ? "ok"
+                              : l.action?.startsWith("add")
+                                ? "accent"
+                                : l.action === "login"
+                                  ? "info"
+                                  : "neutral"
+                          return <Badge tone={tone}>{l.action?.replace(/_/g, " ")}</Badge>
+                        },
+                      },
+                      {
+                        key: "details",
+                        header: "Details",
+                        hideBelow: "md",
+                        render: (l: any) => <span className="block max-w-[280px] truncate">{l.details || "—"}</span>,
+                      },
+                    ]}
+                  />
+                </Card>
+
+                {Object.keys(activityData.summary?.by_user || {}).length > 0 && (
+                  <Card title="Activity by user">
+                    <ul className="space-y-1.5">
+                      {Object.entries(activityData.summary?.by_user || {}).map(([user, count]: [string, any]) => (
+                        <li key={user} className="flex items-center justify-between gap-3">
+                          <span className="flex items-center gap-2 text-[length:var(--text-sm)] text-[var(--text)]">
+                            <User className="w-3.5 h-3.5 text-[var(--text-muted)]" /> {user}
+                          </span>
+                          <span className="text-[length:var(--text-xs)] tabular-nums text-[var(--text-muted)]">
+                            {count} events
+                          </span>
+                        </li>
                       ))}
-                    </div>
-                  </div>
+                    </ul>
+                  </Card>
                 )}
               </>
             )}
-          </div>
-          )}
+          </>
+        )}
+      </PageBody>
 
-        </div>
-      </div>
-    </div>
+      {/* Typed confirmation for every destructive reset. */}
+      <Modal
+        open={!!resetTarget}
+        onOpenChange={(o) => {
+          if (!o) {
+            setResetTarget(null)
+            setResetConfirm("")
+          }
+        }}
+        size="sm"
+        title={resetTarget?.label || ""}
+        description={resetTarget?.blurb}
+        footer={
+          <>
+            <Button
+              variant="ghost"
+              onClick={() => {
+                setResetTarget(null)
+                setResetConfirm("")
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="danger"
+              onClick={runReset}
+              loading={!!deleting}
+              disabled={resetConfirm !== resetTarget?.phrase}
+            >
+              {resetTarget?.label}
+            </Button>
+          </>
+        }
+      >
+        <Notice tone="danger" title="This cannot be undone">
+          Download a backup from the System tab first if you are not certain.
+        </Notice>
+        <p className="mt-3 mb-1.5 text-[length:var(--text-sm)] text-[var(--text)]">
+          Type <span className="font-mono font-semibold">{resetTarget?.phrase}</span> to confirm.
+        </p>
+        <Input
+          value={resetConfirm}
+          onChange={(e) => setResetConfirm(e.target.value)}
+          placeholder={resetTarget?.phrase}
+          aria-label={`Type ${resetTarget?.phrase} to confirm`}
+        />
+      </Modal>
+    </Page>
   )
 }

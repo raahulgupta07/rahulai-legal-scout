@@ -1,10 +1,52 @@
 "use client"
 
-import { useEffect, useState, useRef } from "react"
-import { Plus, Search, Trash2, Pencil, X, Check, Building, ChevronDown, ChevronUp, FileUp, Loader2, FileText, Users, MapPin, ScrollText, Sparkles, ArrowLeft, Brain, CheckCircle } from "lucide-react"
+import { useEffect, useMemo, useState, useRef } from "react"
+import {
+  Plus,
+  Trash2,
+  Pencil,
+  Check,
+  Building,
+  ChevronDown,
+  FileUp,
+  Loader2,
+  FileText,
+  Users,
+  MapPin,
+  ScrollText,
+  Sparkles,
+  ArrowLeft,
+  Brain,
+} from "lucide-react"
 import apiClient, { authFetch } from "@/lib/api-client"
 import { toast } from "sonner"
 import DocViewer from "@/components/ui/DocViewer"
+import { cn } from "@/lib/utils"
+import {
+  Badge,
+  Button,
+  type Column,
+  ConfirmButton,
+  DataTable,
+  EmptyState,
+  IconButton,
+  LoadingScreen,
+  Notice,
+  Page,
+  PageBody,
+  PageHeader,
+  SearchInput,
+  StatRow,
+  StatTile,
+  TextField,
+  Toolbar,
+  assertSuccess,
+  ensureOk,
+  errorMessage,
+  focusRing,
+  formatNumber,
+} from "@/components/ui/kit"
+import { TrainingLogPanel, type TrainingLogLine } from "../components/TrainingLogPanel"
 
 // ─── Types ──────────────────────────────────────────────────────────
 interface Director {
@@ -34,51 +76,82 @@ const EMPTY: CompanyData = {
   auditor_name: "", auditor_fee: "",
 }
 
-interface RegistryField { field_key: string; label: string; description: string; field_type: string; used_by_templates: string[] }
+interface RegistryField {
+  field_key: string; label: string; description: string; field_type: string; used_by_templates: string[]
+}
 
-// ─── Reusable Components ────────────────────────────────────────────
-function Section({ title, icon, defaultOpen = true, children }: {
-  title: string; icon: React.ReactNode; defaultOpen?: boolean; children: React.ReactNode
+/** The fields a document actually needs. Drives the completeness column. */
+const COMPLETENESS_FIELDS = [
+  "company_name", "company_registration_number", "registered_office", "directors",
+  "shareholders", "total_shares", "status", "company_type", "principal_activity", "registration_date",
+]
+
+const completeness = (c: Record<string, unknown>) => {
+  const filled = COMPLETENESS_FIELDS.filter((f) => {
+    const v = c[f]
+    return v && String(v).trim() !== "" && v !== "—"
+  }).length
+  return Math.round((filled / COMPLETENESS_FIELDS.length) * 100)
+}
+
+const completenessTone = (pct: number) => (pct >= 80 ? "ok" : pct >= 50 ? "warn" : "danger")
+
+// ─── Collapsible form section ───────────────────────────────────────
+function Section({ title, icon, defaultOpen = true, meta, children }: {
+  title: string; icon: React.ReactNode; defaultOpen?: boolean; meta?: React.ReactNode; children: React.ReactNode
 }) {
   const [open, setOpen] = useState(defaultOpen)
   return (
-    <div className="mb-3">
-      <button onClick={() => setOpen(!open)} className="flex items-center justify-between w-full py-2 group">
-        <div className="flex items-center gap-2">
-          {icon}
-          <span className="text-[11px] font-semibold uppercase tracking-wider text-muted group-hover:text-primary transition-colors">{title}</span>
-        </div>
-        {open ? <ChevronUp className="w-3 h-3 text-muted" /> : <ChevronDown className="w-3 h-3 text-muted" />}
+    <section className="border-b border-[var(--border)] last:border-b-0">
+      <button
+        onClick={() => setOpen(!open)}
+        aria-expanded={open}
+        className={cn("flex items-center justify-between w-full py-2.5 group text-left", focusRing)}
+      >
+        <span className="flex items-center gap-2 min-w-0">
+          <span className="text-[var(--text-muted)] shrink-0">{icon}</span>
+          <span className="text-[length:var(--text-2xs)] font-semibold uppercase tracking-[var(--tracking-tag)] text-[var(--text-secondary)] group-hover:text-[var(--text)] transition-colors">
+            {title}
+          </span>
+          {meta}
+        </span>
+        <ChevronDown
+          className={cn("w-3.5 h-3.5 text-[var(--text-muted)] transition-transform shrink-0", open && "rotate-180")}
+        />
       </button>
-      {open && <div className="pb-2">{children}</div>}
-    </div>
+      {open && <div className="pb-4">{children}</div>}
+    </section>
   )
 }
 
-function Field({ label, value, onChange, type = "text", placeholder = "", wide = false, required = false }: {
-  label: string; value: string; onChange: (v: string) => void
-  type?: string; placeholder?: string; wide?: boolean; required?: boolean
+/** Repeating sub-record (a director, a member). */
+function RepeaterCard({ title, onRemove, children }: {
+  title: string; onRemove: () => void; children: React.ReactNode
 }) {
   return (
-    <div className={wide ? "md:col-span-2" : ""}>
-      <label className="block text-[11px] font-medium text-muted mb-0.5">
-        {label}{required && <span className="text-brand ml-0.5">*</span>}
-      </label>
-      <input type={type} value={value || ""} onChange={(e) => onChange(e.target.value)} placeholder={placeholder}
-        className="w-full px-2.5 py-1.5 text-sm bg-background border border-primary/10 rounded-lg text-primary placeholder:text-muted/40 focus:outline-none focus:border-brand/40 focus:ring-1 focus:ring-brand/20 transition-colors"
-      />
+    <div className="border border-[var(--border)] rounded-[var(--radius-sm)] p-3 mb-2 bg-[var(--bg-secondary)]">
+      <div className="flex items-center justify-between mb-2.5">
+        <span className="text-[length:var(--text-2xs)] font-semibold uppercase tracking-[var(--tracking-tag)] text-[var(--text-secondary)]">
+          {title}
+        </span>
+        <Button size="sm" variant="ghost" className="text-[var(--danger-strong)]" onClick={onRemove}>
+          Remove
+        </Button>
+      </div>
+      {children}
     </div>
   )
 }
 
-// ─── Company Form (right panel) ─────────────────────────────────────
+// ─── Company Form ───────────────────────────────────────────────────
 function CompanyForm({ data, onChange, onSave, onCancel, saving, extracting, isEdit, registry }: {
   data: CompanyData; onChange: (d: CompanyData) => void
   onSave: () => void; onCancel: () => void; saving: boolean; extracting: boolean; isEdit: boolean
   registry?: RegistryField[]
 }) {
   const set = (key: string, val: any) => onChange({ ...data, [key]: val })
-  const setCustom = (key: string, val: any) => onChange({ ...data, custom_fields: { ...(data.custom_fields || {}), [key]: val } })
+  const setCustom = (key: string, val: any) =>
+    onChange({ ...data, custom_fields: { ...(data.custom_fields || {}), [key]: val } })
   const setDirector = (i: number, key: string, val: string) => {
     const dirs = [...data.directors]; dirs[i] = { ...dirs[i], [key]: val }; onChange({ ...data, directors: dirs })
   }
@@ -86,113 +159,168 @@ function CompanyForm({ data, onChange, onSave, onCancel, saving, extracting, isE
     const mems = [...data.members]; mems[i] = { ...mems[i], [key]: val }; onChange({ ...data, members: mems })
   }
 
-  if (extracting) return (
-    <div className="flex flex-col items-center justify-center h-full gap-3">
-      <Loader2 className="w-8 h-8 animate-spin text-brand" />
-      <p className="text-sm text-muted">Dash is reading the PDF...</p>
-    </div>
-  )
+  if (extracting) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full gap-2 text-[var(--text-muted)]">
+        <Loader2 className="w-6 h-6 animate-spin" />
+        <p className="text-[length:var(--text-sm)]">Reading the PDF…</p>
+      </div>
+    )
+  }
+
+  const grid = "grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-3"
 
   return (
     <>
-      <div className="flex-1 overflow-y-auto px-4 py-3">
-        <Section title="Company Information" icon={<Building className="w-3.5 h-3.5 text-brand" />}>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
-            <Field label="Company Name (English)" value={data.company_name_english} onChange={v => set("company_name_english", v)} required wide />
-            <Field label="Company Name (Myanmar)" value={data.company_name_myanmar} onChange={v => set("company_name_myanmar", v)} wide />
-            <Field label="Registration Number" value={data.company_registration_number} onChange={v => set("company_registration_number", v)} required />
-            <Field label="Registration Date" value={data.registration_date} onChange={v => set("registration_date", v)} type="date" />
-            <Field label="Status" value={data.status} onChange={v => set("status", v)} />
-            <Field label="Company Type" value={data.company_type} onChange={v => set("company_type", v)} />
-            <Field label="Foreign Company" value={data.foreign_company} onChange={v => set("foreign_company", v)} placeholder="Yes/No" />
-            <Field label="Small/Big Company (DICA)" value={data.small_company} onChange={v => set("small_company", v)} placeholder="Small/Big" />
-            <Field label="Under CorpSec Management" value={data.under_corpsec_management} onChange={v => set("under_corpsec_management", v)} placeholder="Yes/No" />
-            <Field label="Group Company" value={data.group_company} onChange={v => set("group_company", v)} placeholder="Yes/No" />
-            <Field label="Principal Activity" value={data.principal_activity} onChange={v => set("principal_activity", v)} wide />
-            <Field label="Last Annual Return" value={data.date_of_last_annual_return} onChange={v => set("date_of_last_annual_return", v)} type="date" />
-            <Field label="Previous Reg Number" value={data.previous_registration_number} onChange={v => set("previous_registration_number", v)} />
+      <div className="flex-1 overflow-y-auto px-4">
+        <Section title="Company information" icon={<Building className="w-3.5 h-3.5" />}>
+          <div className={grid}>
+            <TextField label="Company name (English)" value={data.company_name_english} onChange={(v) => set("company_name_english", v)} required wide />
+            <TextField label="Company name (Myanmar)" value={data.company_name_myanmar} onChange={(v) => set("company_name_myanmar", v)} wide />
+            <TextField label="Registration number" value={data.company_registration_number} onChange={(v) => set("company_registration_number", v)} required mono />
+            <TextField label="Registration date" value={data.registration_date} onChange={(v) => set("registration_date", v)} type="date" />
+            <TextField label="Status" value={data.status} onChange={(v) => set("status", v)} />
+            <TextField label="Company type" value={data.company_type} onChange={(v) => set("company_type", v)} />
+            <TextField label="Foreign company" value={data.foreign_company} onChange={(v) => set("foreign_company", v)} placeholder="Yes / No" />
+            <TextField label="Small or big (DICA)" value={data.small_company} onChange={(v) => set("small_company", v)} placeholder="Small / Big" />
+            <TextField label="Under CorpSec management" value={data.under_corpsec_management} onChange={(v) => set("under_corpsec_management", v)} placeholder="Yes / No" />
+            <TextField label="Group company" value={data.group_company} onChange={(v) => set("group_company", v)} placeholder="Yes / No" />
+            <TextField label="Principal activity" value={data.principal_activity} onChange={(v) => set("principal_activity", v)} wide />
+            <TextField label="Last annual return" value={data.date_of_last_annual_return} onChange={(v) => set("date_of_last_annual_return", v)} type="date" />
+            <TextField label="Previous reg. number" value={data.previous_registration_number} onChange={(v) => set("previous_registration_number", v)} mono />
           </div>
         </Section>
 
-        <Section title="Addresses" icon={<MapPin className="w-3.5 h-3.5 text-blue-500" />}>
-          <div className="grid grid-cols-1 gap-2.5">
-            <Field label="Registered Office Address" value={data.registered_office_address} onChange={v => set("registered_office_address", v)} wide />
-            <Field label="Principal Place of Business" value={data.principal_place_of_business} onChange={v => set("principal_place_of_business", v)} wide />
+        <Section title="Addresses" icon={<MapPin className="w-3.5 h-3.5" />}>
+          <div className="grid grid-cols-1 gap-3">
+            <TextField label="Registered office address" value={data.registered_office_address} onChange={(v) => set("registered_office_address", v)} />
+            <TextField label="Principal place of business" value={data.principal_place_of_business} onChange={(v) => set("principal_place_of_business", v)} />
           </div>
         </Section>
 
-        <Section title={`Directors (${data.directors?.length || 0})`} icon={<Users className="w-3.5 h-3.5 text-green-600" />}>
+        <Section
+          title="Directors"
+          icon={<Users className="w-3.5 h-3.5" />}
+          meta={<Badge tone="neutral">{data.directors?.length || 0}</Badge>}
+        >
           {(data.directors || []).map((dir, i) => (
-            <div key={i} className="border border-primary/8 rounded-lg p-3 mb-2 bg-accent/20">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-xs font-semibold text-primary">Director {i + 1}</span>
-                <button onClick={() => { const d = [...data.directors]; d.splice(i, 1); onChange({ ...data, directors: d }) }} className="text-xs text-red-500 hover:underline">Remove</button>
+            <RepeaterCard
+              key={i}
+              title={`Director ${i + 1}`}
+              onRemove={() => {
+                const d = [...data.directors]; d.splice(i, 1); onChange({ ...data, directors: d })
+              }}
+            >
+              <div className={grid}>
+                <TextField label="Name" value={dir.name} onChange={(v) => setDirector(i, "name", v)} />
+                <TextField label="Type" value={dir.type} onChange={(v) => setDirector(i, "type", v)} />
+                <TextField label="Date of appointment" value={dir.date_of_appointment} onChange={(v) => setDirector(i, "date_of_appointment", v)} type="date" />
+                <TextField label="Date of birth" value={dir.date_of_birth} onChange={(v) => setDirector(i, "date_of_birth", v)} type="date" />
+                <TextField label="Nationality" value={dir.nationality} onChange={(v) => setDirector(i, "nationality", v)} />
+                <TextField label="NRC / passport" value={dir.nrc_passport} onChange={(v) => setDirector(i, "nrc_passport", v)} mono />
+                <TextField label="Gender" value={dir.gender} onChange={(v) => setDirector(i, "gender", v)} />
+                <TextField label="Occupation" value={dir.business_occupation} onChange={(v) => setDirector(i, "business_occupation", v)} />
               </div>
-              <div className="grid grid-cols-2 gap-2">
-                <Field label="Name" value={dir.name} onChange={v => setDirector(i, "name", v)} />
-                <Field label="Type" value={dir.type} onChange={v => setDirector(i, "type", v)} />
-                <Field label="Date of Appointment" value={dir.date_of_appointment} onChange={v => setDirector(i, "date_of_appointment", v)} type="date" />
-                <Field label="Date of Birth" value={dir.date_of_birth} onChange={v => setDirector(i, "date_of_birth", v)} type="date" />
-                <Field label="Nationality" value={dir.nationality} onChange={v => setDirector(i, "nationality", v)} />
-                <Field label="NRC/Passport" value={dir.nrc_passport} onChange={v => setDirector(i, "nrc_passport", v)} />
-                <Field label="Gender" value={dir.gender} onChange={v => setDirector(i, "gender", v)} />
-                <Field label="Occupation" value={dir.business_occupation} onChange={v => setDirector(i, "business_occupation", v)} />
-              </div>
-            </div>
+            </RepeaterCard>
           ))}
-          <button onClick={() => onChange({ ...data, directors: [...(data.directors || []), { name: "", type: "Director", date_of_appointment: "", date_of_birth: "", nationality: "", nrc_passport: "", gender: "", business_occupation: "" }] })}
-            className="text-xs text-brand hover:underline mt-1">+ Add Director</button>
+          <Button
+            size="sm"
+            icon={<Plus className="w-3.5 h-3.5" />}
+            onClick={() =>
+              onChange({
+                ...data,
+                directors: [...(data.directors || []), {
+                  name: "", type: "Director", date_of_appointment: "", date_of_birth: "",
+                  nationality: "", nrc_passport: "", gender: "", business_occupation: "",
+                }],
+              })
+            }
+          >
+            Add director
+          </Button>
         </Section>
 
-        <Section title="Ultimate Holding Company" icon={<Building className="w-3.5 h-3.5 text-purple-500" />} defaultOpen={!!data.ultimate_holding_company_name}>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
-            <Field label="Company Name" value={data.ultimate_holding_company_name} onChange={v => set("ultimate_holding_company_name", v)} wide />
-            <Field label="Jurisdiction" value={data.ultimate_holding_company_jurisdiction} onChange={v => set("ultimate_holding_company_jurisdiction", v)} />
-            <Field label="Registration Number" value={data.ultimate_holding_company_registration_number} onChange={v => set("ultimate_holding_company_registration_number", v)} />
+        <Section
+          title="Ultimate holding company"
+          icon={<Building className="w-3.5 h-3.5" />}
+          defaultOpen={!!data.ultimate_holding_company_name}
+        >
+          <div className={grid}>
+            <TextField label="Company name" value={data.ultimate_holding_company_name} onChange={(v) => set("ultimate_holding_company_name", v)} wide />
+            <TextField label="Jurisdiction" value={data.ultimate_holding_company_jurisdiction} onChange={(v) => set("ultimate_holding_company_jurisdiction", v)} />
+            <TextField label="Registration number" value={data.ultimate_holding_company_registration_number} onChange={(v) => set("ultimate_holding_company_registration_number", v)} mono />
           </div>
         </Section>
 
-        <Section title={`Share Capital & Members (${data.members?.length || 0})`} icon={<ScrollText className="w-3.5 h-3.5 text-amber-500" />}>
-          <div className="grid grid-cols-2 gap-2.5 mb-3">
-            <Field label="Total Shares Issued" value={data.total_shares_issued} onChange={v => set("total_shares_issued", v)} />
-            <Field label="Total Capital" value={data.total_capital} onChange={v => set("total_capital", v)} placeholder="e.g. 2,550,000,000" />
-            <Field label="Currency" value={data.currency_of_share_capital} onChange={v => set("currency_of_share_capital", v)} />
-            <Field label="Consideration (Amount Paid)" value={data.consideration_amount_paid} onChange={v => set("consideration_amount_paid", v)} placeholder="Total amount paid" />
+        <Section
+          title="Share capital & members"
+          icon={<ScrollText className="w-3.5 h-3.5" />}
+          meta={<Badge tone="neutral">{data.members?.length || 0}</Badge>}
+        >
+          <div className={cn(grid, "mb-3")}>
+            <TextField label="Total shares issued" value={data.total_shares_issued} onChange={(v) => set("total_shares_issued", v)} mono />
+            <TextField label="Total capital" value={data.total_capital} onChange={(v) => set("total_capital", v)} placeholder="2,550,000,000" mono />
+            <TextField label="Currency" value={data.currency_of_share_capital} onChange={(v) => set("currency_of_share_capital", v)} />
+            <TextField label="Consideration (amount paid)" value={data.consideration_amount_paid} onChange={(v) => set("consideration_amount_paid", v)} mono />
           </div>
           {(data.members || []).map((mem, i) => (
-            <div key={i} className="border border-primary/8 rounded-lg p-3 mb-2 bg-accent/20">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-xs font-semibold text-primary">{mem.type === "corporate" ? "Corporate" : "Individual"} Member {i + 1}</span>
-                <button onClick={() => { const m = [...data.members]; m.splice(i, 1); onChange({ ...data, members: m }) }} className="text-xs text-red-500 hover:underline">Remove</button>
+            <RepeaterCard
+              key={i}
+              title={`${mem.type === "corporate" ? "Corporate" : "Individual"} member ${i + 1}`}
+              onRemove={() => {
+                const m = [...data.members]; m.splice(i, 1); onChange({ ...data, members: m })
+              }}
+            >
+              <div className={grid}>
+                <TextField label="Name" value={mem.name} onChange={(v) => setMember(i, "name", v)} wide />
+                <TextField label="Type" value={mem.type} onChange={(v) => setMember(i, "type", v)} />
+                <TextField label="Shares" value={mem.share_quantity} onChange={(v) => setMember(i, "share_quantity", v)} mono />
+                <TextField label="Amount paid" value={mem.amount_paid} onChange={(v) => setMember(i, "amount_paid", v)} mono />
+                <TextField label="Amount unpaid" value={mem.amount_unpaid} onChange={(v) => setMember(i, "amount_unpaid", v)} mono />
+                <TextField label="Share class" value={mem.share_class} onChange={(v) => setMember(i, "share_class", v)} />
+                {mem.type === "corporate" && (
+                  <>
+                    <TextField label="Reg. number" value={mem.registration_number} onChange={(v) => setMember(i, "registration_number", v)} mono />
+                    <TextField label="Jurisdiction" value={mem.jurisdiction} onChange={(v) => setMember(i, "jurisdiction", v)} />
+                  </>
+                )}
               </div>
-              <div className="grid grid-cols-2 gap-2">
-                <Field label="Name" value={mem.name} onChange={v => setMember(i, "name", v)} wide />
-                <Field label="Type" value={mem.type} onChange={v => setMember(i, "type", v)} />
-                <Field label="Shares" value={mem.share_quantity} onChange={v => setMember(i, "share_quantity", v)} />
-                <Field label="Amount Paid" value={mem.amount_paid} onChange={v => setMember(i, "amount_paid", v)} />
-                <Field label="Amount Unpaid" value={mem.amount_unpaid} onChange={v => setMember(i, "amount_unpaid", v)} />
-                <Field label="Share Class" value={mem.share_class} onChange={v => setMember(i, "share_class", v)} />
-                {mem.type === "corporate" && <>
-                  <Field label="Reg Number" value={mem.registration_number} onChange={v => setMember(i, "registration_number", v)} />
-                  <Field label="Jurisdiction" value={mem.jurisdiction} onChange={v => setMember(i, "jurisdiction", v)} />
-                </>}
-              </div>
-            </div>
+            </RepeaterCard>
           ))}
-          <button onClick={() => onChange({ ...data, members: [...(data.members || []), { type: "individual", name: "", registration_number: "", jurisdiction: "", share_quantity: "", amount_paid: "", amount_unpaid: "", share_class: "ORD" }] })}
-            className="text-xs text-brand hover:underline mt-1">+ Add Member</button>
+          <Button
+            size="sm"
+            icon={<Plus className="w-3.5 h-3.5" />}
+            onClick={() =>
+              onChange({
+                ...data,
+                members: [...(data.members || []), {
+                  type: "individual", name: "", registration_number: "", jurisdiction: "",
+                  share_quantity: "", amount_paid: "", amount_unpaid: "", share_class: "ORD",
+                }],
+              })
+            }
+          >
+            Add member
+          </Button>
         </Section>
 
         {registry && registry.length > 0 && (
-          <Section title={`Template Required Fields (${registry.length})`} icon={<Sparkles className="w-3.5 h-3.5 text-purple-500" />} defaultOpen={false}>
-            <p className="text-[10px] text-muted mb-2">Auto-discovered from trained templates. Fill any that apply — used during document generation.</p>
-            <div className="grid grid-cols-2 gap-2.5">
-              {registry.map(rf => (
-                <Field
+          <Section
+            title="Template required fields"
+            icon={<Sparkles className="w-3.5 h-3.5" />}
+            meta={<Badge tone="accent">{registry.length}</Badge>}
+            defaultOpen={false}
+          >
+            <p className="mb-3 text-[length:var(--text-xs)] text-[var(--text-muted)]">
+              Auto-discovered from trained templates. Fill any that apply — these are read during document generation.
+            </p>
+            <div className={grid}>
+              {registry.map((rf) => (
+                <TextField
                   key={rf.field_key}
                   label={rf.label}
                   value={(data.custom_fields || {})[rf.field_key] || ""}
-                  onChange={v => setCustom(rf.field_key, v)}
+                  onChange={(v) => setCustom(rf.field_key, v)}
                   placeholder={rf.description ? rf.description.slice(0, 60) : ""}
                   type={rf.field_type === "date" ? "date" : "text"}
                   wide={rf.field_type === "text" && rf.field_key.length > 25}
@@ -202,60 +330,98 @@ function CompanyForm({ data, onChange, onSave, onCancel, saving, extracting, isE
           </Section>
         )}
 
-        <Section title="Audit & Financial Year" icon={<ScrollText className="w-3.5 h-3.5 text-orange-500" />} defaultOpen={!!(data.auditor_name || data.financial_year_end_date)}>
-          <div className="grid grid-cols-2 gap-2.5">
-            <Field label="Financial Year End Date" value={data.financial_year_end_date} onChange={v => set("financial_year_end_date", v)} placeholder="e.g. 31 March 2026" />
-            <Field label="Next Financial Year End" value={data.next_financial_year_end_date} onChange={v => set("next_financial_year_end_date", v)} placeholder="e.g. 31 March 2027" />
-            <Field label="Auditor Name" value={data.auditor_name} onChange={v => set("auditor_name", v)} placeholder="Audit firm or individual" wide />
-            <Field label="Auditor Fee" value={data.auditor_fee} onChange={v => set("auditor_fee", v)} placeholder="e.g. 500 USD" />
+        <Section
+          title="Audit & financial year"
+          icon={<ScrollText className="w-3.5 h-3.5" />}
+          defaultOpen={!!(data.auditor_name || data.financial_year_end_date)}
+        >
+          <div className={grid}>
+            <TextField label="Financial year end" value={data.financial_year_end_date} onChange={(v) => set("financial_year_end_date", v)} placeholder="31 March 2026" />
+            <TextField label="Next financial year end" value={data.next_financial_year_end_date} onChange={(v) => set("next_financial_year_end_date", v)} placeholder="31 March 2027" />
+            <TextField label="Auditor name" value={data.auditor_name} onChange={(v) => set("auditor_name", v)} placeholder="Audit firm or individual" wide />
+            <TextField label="Auditor fee" value={data.auditor_fee} onChange={(v) => set("auditor_fee", v)} placeholder="500 USD" mono />
           </div>
         </Section>
 
-        <Section title={`Filing History (${data.filing_history?.length || 0})`} icon={<FileText className="w-3.5 h-3.5 text-gray-500" />} defaultOpen={false}>
-          {(data.filing_history || []).map((f, i) => (
-            <div key={i} className="flex items-center gap-3 text-xs py-1.5 border-b border-primary/5">
-              <span className="text-muted flex-1">{f.form_type}</span>
-              <span className="text-primary font-mono">{f.effective_date}</span>
-            </div>
-          ))}
-          {(!data.filing_history || data.filing_history.length === 0) && <p className="text-xs text-muted/60">No filing history</p>}
+        <Section
+          title="Filing history"
+          icon={<FileText className="w-3.5 h-3.5" />}
+          meta={<Badge tone="neutral">{data.filing_history?.length || 0}</Badge>}
+          defaultOpen={false}
+        >
+          {(data.filing_history || []).length === 0 ? (
+            <p className="text-[length:var(--text-xs)] text-[var(--text-muted)]">No filing history on record.</p>
+          ) : (
+            <ul>
+              {(data.filing_history || []).map((f, i) => (
+                <li
+                  key={i}
+                  className="flex items-center gap-3 py-1.5 border-b border-[var(--border)] last:border-b-0 text-[length:var(--text-xs)]"
+                >
+                  <span className="flex-1 text-[var(--text-secondary)]">{f.form_type}</span>
+                  <span className="font-mono tabular-nums text-[var(--text)]">{f.effective_date}</span>
+                </li>
+              ))}
+            </ul>
+          )}
         </Section>
       </div>
 
-      <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-primary/10 bg-accent/20">
-        <button onClick={onCancel} className="px-4 py-2 text-xs font-medium text-muted hover:text-primary rounded-lg hover:bg-accent">Back to List</button>
-        <button onClick={onSave} disabled={saving || !data.company_name_english}
-          className="flex items-center gap-1.5 px-4 py-2 text-xs font-medium bg-primary text-white rounded-lg hover:bg-primary/80 disabled:opacity-40">
-          <Check className="w-3.5 h-3.5" />{saving ? "Saving..." : isEdit ? "Update Company" : "Save Company"}
-        </button>
+      <div className="shrink-0 flex items-center justify-end gap-2 px-4 py-3 border-t border-[var(--border)] bg-[var(--surface)]">
+        <Button variant="ghost" onClick={onCancel}>
+          Back to list
+        </Button>
+        <Button
+          variant="primary"
+          onClick={onSave}
+          loading={saving}
+          disabled={!data.company_name_english}
+          icon={<Check className="w-3.5 h-3.5" />}
+        >
+          {isEdit ? "Update company" : "Save company"}
+        </Button>
       </div>
     </>
   )
 }
 
-// ─── Extract Log Pane (streaming) ───────────────────────────────────
+// ─── Extract log (streaming ND-JSON) ────────────────────────────────
+const STAGE_TONE: Record<string, string> = {
+  error: "text-[var(--danger-strong)]",
+  warn: "text-[var(--warn)]",
+  done: "text-[var(--ok-strong)]",
+  ai: "text-[var(--brand)]",
+}
+
 function ExtractLogPane({ logs }: { logs: { stage: string; msg: string }[] }) {
   const ref = useRef<HTMLDivElement>(null)
-  useEffect(() => { ref.current?.scrollTo({ top: ref.current.scrollHeight, behavior: "smooth" }) }, [logs.length])
-  const icon = (s: string) =>
-    s === "upload" ? "⬆" : s === "save" ? "💾" : s === "parse" ? "📖" :
-    s === "ai" ? "🤖" : s === "warn" ? "⚠" : s === "done" ? "✅" : s === "error" ? "✗" : "•"
-  const color = (s: string) =>
-    s === "error" ? "text-red-500" : s === "warn" ? "text-amber-500" :
-    s === "done" ? "text-green-600" : s === "ai" ? "text-brand" : "text-primary/80"
+  useEffect(() => {
+    ref.current?.scrollTo({ top: ref.current.scrollHeight, behavior: "smooth" })
+  }, [logs.length])
+
   return (
-    <div className="flex-1 flex flex-col bg-[#1a1a1a] text-green-400 font-mono text-xs overflow-hidden">
-      <div className="px-4 py-2 border-b border-green-900/30 flex items-center gap-2 bg-black/40">
-        <Loader2 className="w-3 h-3 animate-spin" />
-        <span className="text-green-300">$ scout extract --stream</span>
+    <div className="flex-1 flex flex-col overflow-hidden bg-[var(--bg-secondary)]">
+      <div className="flex items-center gap-2 px-4 py-2 border-b border-[var(--border)] bg-[var(--surface)]">
+        <Loader2 className="w-3.5 h-3.5 animate-spin text-[var(--text-muted)]" />
+        <span className="text-[length:var(--text-xs)] font-medium text-[var(--text-secondary)]">
+          Extracting company data
+        </span>
       </div>
-      <div ref={ref} className="flex-1 overflow-y-auto px-4 py-3 space-y-1">
-        {logs.length === 0 && <div className="text-green-700">Waiting for events…</div>}
+      <div
+        ref={ref}
+        role="log"
+        aria-live="polite"
+        className="flex-1 overflow-y-auto px-4 py-3 font-[family-name:var(--font-mono)] text-[length:var(--text-2xs)] leading-5"
+      >
+        {logs.length === 0 && <div className="text-[var(--text-muted)]">Waiting for events…</div>}
         {logs.map((l, i) => (
-          <div key={i} className={`flex gap-2 ${color(l.stage).replace('text-','text-')}`}>
-            <span className="text-green-700 shrink-0">[{String(i + 1).padStart(2, "0")}]</span>
-            <span className="shrink-0">{icon(l.stage)}</span>
-            <span className="whitespace-pre-wrap break-words text-green-200">{l.msg}</span>
+          <div key={i} className="flex gap-2">
+            <span className="text-[var(--text-muted)] shrink-0 tabular-nums">
+              {String(i + 1).padStart(2, "0")}
+            </span>
+            <span className={cn("whitespace-pre-wrap break-words", STAGE_TONE[l.stage] ?? "text-[var(--text-secondary)]")}>
+              {l.msg}
+            </span>
           </div>
         ))}
       </div>
@@ -263,128 +429,138 @@ function ExtractLogPane({ logs }: { logs: { stage: string; msg: string }[] }) {
   )
 }
 
-// ─── Split View (PDF left + Form right) ─────────────────────────────
-function SplitView({ pdfUrl, formData, onChange, onSave, onCancel, saving, extracting, isEdit, onExtract, pdfReady, extractLogs, registry }: {
+// ─── Split view: PDF beside the form ────────────────────────────────
+function SplitView({
+  pdfUrl, formData, onChange, onSave, onCancel, saving, extracting, isEdit,
+  onExtract, pdfReady, extractLogs, registry,
+}: {
   pdfUrl: string | null; formData: CompanyData; onChange: (d: CompanyData) => void
   onSave: () => void; onCancel: () => void; saving: boolean; extracting: boolean
   isEdit: boolean; onExtract?: () => void; pdfReady?: boolean; extractLogs?: { stage: string; msg: string }[]
   registry?: RegistryField[]
 }) {
   return (
-    <div className="flex flex-col h-full">
-      <div className="flex items-center justify-between p-4 border-b border-primary/10 bg-card">
-        <div className="flex items-center gap-3">
-          <button onClick={onCancel} className="p-1.5 rounded-lg hover:bg-accent text-muted hover:text-primary"><ArrowLeft className="w-4 h-4" /></button>
-          <h1 className="text-lg font-semibold text-primary">{isEdit ? "Edit Company" : "New Company from PDF"}</h1>
-          {formData.company_name_english && <span className="text-xs text-brand bg-brand/10 px-2 py-0.5 rounded-full">{formData.company_name_english}</span>}
-        </div>
-      </div>
-      <div className="flex flex-1 gap-0 overflow-hidden">
-        {/* Left: PDF */}
-        <div className="w-1/2 flex flex-col border-r border-primary/10">
-          <div className="flex items-center justify-between px-4 py-2.5 border-b border-primary/10 bg-accent/30">
-            <div className="flex items-center gap-2">
-              <FileText className="w-4 h-4 text-brand" />
-              <span className="text-xs font-semibold text-primary">PDF Document</span>
-            </div>
-            {/* Extract button — only show when PDF loaded but not yet extracted */}
+    <Page>
+      <PageHeader
+        back={<IconButton aria-label="Back to companies" onClick={onCancel} icon={<ArrowLeft className="w-4 h-4" />} />}
+        title={isEdit ? "Edit company" : "New company from PDF"}
+        meta={formData.company_name_english ? <Badge tone="accent">{formData.company_name_english}</Badge> : undefined}
+      />
+      <div className="flex flex-1 min-h-0 split-view-mobile">
+        <div className="w-1/2 flex flex-col min-w-0 border-r border-[var(--border)]">
+          <div className="flex items-center justify-between gap-2 px-4 py-2 border-b border-[var(--border)] bg-[var(--surface)]">
+            <span className="flex items-center gap-2 text-[length:var(--text-xs)] font-medium text-[var(--text-secondary)]">
+              <FileText className="w-3.5 h-3.5" /> Source PDF
+            </span>
             {pdfReady && onExtract && !extracting && !formData.company_name_english && (
-              <button onClick={onExtract}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-brand text-white rounded-lg hover:bg-brand/90 animate-pulse">
-                <Sparkles className="w-3.5 h-3.5" /> Extract with AI
-              </button>
+              <Button variant="primary" size="sm" onClick={onExtract} icon={<Sparkles className="w-3.5 h-3.5" />}>
+                Extract with AI
+              </Button>
             )}
             {extracting && (
-              <div className="flex items-center gap-1.5 text-xs text-brand">
-                <Loader2 className="w-3.5 h-3.5 animate-spin" /> Extracting...
-              </div>
+              <Badge tone="warn" dot>
+                Extracting
+              </Badge>
             )}
           </div>
           {pdfUrl ? (
-            <DocViewer url={`${process.env.NEXT_PUBLIC_API_URL || ''}${pdfUrl}`} className="flex-1 w-full" />
+            <DocViewer url={`${process.env.NEXT_PUBLIC_API_URL || ""}${pdfUrl}`} className="flex-1 w-full" />
           ) : (
-            <div className="flex-1 flex items-center justify-center text-muted text-sm">No PDF available</div>
+            <div className="flex-1 grid place-items-center text-[length:var(--text-sm)] text-[var(--text-muted)]">
+              No PDF available
+            </div>
           )}
         </div>
-        {/* Right: Form */}
-        <div className="w-1/2 flex flex-col">
-          <div className="flex items-center justify-between px-4 py-2.5 border-b border-primary/10 bg-accent/30">
-            <div className="flex items-center gap-2">
-              <Building className="w-4 h-4 text-brand" />
-              <span className="text-xs font-semibold text-primary">
-                {extracting ? "Extracting..." : formData.company_name_english ? "Company Data — Review & Edit" : "Waiting for extraction..."}
-              </span>
-            </div>
+
+        <div className="w-1/2 flex flex-col min-w-0">
+          <div className="flex items-center gap-2 px-4 py-2 border-b border-[var(--border)] bg-[var(--surface)]">
+            <Building className="w-3.5 h-3.5 text-[var(--text-muted)]" />
+            <span className="text-[length:var(--text-xs)] font-medium text-[var(--text-secondary)]">
+              {extracting
+                ? "Extracting…"
+                : formData.company_name_english
+                  ? "Company data — review & edit"
+                  : "Waiting for extraction"}
+            </span>
           </div>
           {extracting ? (
             <ExtractLogPane logs={extractLogs || []} />
           ) : !formData.company_name_english && !isEdit ? (
-            <div className="flex-1 flex flex-col items-center justify-center gap-4 text-center px-8">
-              <Sparkles className="w-12 h-12 text-brand/30" />
-              <div>
-                <p className="text-sm font-medium text-primary">PDF uploaded</p>
-                <p className="text-xs text-muted mt-1">Click "Extract with AI" button above the PDF to read and fill the form automatically.</p>
+            <div className="flex-1 grid place-items-center px-8">
+              <div className="text-center max-w-xs">
+                <Sparkles className="w-8 h-8 mx-auto text-[var(--text-muted)]" />
+                <p className="mt-3 text-[length:var(--text-sm)] font-medium text-[var(--text)]">PDF uploaded</p>
+                <p className="mt-1 text-[length:var(--text-xs)] text-[var(--text-muted)]">
+                  Choose <strong>Extract with AI</strong> above the PDF to read it and fill this form automatically.
+                </p>
               </div>
             </div>
           ) : (
-            <CompanyForm data={formData} onChange={onChange} onSave={onSave} onCancel={onCancel}
-              saving={saving} extracting={extracting} isEdit={isEdit} registry={registry} />
+            <CompanyForm
+              data={formData} onChange={onChange} onSave={onSave} onCancel={onCancel}
+              saving={saving} extracting={extracting} isEdit={isEdit} registry={registry}
+            />
           )}
         </div>
       </div>
-    </div>
+    </Page>
   )
 }
 
-// ─── Create New Company Choice Screen ───────────────────────────────
+// ─── Create choice ──────────────────────────────────────────────────
 function CreateChoiceScreen({ onUploadPdf, onManual, onCancel }: {
   onUploadPdf: () => void; onManual: () => void; onCancel: () => void
 }) {
+  const tile =
+    "flex-1 flex flex-col items-start gap-3 p-5 text-left bg-[var(--surface)] border border-[var(--border)] rounded-[var(--radius-sm)] hover:border-[var(--border-strong)] transition-colors"
   return (
-    <div className="flex flex-col h-full">
-      <div className="flex items-center gap-3 p-4 border-b border-primary/10 bg-card">
-        <button onClick={onCancel} className="p-1.5 rounded-lg hover:bg-accent text-muted hover:text-primary"><ArrowLeft className="w-4 h-4" /></button>
-        <h1 className="text-lg font-semibold text-primary">Create New Company</h1>
-      </div>
-      <div className="flex-1 flex items-center justify-center p-8">
-        <div className="flex gap-6 max-w-2xl w-full">
-          {/* Option 1: Upload PDF */}
-          <button onClick={onUploadPdf}
-            className="flex-1 flex flex-col items-center gap-4 p-8 border-2 border-dashed border-primary/15 rounded-2xl hover:border-brand/40 hover:bg-brand/5 transition-all group cursor-pointer">
-            <div className="w-16 h-16 rounded-2xl bg-brand/10 flex items-center justify-center group-hover:bg-brand/20 transition-colors">
-              <FileUp className="w-8 h-8 text-brand" />
-            </div>
-            <div className="text-center">
-              <p className="text-sm font-semibold text-primary">Upload DICA PDF</p>
-              <p className="text-xs text-muted mt-1">Upload a Company Extract PDF and AI will automatically fill all fields</p>
-            </div>
-            <span className="text-[11px] font-medium text-brand bg-brand/10 px-3 py-1 rounded-full">Recommended</span>
+    <Page>
+      <PageHeader
+        back={<IconButton aria-label="Back to companies" onClick={onCancel} icon={<ArrowLeft className="w-4 h-4" />} />}
+        title="Create a company"
+        description="Start from a DICA Company Extract, or enter the details by hand."
+      />
+      <PageBody>
+        <div className="flex flex-col sm:flex-row gap-3 max-w-3xl mx-auto mt-6">
+          <button onClick={onUploadPdf} className={cn(tile, focusRing)}>
+            <span className="w-9 h-9 grid place-items-center bg-[var(--bg-secondary)] border border-[var(--border)] rounded-[var(--radius-sm)]">
+              <FileUp className="w-4 h-4 text-[var(--text-secondary)]" />
+            </span>
+            <span>
+              <span className="flex items-center gap-2">
+                <span className="text-[length:var(--text-sm)] font-medium text-[var(--text)]">Upload DICA PDF</span>
+                <Badge tone="accent">Recommended</Badge>
+              </span>
+              <span className="block mt-1 text-[length:var(--text-xs)] text-[var(--text-muted)]">
+                AI reads the Company Extract and fills every field, including directors and members. You review before saving.
+              </span>
+            </span>
           </button>
 
-          {/* Option 2: Manual */}
-          <button onClick={onManual}
-            className="flex-1 flex flex-col items-center gap-4 p-8 border-2 border-dashed border-primary/15 rounded-2xl hover:border-primary/30 hover:bg-accent/50 transition-all group cursor-pointer">
-            <div className="w-16 h-16 rounded-2xl bg-accent flex items-center justify-center group-hover:bg-accent/80 transition-colors">
-              <Pencil className="w-8 h-8 text-muted" />
-            </div>
-            <div className="text-center">
-              <p className="text-sm font-semibold text-primary">Fill Manually</p>
-              <p className="text-xs text-muted mt-1">Enter all company information by hand using the form</p>
-            </div>
-            <span className="text-[11px] font-medium text-muted bg-accent px-3 py-1 rounded-full">Manual Entry</span>
+          <button onClick={onManual} className={cn(tile, focusRing)}>
+            <span className="w-9 h-9 grid place-items-center bg-[var(--bg-secondary)] border border-[var(--border)] rounded-[var(--radius-sm)]">
+              <Pencil className="w-4 h-4 text-[var(--text-secondary)]" />
+            </span>
+            <span>
+              <span className="text-[length:var(--text-sm)] font-medium text-[var(--text)]">Fill manually</span>
+              <span className="block mt-1 text-[length:var(--text-xs)] text-[var(--text-muted)]">
+                Enter company information by hand. Use this when you have no extract PDF to work from.
+              </span>
+            </span>
           </button>
         </div>
-      </div>
-    </div>
+      </PageBody>
+    </Page>
   )
 }
 
-// ─── Main Page ──────────────────────────────────────────────────────
+// ─── Main page ──────────────────────────────────────────────────────
 type PageView = "list" | "choice" | "pdf" | "manual" | "edit" | "view"
 
 export default function CompaniesPage() {
   const [companies, setCompanies] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState("")
   const [searchTerm, setSearchTerm] = useState("")
   const [view, setView] = useState<PageView>("list")
 
@@ -401,53 +577,73 @@ export default function CompaniesPage() {
   const [trainingComplete, setTrainingComplete] = useState(false)
   const [lastTrained, setLastTrained] = useState<string | null>(null)
   const [showTrainingLog, setShowTrainingLog] = useState(false)
-  const [trainingLogs, setTrainingLogs] = useState<{ time: string; msg: string; type: string }[]>([])
+  const [trainingLogs, setTrainingLogs] = useState<TrainingLogLine[]>([])
 
   const pdfInputRef = useRef<HTMLInputElement>(null)
   const abortControllerRef = useRef<AbortController | null>(null)
-  useEffect(() => { fetchCompanies(); fetchRegistry() }, [])
+
+  useEffect(() => {
+    fetchCompanies()
+    fetchRegistry()
+    // Abort a live training stream if the operator navigates away mid-run.
+    return () => abortControllerRef.current?.abort()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const fetchRegistry = async () => {
     try {
       const res = await authFetch(apiClient.fieldRegistry())
+      await ensureOk(res, "Failed to load the field registry")
       const data = await res.json()
-      if (data.success) setRegistry(data.fields || [])
-    } catch {}
+      setRegistry(data.fields || [])
+    } catch (e) {
+      // Non-fatal: the form still works, it just will not show template fields.
+      console.error("Field registry load error:", e)
+    }
   }
 
-  // Save company training logs when training completes
   useEffect(() => {
     if (trainingComplete && trainingLogs.length > 0 && !isTraining) {
-      authFetch(`${process.env.NEXT_PUBLIC_API_URL || ''}/api/training/save-logs`, {
+      authFetch(`${process.env.NEXT_PUBLIC_API_URL || ""}/api/training/save-logs`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ type: "companies", logs: trainingLogs })
-      }).catch((e) => { console.error("Save training logs error:", e) })
+        body: JSON.stringify({ type: "companies", logs: trainingLogs }),
+      }).catch((e) => console.error("Save training logs error:", e))
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [trainingComplete])
 
   const fetchCompanies = async () => {
+    setLoadError("")
     try {
       const res = await authFetch(apiClient.getDashboardData())
-      if (!res.ok) throw new Error(`Request failed: ${res.status}`)
+      await ensureOk(res, "Failed to load companies")
       const data = await res.json()
       setCompanies(data.companies || [])
-      // Fetch training status + persisted logs
+
       try {
         const tRes = await authFetch(apiClient.getTrainingStatus())
-        if (!tRes.ok) throw new Error(`Request failed: ${tRes.status}`)
+        await ensureOk(tRes, "Failed to load training status")
         const tData = await tRes.json()
-        if (tData.success && tData.data?.companies) {
+        if (tData.data?.companies) {
           if (tData.data.companies.last_trained) {
             setLastTrained(new Date(tData.data.companies.last_trained).toLocaleString())
           }
-          if (tData.data.companies.logs && tData.data.companies.logs.length > 0) {
+          if (tData.data.companies.logs?.length > 0) {
             setTrainingLogs(tData.data.companies.logs)
             setTrainingComplete(true)
           }
         }
-      } catch (e) { console.error("Training status error:", e) }
-    } catch (e) { console.error("Companies load error:", e) } finally { setLoading(false) }
+      } catch (e) {
+        console.error("Training status error:", e)
+      }
+    } catch (e: any) {
+      console.error("Companies load error:", e)
+      setLoadError(e?.message || "Failed to load companies")
+      toast.error(e?.message || "Failed to load companies")
+    } finally {
+      setLoading(false)
+    }
   }
 
   const resetState = () => {
@@ -455,11 +651,9 @@ export default function CompaniesPage() {
     setFormData({ ...EMPTY }); setSaving(false)
   }
 
-  // ── "Create New Company" button → choice screen ──
   const handleCreateNew = () => { resetState(); setView("choice") }
-
-  // ── Choice: Upload PDF ──
-  const handleChoosePdf = () => { pdfInputRef.current?.click() }
+  const handleChoosePdf = () => pdfInputRef.current?.click()
+  const handleChooseManual = () => { resetState(); setView("manual") }
 
   const handlePdfUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -469,30 +663,31 @@ export default function CompaniesPage() {
     setPdfFile(file)
     setView("pdf")
 
-    const fd = new FormData(); fd.append("file", file)
+    const fd = new FormData()
+    fd.append("file", file)
     try {
       const res = await authFetch(apiClient.uploadCompanyPdf(), { method: "POST", body: fd })
-      if (!res.ok) throw new Error(`Request failed: ${res.status}`)
+      await ensureOk(res, "Upload failed")
       const data = await res.json()
-      if (data.success) { setPdfUrl(data.pdf_url); setPdfReady(true) }
-      else toast.error(data.error || "Upload failed")
-    } catch (e) { console.error("PDF upload error:", e); toast.error("Failed to upload PDF") }
+      setPdfUrl(data.pdf_url)
+      setPdfReady(true)
+    } catch (err: any) {
+      console.error("PDF upload error:", err)
+      toast.error(err?.message || "Failed to upload PDF")
+    }
 
     if (pdfInputRef.current) pdfInputRef.current.value = ""
   }
 
-  // ── Choice: Manual ──
-  const handleChooseManual = () => { resetState(); setView("manual") }
-
-  // ── Extract with AI (streaming logs) ──
   const handleExtract = async () => {
     if (!pdfFile) return
     setExtracting(true)
     setExtractLogs([])
-    const fd = new FormData(); fd.append("file", pdfFile)
+    const fd = new FormData()
+    fd.append("file", pdfFile)
     try {
       const res = await authFetch(apiClient.extractCompanyPdfStream(), { method: "POST", body: fd })
-      if (!res.ok || !res.body) throw new Error(`Request failed: ${res.status}`)
+      if (!res.ok || !res.body) throw new Error(await errorMessage(res, "Extraction failed"))
 
       const reader = res.body.getReader()
       const decoder = new TextDecoder()
@@ -510,134 +705,124 @@ export default function CompaniesPage() {
           if (!trimmed) continue
           try {
             const ev = JSON.parse(trimmed)
-            setExtractLogs(prev => [...prev, { stage: ev.stage, msg: ev.msg }])
+            setExtractLogs((prev) => [...prev, { stage: ev.stage, msg: ev.msg }])
             if (ev.stage === "done" || ev.stage === "error") finalEvt = ev
-          } catch {}
+          } catch (err) {
+            console.error("Extract stream parse error:", err)
+          }
         }
       }
 
       if (finalEvt?.stage === "done" && finalEvt.data) {
         const d = finalEvt.data
-        d.directors = d.directors || []; d.members = d.members || []; d.filing_history = d.filing_history || []
+        d.directors = d.directors || []
+        d.members = d.members || []
+        d.filing_history = d.filing_history || []
         d.pdf_url = finalEvt.pdf_url || pdfUrl
         setFormData(d)
         if (finalEvt.pdf_url) setPdfUrl(finalEvt.pdf_url)
-        toast.success(`Extracted: ${d.company_name_english || "Company"}`)
+        toast.success(`Extracted ${d.company_name_english || "company"}`)
       } else {
         toast.error(finalEvt?.msg || "Extraction failed")
       }
-    } catch (e) { console.error("Extract error:", e); toast.error("Failed to extract") }
-    finally { setExtracting(false) }
+    } catch (err: any) {
+      console.error("Extract error:", err)
+      toast.error(err?.message || "Failed to extract")
+    } finally {
+      setExtracting(false)
+    }
   }
 
-  // ── View company (click row) ──
-  const handleView = async (company: any) => {
+  /** Shared by view and edit: load the full record, fall back to the list row. */
+  const openCompany = async (company: any, target: "view" | "edit") => {
     resetState()
     if (company.id) {
       try {
         const res = await authFetch(apiClient.getCompany(company.id))
-        if (!res.ok) throw new Error(`Request failed: ${res.status}`)
+        await ensureOk(res, "Failed to load company")
         const data = await res.json()
-        if (data.success && data.data) {
+        if (data.data) {
           const c = data.data
-          c.directors = c.directors || []; c.members = c.members || []; c.filing_history = c.filing_history || []
+          c.directors = c.directors || []
+          c.members = c.members || []
+          c.filing_history = c.filing_history || []
           setFormData(c)
           setPdfUrl(c.pdf_url || null)
-          setView("view")
+          setView(target)
           return
         }
-      } catch (e) { console.error("View company error:", e) }
+      } catch (e: any) {
+        console.error("Open company error:", e)
+        toast.error(e?.message || "Failed to load the full record — showing summary data")
+      }
     }
-    // Fallback
     setFormData({
       ...EMPTY,
       company_name_english: company.company_name || "",
       company_registration_number: company.company_registration_number || "",
       registered_office_address: company.registered_office || "",
-      directors: (company.directors || "").split(",").filter((n: string) => n.trim()).map((n: string) => ({
-        name: n.trim(), type: "Director", date_of_appointment: "", date_of_birth: "",
-        nationality: "", nrc_passport: "", gender: "", business_occupation: ""
-      })),
-      members: [], filing_history: [],
+      directors: (company.directors || "")
+        .split(",")
+        .filter((n: string) => n.trim())
+        .map((n: string) => ({
+          name: n.trim(), type: "Director", date_of_appointment: "", date_of_birth: "",
+          nationality: "", nrc_passport: "", gender: "", business_occupation: "",
+        })),
+      members: [],
+      filing_history: [],
     })
-    setView("view")
+    setView(target)
   }
 
-  // ── Edit existing company ──
-  const handleEdit = async (company: any) => {
-    resetState()
-    if (company.id) {
-      try {
-        const res = await authFetch(apiClient.getCompany(company.id))
-        if (!res.ok) throw new Error(`Request failed: ${res.status}`)
-        const data = await res.json()
-        if (data.success && data.data) {
-          const c = data.data
-          c.directors = c.directors || []; c.members = c.members || []; c.filing_history = c.filing_history || []
-          setFormData(c)
-          setPdfUrl(c.pdf_url || null)
-          setView("edit")
-          return
-        }
-      } catch (e) { console.error("Edit company error:", e) }
-    }
-    // Fallback
-    setFormData({
-      ...EMPTY,
-      company_name_english: company.company_name || "",
-      company_registration_number: company.company_registration_number || "",
-      registered_office_address: company.registered_office || "",
-      directors: (company.directors || "").split(",").filter((n: string) => n.trim()).map((n: string) => ({
-        name: n.trim(), type: "Director", date_of_appointment: "", date_of_birth: "",
-        nationality: "", nrc_passport: "", gender: "", business_occupation: ""
-      })),
-      members: [], filing_history: [],
-    })
-    setView("edit")
-  }
-
-  // ── Save → go back to list ──
   const handleSave = async () => {
-    if (!formData.company_name_english) { toast.error("Company name required"); return }
+    if (!formData.company_name_english) {
+      toast.error("Company name is required")
+      return
+    }
     setSaving(true)
     try {
       const payload = { ...formData, source: view === "edit" ? "edited" : "pdf_extract" }
       const res = await authFetch(apiClient.addCompany(), {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload)
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
       })
-      if (!res.ok) throw new Error(`Request failed: ${res.status}`)
-      const data = await res.json()
-      if (data.success) {
-        toast.success(`"${formData.company_name_english}" saved`)
-        await fetchCompanies()
-        setView("list")
-        resetState()
-      } else toast.error(data.error || "Save failed")
-    } catch (e) { console.error("Save error:", e); toast.error("Failed to save") } finally { setSaving(false) }
+      if (!res.ok) throw new Error(await errorMessage(res, "Save failed"))
+      await assertSuccess(res, "Save failed")
+      toast.success(`"${formData.company_name_english}" saved`)
+      await fetchCompanies()
+      setView("list")
+      resetState()
+    } catch (e: any) {
+      console.error("Save error:", e)
+      toast.error(e?.message || "Failed to save")
+    } finally {
+      setSaving(false)
+    }
   }
 
   const handleBack = () => { setView("list"); resetState() }
 
   const handleDelete = async (name: string) => {
-    if (!confirm(`Delete "${name}"?`)) return
     try {
       const res = await authFetch(apiClient.deleteCompany(name), { method: "DELETE" })
-      if (!res.ok) throw new Error(`Request failed: ${res.status}`)
-      const data = await res.json()
-      if (data.success) { toast.success("Deleted"); await fetchCompanies() }
-      else toast.error(data.error || "Failed")
-    } catch (e) { console.error("Delete error:", e); toast.error("Failed to delete") }
+      if (!res.ok) throw new Error(await errorMessage(res, "Failed to delete company"))
+      await assertSuccess(res, "Failed to delete company")
+      toast.success(`"${name}" deleted`)
+      await fetchCompanies()
+    } catch (e: any) {
+      console.error("Delete error:", e)
+      toast.error(e?.message || "Failed to delete")
+    }
   }
 
-  const addLog = (msg: string, type: string = "info") => {
-    const time = new Date().toLocaleTimeString()
-    setTrainingLogs(prev => [...prev, { time, msg, type }])
-  }
+  const addLog = (msg: string, type: string = "info") =>
+    setTrainingLogs((prev) => [...prev, { time: new Date().toLocaleTimeString(), msg, type }])
 
   const handleTrainAgent = async () => {
     const token = localStorage.getItem("ls_token")
     if (!token) {
-      toast.error("Please log in again")
+      toast.error("Please sign in again")
       return
     }
 
@@ -649,24 +834,26 @@ export default function CompaniesPage() {
     const controller = new AbortController()
     abortControllerRef.current = controller
 
-    addLog("━".repeat(55), "info")
-    addLog("🧠 COMPANY DEEP TRAINING", "info")
-    addLog("━".repeat(55), "info")
+    addLog("Company deep training", "info")
 
     try {
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || ''}/api/knowledge/train-companies-stream`, {
-        headers: { "Authorization": `Bearer ${token}` },
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || ""}/api/knowledge/train-companies-stream`, {
+        headers: { Authorization: `Bearer ${token}` },
         signal: controller.signal,
       })
 
       if (!res.ok) {
-        addLog(`✗ Training failed: ${res.status}`, "error")
-        toast.error(`Training failed: ${res.status}`)
+        const msg = await errorMessage(res, "Training failed")
+        addLog(msg, "error")
+        toast.error(msg)
         return
       }
 
       const reader = res.body?.getReader()
-      if (!reader) { addLog("✗ Stream failed", "error"); return }
+      if (!reader) {
+        addLog("Stream failed to open", "error")
+        return
+      }
       const decoder = new TextDecoder()
       let buffer = ""
 
@@ -684,47 +871,36 @@ export default function CompaniesPage() {
             const s = step.step
             const m = step.msg
 
-            if (s === "start") addLog(`📋 ${m}`, "info")
-            else if (s === "load") addLog(`📦 ${m}`, "success")
-            else if (s === "sync_start") addLog(`💾 ${m}`, "processing")
-            else if (s === "sync") addLog(`✓ ${m}`, "success")
-            else if (s === "sync_warn") addLog(`⚠ ${m}`, "error")
-            else if (s === "ai_start") addLog(`🤖 ${m}`, "processing")
-            else if (s === "company_start") addLog(`  🏢 ${m}`, "processing")
-            else if (s === "company_done") {
-              const risk = step.risks > 0 ? ` ⚠${step.risks} risks` : ""
-              const miss = step.missing > 0 ? ` 📋${step.missing} missing` : ""
-              addLog(`  ✓ ${step.company} — ${step.compliance}${risk}${miss}`, "success")
-            }
-            else if (s === "company_warn") addLog(`  ⚠ ${m}`, "error")
-            else if (s === "ai_done") addLog(`🤖 ${m}`, "success")
-            else if (s === "ai_skip") addLog(`⚠ ${m}`, "processing")
-            else if (s === "embed_start") addLog(`🔢 ${m}`, "processing")
-            else if (s === "embed") addLog(`🔢 ${m}`, "success")
-            else if (s === "embed_warn") addLog(`⚠ ${m}`, "error")
-            else if (s === "summary") {
-              addLog("", "info")
-              addLog("━".repeat(55), "success")
-              addLog("✅ COMPANY TRAINING COMPLETE", "success")
-              addLog("━".repeat(55), "success")
-              addLog(`  🏢 Companies:     ${step.total} synced`, "success")
-              addLog(`  🤖 AI analyzed:   ${step.analyzed}/${step.total}`, "success")
-              addLog(`  🔢 Embeddings:    Generated`, "success")
-              addLog(`  🧠 Agent:         Knowledge refreshed`, "success")
-              addLog("━".repeat(55), "success")
-            }
-            else if (s === "done") {
+            if (s === "company_done") {
+              const risk = step.risks > 0 ? ` · ${step.risks} risks` : ""
+              const miss = step.missing > 0 ? ` · ${step.missing} missing` : ""
+              addLog(`${step.company} — ${step.compliance}${risk}${miss}`, "success")
+            } else if (s === "summary") {
+              addLog(`Companies synced: ${step.total}`, "success")
+              addLog(`AI analysed: ${step.analyzed}/${step.total}`, "success")
+              addLog("Embeddings generated, agent knowledge refreshed", "success")
+            } else if (s === "done") {
               setTrainingComplete(true)
               setLastTrained(new Date().toLocaleString())
-              toast.success("Agent trained successfully!")
+              toast.success("Agent trained")
+            } else if (s === "error" || s?.endsWith("_warn")) {
+              addLog(m, "error")
+            } else if (s?.endsWith("_start") || s === "ai_skip") {
+              addLog(m, "processing")
+            } else if (s === "load" || s === "sync" || s === "embed" || s === "ai_done") {
+              addLog(m, "success")
+            } else {
+              addLog(m, "info")
             }
-            else if (s === "error") addLog(`✗ ${m}`, "error")
-            else addLog(`  ${m}`, "info")
-          } catch (e) { console.error("SSE parse error:", e) }
+          } catch (e) {
+            console.error("SSE parse error:", e)
+          }
         }
       }
-    } catch (e) {
-      addLog("✗ Connection failed", "error")
+    } catch (e: any) {
+      if (e?.name === "AbortError") return
+      console.error("Train agent error:", e)
+      addLog("Connection failed", "error")
       toast.error("Failed to train agent")
     } finally {
       abortControllerRef.current = null
@@ -732,230 +908,319 @@ export default function CompaniesPage() {
     }
   }
 
-  const filtered = companies.filter(c =>
-    (c.company_name || "").toLowerCase().includes(searchTerm.toLowerCase()) ||
-    (c.company_registration_number || "").toLowerCase().includes(searchTerm.toLowerCase())
+  const term = searchTerm.trim().toLowerCase()
+  const filtered = useMemo(
+    () =>
+      term
+        ? companies.filter(
+            (c) =>
+              (c.company_name || "").toLowerCase().includes(term) ||
+              (c.company_registration_number || "").toLowerCase().includes(term)
+          )
+        : companies,
+    [companies, term]
   )
 
-  if (loading) return <div className="flex items-center justify-center h-full"><Loader2 className="w-8 h-8 animate-spin text-brand" /></div>
+  const stats = useMemo(() => {
+    const scores = companies.map(completeness)
+    const avg = scores.length ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : 0
+    return {
+      total: companies.length,
+      needsWork: scores.filter((s) => s < 80).length,
+      complete: scores.filter((s) => s >= 80).length,
+      avg,
+    }
+  }, [companies])
 
-  // Hidden file input (always in DOM)
-  const hiddenPdfInput = <input ref={pdfInputRef} type="file" accept=".pdf" onChange={handlePdfUpload} className="hidden" />
+  if (loading) return <LoadingScreen label="Loading companies" />
 
-  // ── Choice Screen ──
-  if (view === "choice") return (
-    <>{hiddenPdfInput}<CreateChoiceScreen onUploadPdf={handleChoosePdf} onManual={handleChooseManual} onCancel={handleBack} /></>
+  const hiddenPdfInput = (
+    <input ref={pdfInputRef} type="file" accept=".pdf" onChange={handlePdfUpload} className="hidden" />
   )
 
-  // ── PDF Split View ──
-  if (view === "pdf") return (
-    <>{hiddenPdfInput}<SplitView pdfUrl={pdfUrl} formData={formData} onChange={setFormData}
-      onSave={handleSave} onCancel={handleBack} saving={saving} extracting={extracting}
-      isEdit={false} onExtract={handleExtract} pdfReady={pdfReady} extractLogs={extractLogs} registry={registry} /></>
-  )
+  if (view === "choice") {
+    return (
+      <>
+        {hiddenPdfInput}
+        <CreateChoiceScreen onUploadPdf={handleChoosePdf} onManual={handleChooseManual} onCancel={handleBack} />
+      </>
+    )
+  }
 
-  // ── Manual Form (full-width, no PDF) ──
-  if (view === "manual") return (
-    <>{hiddenPdfInput}
-    <div className="flex flex-col h-full">
-      <div className="flex items-center gap-3 p-4 border-b border-primary/10 bg-card">
-        <button onClick={handleBack} className="p-1.5 rounded-lg hover:bg-accent text-muted hover:text-primary"><ArrowLeft className="w-4 h-4" /></button>
-        <h1 className="text-lg font-semibold text-primary">New Company — Manual Entry</h1>
-      </div>
-      <CompanyForm data={formData} onChange={setFormData} onSave={handleSave} onCancel={handleBack}
-        saving={saving} extracting={false} isEdit={false} registry={registry} />
-    </div></>
-  )
+  if (view === "pdf") {
+    return (
+      <>
+        {hiddenPdfInput}
+        <SplitView
+          pdfUrl={pdfUrl} formData={formData} onChange={setFormData}
+          onSave={handleSave} onCancel={handleBack} saving={saving} extracting={extracting}
+          isEdit={false} onExtract={handleExtract} pdfReady={pdfReady}
+          extractLogs={extractLogs} registry={registry}
+        />
+      </>
+    )
+  }
 
-  // ── View / Edit (split view with PDF if available, otherwise full form) ──
-  if (view === "edit" || view === "view") return (
-    <>{hiddenPdfInput}
-    {pdfUrl ? (
-      <SplitView pdfUrl={pdfUrl} formData={formData} onChange={setFormData}
-        onSave={handleSave} onCancel={handleBack} saving={saving} extracting={false}
-        isEdit={true} pdfReady={false} registry={registry} />
-    ) : (
-      <div className="flex flex-col h-full">
-        <div className="flex items-center justify-between p-4 border-b border-primary/10 bg-card">
-          <div className="flex items-center gap-3">
-            <button onClick={handleBack} className="p-1.5 rounded-lg hover:bg-accent text-muted hover:text-primary"><ArrowLeft className="w-4 h-4" /></button>
-            <h1 className="text-lg font-semibold text-primary">{view === "view" ? "Company Details" : "Edit Company"}</h1>
-            {formData.company_name_english && <span className="text-xs text-brand bg-brand/10 px-2 py-0.5 rounded-full">{formData.company_name_english}</span>}
-          </div>
-          {view === "view" && (
-            <button onClick={() => setView("edit")} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-primary text-white rounded-lg hover:bg-primary/80">
-              <Pencil className="w-3.5 h-3.5" /> Edit
-            </button>
-          )}
-        </div>
-        <CompanyForm data={formData} onChange={setFormData} onSave={handleSave} onCancel={handleBack}
-          saving={saving} extracting={false} isEdit={true} />
-      </div>
-    )}</>
-  )
+  if (view === "manual") {
+    return (
+      <>
+        {hiddenPdfInput}
+        <Page>
+          <PageHeader
+            back={<IconButton aria-label="Back to companies" onClick={handleBack} icon={<ArrowLeft className="w-4 h-4" />} />}
+            title="New company"
+            meta={<Badge tone="neutral">Manual entry</Badge>}
+          />
+          <CompanyForm
+            data={formData} onChange={setFormData} onSave={handleSave} onCancel={handleBack}
+            saving={saving} extracting={false} isEdit={false} registry={registry}
+          />
+        </Page>
+      </>
+    )
+  }
 
-  // ── Company List ──
-  return (
-    <>{hiddenPdfInput}    <div className="flex flex-col h-full">
-      <div className="flex items-center justify-between p-4 border-b border-primary/10 bg-card">
-        <div className="flex items-center gap-3">
-          <h1 className="text-lg font-semibold text-primary">Companies</h1>
-          <span className="text-xs text-muted bg-accent rounded-full px-2 py-0.5">{companies.length}</span>
-          {isTraining && (
-            <div className="flex items-center gap-2 px-3 py-1.5 bg-orange-500/10 rounded-lg">
-              <Loader2 className="w-4 h-4 animate-spin text-orange-500" />
-              <span className="text-xs text-orange-700">Training agent...</span>
-            </div>
-          )}
-          {trainingComplete && !isTraining && (
-            <div className="flex items-center gap-2 px-3 py-1.5 bg-green-500/10 rounded-lg">
-              <CheckCircle className="w-4 h-4 text-green-600" />
-              <span className="text-xs text-green-700">Agent Trained!</span>
-            </div>
-          )}
-        </div>
-        <div className="flex items-center gap-2">
-          <button onClick={() => setShowTrainingLog(true)}
-            className="flex items-center gap-2 px-3 py-2 text-xs font-medium border border-primary/10 rounded-lg hover:bg-accent">
-            <Brain className="w-4 h-4" />
-            {isTraining ? "View Progress" : trainingComplete ? "View Last Training" : "Training Logs"}
-            {isTraining && <span className="w-2 h-2 bg-orange-500 rounded-full animate-pulse"></span>}
-          </button>
-          <button onClick={handleTrainAgent} disabled={isTraining || companies.length === 0}
-            className="flex items-center gap-1.5 px-4 py-2 text-xs font-medium bg-gradient-to-r from-orange-500 to-red-600 text-white rounded-lg hover:from-orange-600 hover:to-red-700 disabled:opacity-50">
-            <Sparkles className={`w-4 h-4 ${isTraining ? "animate-spin" : ""}`} />
-            {isTraining ? "Training..." : "Train Agent"}
-          </button>
-          <button onClick={handleCreateNew} className="flex items-center gap-1.5 px-4 py-2 text-xs font-medium bg-primary text-white rounded-lg hover:bg-primary/80">
-            <Plus className="w-4 h-4" />Create New Company
-          </button>
-        </div>
-      </div>
-      {lastTrained && (
-        <div className="px-4 py-2 bg-green-500/10 border-b border-green-500/20 text-xs text-green-700">
-          ✓ Last trained: {lastTrained}
-        </div>
-      )}
+  if (view === "edit" || view === "view") {
+    if (pdfUrl) {
+      return (
+        <>
+          {hiddenPdfInput}
+          <SplitView
+            pdfUrl={pdfUrl} formData={formData} onChange={setFormData}
+            onSave={handleSave} onCancel={handleBack} saving={saving} extracting={false}
+            isEdit pdfReady={false} registry={registry}
+          />
+        </>
+      )
+    }
+    return (
+      <>
+        {hiddenPdfInput}
+        <Page>
+          <PageHeader
+            back={<IconButton aria-label="Back to companies" onClick={handleBack} icon={<ArrowLeft className="w-4 h-4" />} />}
+            title={formData.company_name_english || (view === "view" ? "Company details" : "Edit company")}
+            meta={view === "view" ? <Badge tone="neutral">Read only</Badge> : <Badge tone="accent">Editing</Badge>}
+            actions={
+              view === "view" ? (
+                <Button variant="primary" onClick={() => setView("edit")} icon={<Pencil className="w-3.5 h-3.5" />}>
+                  Edit
+                </Button>
+              ) : undefined
+            }
+          />
+          <CompanyForm
+            data={formData} onChange={setFormData} onSave={handleSave} onCancel={handleBack}
+            saving={saving} extracting={false} isEdit registry={registry}
+          />
+        </Page>
+      </>
+    )
+  }
 
-      <div className="p-4 border-b border-primary/10">
-        <div className="relative">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted" />
-          <input type="text" placeholder="Search companies..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)}
-            className="w-full pl-10 pr-4 py-2 text-sm bg-background border border-primary/10 rounded-lg text-primary placeholder:text-muted/50 focus:outline-none focus:border-brand/40" />
-        </div>
-      </div>
-
-      <div className="flex-1 overflow-auto p-4">
-        <div className="border border-primary/10 rounded-xl overflow-hidden">
-          <table className="w-full">
-            <thead className="bg-accent/30">
-              <tr className="text-left text-xs text-muted border-b border-primary/10">
-                <th className="px-4 py-3 font-medium">Company Name</th>
-                <th className="px-4 py-3 font-medium">Reg No.</th>
-                <th className="px-4 py-3 font-medium">Directors</th>
-                <th className="px-4 py-3 font-medium">Shareholders</th>
-                <th className="px-4 py-3 font-medium">Shares</th>
-                <th className="px-4 py-3 font-medium">Completeness</th>
-                <th className="px-4 py-3 font-medium text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-primary/5">
-              {filtered.length === 0 ? (
-                <tr><td colSpan={7} className="px-4 py-12 text-center">
-                  <div className="flex flex-col items-center gap-2">
-                    <Building className="w-8 h-8 text-muted/40" />
-                    <p className="text-sm text-muted">No companies found</p>
-                    <button onClick={handleCreateNew} className="text-xs text-brand hover:underline">+ Create your first company</button>
-                  </div>
-                </td></tr>
-              ) : filtered.map((c, i) => (
-                <tr key={i} className="hover:bg-accent/30 transition-colors cursor-pointer" onClick={() => handleView(c)}>
-                  <td className="px-4 py-3">
-                    <div className="flex items-center gap-2.5">
-                      <div className="w-7 h-7 rounded-md bg-brand/8 flex items-center justify-center shrink-0"><Building className="w-3.5 h-3.5 text-brand" /></div>
-                      <div className="min-w-0">
-                        <span className="text-sm font-medium text-primary block truncate max-w-[180px]">{c.company_name}</span>
-                        <span className="text-[11px] text-muted">{c.status}</span>
-                      </div>
-                    </div>
-                  </td>
-                  <td className="px-4 py-3 text-sm text-muted font-mono">{c.company_registration_number}</td>
-                  <td className="px-4 py-3 text-sm text-muted max-w-[180px] truncate">{c.directors || "—"}</td>
-                  <td className="px-4 py-3 text-sm text-muted max-w-[180px] truncate">{c.shareholders || "—"}</td>
-                  <td className="px-4 py-3 text-sm text-muted whitespace-nowrap">{c.total_shares || "—"}</td>
-                  <td className="px-4 py-3">
-                    {(() => {
-                      const fields = ["company_name", "company_registration_number", "registered_office", "directors", "shareholders", "total_shares", "status", "company_type", "principal_activity", "registration_date"]
-                      const filled = fields.filter(f => {
-                        const v = c[f]
-                        return v && String(v).trim() !== "" && v !== "—"
-                      }).length
-                      const pct = Math.round((filled / fields.length) * 100)
-                      const color = pct >= 80 ? "text-green-600 bg-green-500/10" : pct >= 50 ? "text-yellow-600 bg-yellow-500/10" : "text-red-600 bg-red-500/10"
-                      return (
-                        <span className={`inline-flex items-center px-2 py-0.5 text-xs font-medium rounded-full ${color}`}>
-                          {pct}%
-                        </span>
-                      )
-                    })()}
-                  </td>
-                  <td className="px-4 py-3 text-right" onClick={(e) => e.stopPropagation()}>
-                    <div className="flex items-center justify-end gap-1">
-                      <button onClick={() => handleEdit(c)} className="p-1.5 text-muted hover:text-brand hover:bg-brand/10 rounded-lg" title="Edit">
-                        <Pencil className="w-3.5 h-3.5" />
-                      </button>
-                      <button onClick={() => handleDelete(c.company_name)} className="p-1.5 text-muted hover:text-red-500 hover:bg-red-500/10 rounded-lg" title="Delete">
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        <p className="text-xs text-muted mt-2">Showing {filtered.length} of {companies.length} companies</p>
-      </div>
-
-      {/* Training Log Modal */}
-      {showTrainingLog && (
-        <div className="fixed bottom-4 right-4 w-[500px] max-h-[70vh] bg-gray-900 border border-gray-700 rounded-xl shadow-2xl z-50 flex flex-col overflow-hidden">
-          <div className="flex items-center justify-between px-4 py-3 border-b border-gray-700 bg-gray-800">
-            <div className="flex items-center gap-2">
-              <Brain className="w-4 h-4 text-green-500" />
-              <span className="text-sm font-medium text-white">Company Training Log</span>
-              {isTraining && <span className="w-2 h-2 bg-orange-500 rounded-full animate-pulse"></span>}
-            </div>
-            <button onClick={() => setShowTrainingLog(false)} className="p-1 hover:bg-gray-700 rounded text-gray-400 hover:text-white">
-              <X className="w-4 h-4" />
-            </button>
-          </div>
-          <div className="flex-1 overflow-y-auto p-3 font-mono text-xs space-y-1 max-h-[50vh]">
-            {trainingLogs.length === 0 ? (
-              <p className="text-gray-500 text-center py-8">Click "Train Agent" to start training</p>
-            ) : trainingLogs.map((log, i) => (
-              <div key={i} className="flex gap-2">
-                <span className="text-gray-600 shrink-0">[{log.time}]</span>
-                <span className={
-                  log.type === "success" ? "text-green-400" :
-                  log.type === "error" ? "text-red-400" :
-                  log.type === "processing" ? "text-yellow-300" :
-                  log.type === "ai" ? "text-purple-400" :
-                  "text-gray-300"
-                }>{log.msg}</span>
-              </div>
-            ))}
-          </div>
-          <div className="px-4 py-2 border-t border-gray-700 bg-gray-800 flex items-center justify-between">
-            <span className="text-xs text-gray-500">{trainingLogs.length} log entries</span>
-            {trainingComplete && (
-              <span className="text-xs text-green-400 flex items-center gap-1">
-                <CheckCircle className="w-3 h-3" /> Complete
-              </span>
+  // ── List ──
+  const columns: Column<any>[] = [
+    {
+      key: "company_name",
+      header: "Company",
+      sortValue: (c) => c.company_name,
+      render: (c) => (
+        <div className="flex items-center gap-2.5 min-w-0">
+          <span className="w-7 h-7 shrink-0 grid place-items-center bg-[var(--bg-secondary)] border border-[var(--border)] rounded-[var(--radius-sm)]">
+            <Building className="w-3.5 h-3.5 text-[var(--text-muted)]" />
+          </span>
+          <span className="min-w-0">
+            <span className="block font-medium text-[var(--text)] truncate max-w-[220px]">{c.company_name}</span>
+            {c.status && (
+              <span className="block text-[length:var(--text-2xs)] text-[var(--text-muted)]">{c.status}</span>
             )}
-          </div>
+          </span>
         </div>
-      )}
-    </div></>
+      ),
+    },
+    {
+      key: "company_registration_number",
+      header: "Reg. no.",
+      sortValue: (c) => c.company_registration_number,
+      render: (c) => <span className="font-mono tabular-nums">{c.company_registration_number || "—"}</span>,
+    },
+    {
+      key: "directors",
+      header: "Directors",
+      hideBelow: "md",
+      render: (c) => <span className="block max-w-[200px] truncate">{c.directors || "—"}</span>,
+    },
+    {
+      key: "shareholders",
+      header: "Shareholders",
+      hideBelow: "lg",
+      render: (c) => <span className="block max-w-[200px] truncate">{c.shareholders || "—"}</span>,
+    },
+    {
+      key: "total_shares",
+      header: "Shares",
+      numeric: true,
+      hideBelow: "sm",
+      sortValue: (c) => Number(String(c.total_shares || "").replace(/[^0-9.]/g, "")) || null,
+      render: (c) => c.total_shares || "—",
+    },
+    {
+      key: "completeness",
+      header: "Complete",
+      align: "right",
+      sortValue: (c) => completeness(c),
+      render: (c) => {
+        const pct = completeness(c)
+        return (
+          <Badge tone={completenessTone(pct)} dot>
+            {pct}%
+          </Badge>
+        )
+      },
+    },
+    {
+      key: "actions",
+      header: "",
+      align: "right",
+      width: "1%",
+      stopClickPropagation: true,
+      render: (c) => (
+        <div className="flex items-center justify-end gap-0.5">
+          <IconButton
+            aria-label={`Edit ${c.company_name}`}
+            title="Edit"
+            onClick={() => openCompany(c, "edit")}
+            icon={<Pencil className="w-3.5 h-3.5" />}
+          />
+          <ConfirmButton
+            compact
+            label={`Delete ${c.company_name}`}
+            icon={<Trash2 className="w-3.5 h-3.5" />}
+            onConfirm={() => handleDelete(c.company_name)}
+          />
+        </div>
+      ),
+    },
+  ]
+
+  return (
+    <>
+      {hiddenPdfInput}
+      <Page>
+        <PageHeader
+          title="Companies"
+          meta={
+            <>
+              <Badge tone="neutral">{companies.length}</Badge>
+              {isTraining && <Badge tone="warn" dot>Training</Badge>}
+              {trainingComplete && !isTraining && <Badge tone="ok" dot>Agent trained</Badge>}
+            </>
+          }
+          description="Company records fill the placeholders in every generated document. Train the agent after changing them."
+          actions={
+            <>
+              <Button onClick={() => setShowTrainingLog(true)} icon={<Brain className="w-4 h-4" />}>
+                {isTraining ? "View progress" : "Training log"}
+              </Button>
+              <Button
+                onClick={handleTrainAgent}
+                loading={isTraining}
+                disabled={companies.length === 0}
+                icon={<Sparkles className="w-4 h-4" />}
+              >
+                {isTraining ? "Training" : "Train agent"}
+              </Button>
+              <Button variant="primary" onClick={handleCreateNew} icon={<Plus className="w-4 h-4" />}>
+                Create company
+              </Button>
+            </>
+          }
+        />
+
+        {companies.length > 0 && (
+          <Toolbar>
+            <SearchInput
+              label="Search companies by name or registration number"
+              placeholder="Name or registration number…"
+              value={searchTerm}
+              onChange={setSearchTerm}
+            />
+            <span className="ml-auto flex items-center gap-3 text-[length:var(--text-xs)] text-[var(--text-muted)]">
+              {lastTrained && <span>Last trained {lastTrained}</span>}
+              <span className="tabular-nums">
+                {filtered.length} of {companies.length}
+              </span>
+            </span>
+          </Toolbar>
+        )}
+
+        <PageBody className="space-y-4">
+          {loadError && <Notice tone="danger" title="Could not load companies">{loadError}</Notice>}
+
+          {companies.length === 0 ? (
+            <EmptyState
+              icon={<Building className="w-4 h-4" />}
+              title="No companies yet"
+              description="Company data is what every generated document is filled from."
+              steps={[
+                { title: "Add a company", body: "Upload a DICA Company Extract PDF, or enter the details by hand." },
+                { title: "Review the extraction", body: "AI fills the form; you confirm directors, members and share capital." },
+                { title: "Train the agent", body: "Training refreshes what the agent knows about your companies." },
+              ]}
+              action={
+                <Button variant="primary" onClick={handleCreateNew} icon={<Plus className="w-4 h-4" />}>
+                  Create the first company
+                </Button>
+              }
+            />
+          ) : (
+            <>
+              <StatRow>
+                <StatTile label="Companies" value={formatNumber(stats.total)} />
+                <StatTile label="Document ready" value={stats.complete} hint="80% of fields or better" />
+                <StatTile
+                  label="Needs attention"
+                  value={stats.needsWork}
+                  tone={stats.needsWork > 0 ? "warn" : undefined}
+                  hint={stats.needsWork > 0 ? "Below 80% complete" : "All records healthy"}
+                />
+                <StatTile label="Average completeness" value={`${stats.avg}%`} />
+              </StatRow>
+
+              <DataTable
+                rows={filtered}
+                columns={columns}
+                rowKey={(c, i) => c.id ?? `${c.company_name}-${i}`}
+                onRowClick={(c) => openCompany(c, "view")}
+                caption="Companies"
+                rowTone={(c) => {
+                  const pct = completeness(c)
+                  return pct >= 80 ? null : pct >= 50 ? "var(--warn)" : "var(--danger-strong)"
+                }}
+                empty={
+                  <div className="py-2">
+                    <p className="text-[length:var(--text-sm)] text-[var(--text)]">
+                      No match for &ldquo;{searchTerm}&rdquo;
+                    </p>
+                    <Button size="sm" className="mt-3" onClick={() => setSearchTerm("")}>
+                      Clear search
+                    </Button>
+                  </div>
+                }
+              />
+            </>
+          )}
+        </PageBody>
+
+        <TrainingLogPanel
+          open={showTrainingLog}
+          onClose={() => setShowTrainingLog(false)}
+          title="Company training log"
+          logs={trainingLogs}
+          running={isTraining}
+          complete={trainingComplete}
+        />
+      </Page>
+    </>
   )
 }

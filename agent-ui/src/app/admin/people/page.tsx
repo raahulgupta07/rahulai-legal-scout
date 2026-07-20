@@ -1,22 +1,51 @@
 "use client"
 
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import {
   ArrowLeft,
   Building,
   Check,
   Contact,
   Link2,
-  Loader2,
   Pencil,
   Plus,
-  Search,
   Trash2,
   UserPlus,
-  X,
 } from "lucide-react"
 import apiClient, { authFetch } from "@/lib/api-client"
 import { toast } from "sonner"
+import {
+  Badge,
+  Button,
+  Card,
+  type Column,
+  ConfirmButton,
+  DataTable,
+  DetailList,
+  EmptyState,
+  FormGrid,
+  IconButton,
+  LoadingScreen,
+  Modal,
+  Notice,
+  Page,
+  PageBody,
+  PageHeader,
+  SearchInput,
+  SelectField,
+  StatRow,
+  StatTile,
+  TextField,
+  Toolbar,
+  assertSuccess,
+  dateOrNull,
+  dateSort,
+  errorMessage,
+  formatDate,
+  toDateInput,
+  unwrapList,
+  unwrapOne,
+} from "@/components/ui/kit"
 
 // ─── Types ──────────────────────────────────────────────────────────
 type Role = "director" | "individual_shareholder" | "both"
@@ -70,205 +99,21 @@ const ROLE_OPTIONS: { value: Role; label: string }[] = [
   { value: "both", label: "Both" },
 ]
 
-const roleLabel = (role: string) =>
-  ROLE_OPTIONS.find((r) => r.value === role)?.label || role || "—"
+const roleLabel = (role: string) => ROLE_OPTIONS.find((r) => r.value === role)?.label || role || "—"
 
-// ─── Shared brutalist class strings ─────────────────────────────────
-const FOCUS =
-  "focus:outline-none focus-visible:outline-none focus:ring-0 focus:border-[#007518] focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[#007518] focus-visible:ring-offset-[#feffd6]"
-const INPUT = `w-full px-2.5 py-2 text-sm bg-[#fffff0] border-2 border-[#383832] text-[#383832] placeholder:text-[#383832]/40 transition-colors ${FOCUS}`
-const BTN_DARK = `flex items-center gap-1.5 px-4 py-2 text-xs font-black uppercase tracking-wider bg-[#383832] text-[#feffd6] hover:bg-[#262622] disabled:opacity-40 disabled:cursor-not-allowed transition-colors ink-border stamp-press ${FOCUS}`
-const BTN_GREEN = `flex items-center gap-1.5 px-4 py-2 text-xs font-black uppercase tracking-wider bg-[#007518] text-white hover:bg-[#005c13] disabled:opacity-40 disabled:cursor-not-allowed transition-colors ink-border stamp-press ${FOCUS}`
-const BTN_PLAIN = `flex items-center gap-1.5 px-4 py-2 text-xs font-black uppercase tracking-wider bg-[#feffd6] text-[#383832] hover:bg-[#383832]/10 transition-colors ink-border stamp-press ${FOCUS}`
-const ICON_BTN = `p-1.5 text-[#383832] hover:bg-[#383832]/10 transition-colors ${FOCUS}`
+const roleTone = (role: string) =>
+  role === "director" ? "info" : role === "both" ? "accent" : "neutral"
 
-// ─── Error helpers ──────────────────────────────────────────────────
-/** Pull a human message out of a failed response; special-cases 409 duplicates. */
-// The API reports validation failures as HTTP 200 with {success: false, error}.
-// Checking res.ok alone would treat a rejected write as a success.
-async function assertSuccess(res: Response, fallback: string): Promise<void> {
-  let body: any = null
-  try {
-    body = await res.clone().json()
-  } catch {
-    return
-  }
-  if (body && body.success === false) {
-    throw new Error(body.error || body.detail || body.message || fallback)
-  }
-}
-
-async function errorMessage(res: Response, fallback: string): Promise<string> {
-  let detail = ""
-  try {
-    const body = await res.json()
-    detail = body?.detail || body?.error || body?.message || ""
-    if (typeof detail !== "string") detail = JSON.stringify(detail)
-  } catch {
-    // Response had no JSON body — fall through to the status-based message.
-  }
-  if (res.status === 409) {
-    return (
-      detail ||
-      "That NRC / passport number is already registered to another person. Open the existing record instead of creating a duplicate."
-    )
-  }
-  return detail || `${fallback} (HTTP ${res.status})`
-}
-
-/** Endpoints are still settling; accept the common envelope shapes. */
-function unwrapList<T>(body: any, ...keys: string[]): T[] {
-  if (Array.isArray(body)) return body as T[]
-  for (const key of keys) {
-    if (Array.isArray(body?.[key])) return body[key] as T[]
-  }
-  if (Array.isArray(body?.data)) return body.data as T[]
-  return []
-}
-
-function unwrapOne<T>(body: any, ...keys: string[]): T | null {
-  if (!body || typeof body !== "object") return null
-  for (const key of keys) {
-    if (body[key] && typeof body[key] === "object") return body[key] as T
-  }
-  if (body.data && typeof body.data === "object") return body.data as T
-  if (body.id !== undefined) return body as T
-  return null
-}
-
-/** DATE columns reject "". Send null instead. */
-const dateOrNull = (v: string | null | undefined) => (v && v.trim() ? v.trim() : null)
-
-/** <input type="date"> needs YYYY-MM-DD, not an ISO timestamp. */
-const toDateInput = (v: string | null | undefined) =>
-  v ? String(v).slice(0, 10) : ""
-
-const formatDate = (v: string | null | undefined) => {
-  if (!v) return "—"
-  const d = new Date(v)
-  if (isNaN(d.getTime())) return String(v)
-  return d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })
-}
-
-// ─── Reusable field ─────────────────────────────────────────────────
-function Field({
-  label,
-  value,
-  onChange,
-  type = "text",
-  placeholder = "",
-  wide = false,
-  required = false,
-  hint = "",
-}: {
-  label: string
-  value: string
-  onChange: (v: string) => void
-  type?: string
-  placeholder?: string
-  wide?: boolean
-  required?: boolean
-  hint?: string
-}) {
-  return (
-    <div className={wide ? "md:col-span-2" : ""}>
-      <label className="block mb-1">
-        <span className="tag-label">
-          {label}
-          {required && " *"}
-        </span>
-      </label>
-      <input
-        type={type}
-        value={value || ""}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder={placeholder}
-        className={INPUT}
-      />
-      {hint && <p className="mt-1 text-[10px] text-[#383832]/60 uppercase tracking-wide">{hint}</p>}
-    </div>
-  )
-}
-
-function SelectField({
-  label,
-  value,
-  onChange,
-  options,
-  wide = false,
-  hint = "",
-}: {
-  label: string
-  value: string
-  onChange: (v: string) => void
-  options: { value: string; label: string }[]
-  wide?: boolean
-  hint?: string
-}) {
-  return (
-    <div className={wide ? "md:col-span-2" : ""}>
-      <label className="block mb-1">
-        <span className="tag-label">{label}</span>
-      </label>
-      <select value={value || ""} onChange={(e) => onChange(e.target.value)} className={INPUT}>
-        {options.map((o) => (
-          <option key={o.value} value={o.value}>
-            {o.label}
-          </option>
-        ))}
-      </select>
-      {hint && <p className="mt-1 text-[10px] text-[#383832]/60 uppercase tracking-wide">{hint}</p>}
-    </div>
-  )
-}
-
-/** Destructive actions are armed first, then confirmed — same guard rail as Companies. */
-function ConfirmDelete({
-  armed,
-  onArm,
-  onConfirm,
-  onCancel,
-  label,
-  compact = false,
-}: {
-  armed: boolean
-  onArm: () => void
-  onConfirm: () => void
-  onCancel: () => void
-  label: string
-  compact?: boolean
-}) {
-  if (!armed) {
-    return (
-      <button
-        onClick={onArm}
-        title={label}
-        aria-label={label}
-        className={compact ? `${ICON_BTN} hover:text-[#be2d06]` : `${BTN_PLAIN} text-[#be2d06]`}
-      >
-        <Trash2 className="w-3.5 h-3.5" />
-        {!compact && <span>Delete</span>}
-      </button>
-    )
-  }
-  return (
-    <div className="flex items-center gap-1">
-      <button
-        onClick={onConfirm}
-        autoFocus
-        className={`flex items-center gap-1 px-2.5 py-1.5 text-[10px] font-black uppercase tracking-wider bg-[#be2d06] text-white hover:bg-[#9c2505] transition-colors ink-border stamp-press ${FOCUS}`}
-      >
-        <Check className="w-3 h-3" /> Confirm
-      </button>
-      <button onClick={onCancel} aria-label="Cancel delete" className={ICON_BTN}>
-        <X className="w-3.5 h-3.5" />
-      </button>
-    </div>
-  )
-}
+/** A person missing contact details cannot be used to fill a document cleanly. */
+const missingFields = (p: Person) =>
+  [
+    !p.nrc_passport_no && "NRC / passport",
+    !p.nationality && "nationality",
+    !p.residential_address && "address",
+  ].filter(Boolean) as string[]
 
 // ─── Page ───────────────────────────────────────────────────────────
-type View = "list" | "form" | "detail"
+type View = "list" | "detail"
 
 export default function PeoplePage() {
   const [people, setPeople] = useState<Person[]>([])
@@ -277,6 +122,7 @@ export default function PeoplePage() {
   const [searchTerm, setSearchTerm] = useState("")
   const [view, setView] = useState<View>("list")
 
+  const [formOpen, setFormOpen] = useState(false)
   const [formData, setFormData] = useState<Person>({ ...EMPTY_PERSON })
   const [editingId, setEditingId] = useState<number | null>(null)
   const [saving, setSaving] = useState(false)
@@ -286,7 +132,7 @@ export default function PeoplePage() {
   const [linksLoading, setLinksLoading] = useState(false)
   const [companies, setCompanies] = useState<CompanyOption[]>([])
 
-  const [showLinkForm, setShowLinkForm] = useState(false)
+  const [linkOpen, setLinkOpen] = useState(false)
   const [linkDraft, setLinkDraft] = useState<CompanyLink>({
     company_id: 0,
     role: "director",
@@ -295,9 +141,6 @@ export default function PeoplePage() {
     appointed_date: "",
   })
   const [linking, setLinking] = useState(false)
-
-  const [armedDeleteId, setArmedDeleteId] = useState<number | null>(null)
-  const [armedUnlink, setArmedUnlink] = useState<string | null>(null)
 
   // ── Load people ──
   const fetchPeople = useCallback(async () => {
@@ -352,7 +195,10 @@ export default function PeoplePage() {
       setCompanies(
         rows
           .filter((c) => c?.id)
-          .map((c) => ({ id: Number(c.id), company_name: c.company_name || c.company_name_english || `Company #${c.id}` }))
+          .map((c) => ({
+            id: Number(c.id),
+            company_name: c.company_name || c.company_name_english || `Company #${c.id}`,
+          }))
       )
     } catch (e: any) {
       console.error("Companies load error:", e)
@@ -369,17 +215,13 @@ export default function PeoplePage() {
   const openCreate = () => {
     setFormData({ ...EMPTY_PERSON })
     setEditingId(null)
-    setView("form")
+    setFormOpen(true)
   }
 
   const openEdit = (person: Person) => {
-    setFormData({
-      ...EMPTY_PERSON,
-      ...person,
-      date_of_birth: toDateInput(person.date_of_birth),
-    })
+    setFormData({ ...EMPTY_PERSON, ...person, date_of_birth: toDateInput(person.date_of_birth) })
     setEditingId(person.id ?? null)
-    setView("form")
+    setFormOpen(true)
   }
 
   const handleSave = async () => {
@@ -409,9 +251,13 @@ export default function PeoplePage() {
       await assertSuccess(res, "Failed to save person")
       toast.success(`"${payload.full_name}" ${editingId ? "updated" : "added"}`)
       await fetchPeople()
-      setView("list")
+      setFormOpen(false)
       setEditingId(null)
       setFormData({ ...EMPTY_PERSON })
+      // Keep the detail view in step when the edit came from there.
+      if (detailPerson?.id && detailPerson.id === editingId) {
+        setDetailPerson({ ...detailPerson, ...payload, date_of_birth: payload.date_of_birth || "" })
+      }
     } catch (e: any) {
       console.error("Save person error:", e)
       toast.error(e?.message || "Failed to save person")
@@ -441,8 +287,7 @@ export default function PeoplePage() {
   const openDetail = async (person: Person) => {
     setDetailPerson(person)
     setLinks([])
-    setShowLinkForm(false)
-    setArmedUnlink(null)
+    setLinkOpen(false)
     setView("detail")
     if (!person.id) return
     try {
@@ -481,20 +326,22 @@ export default function PeoplePage() {
       if (!res.ok) {
         // The (company, person, role) index is unique — a repeat link also 409s.
         if (res.status === 409) {
-          let detail = ""
-          try {
-            const b = await res.json()
-            detail = b?.detail || b?.error || ""
-          } catch {
-            // no JSON body
-          }
-          throw new Error(detail || "This person is already linked to that company with that role.")
+          throw new Error(
+            await errorMessage(res, "This person is already linked to that company with that role.")
+          )
         }
         throw new Error(await errorMessage(res, "Failed to link company"))
       }
+      await assertSuccess(res, "Failed to link company")
       toast.success("Company linked")
-      setShowLinkForm(false)
-      setLinkDraft({ company_id: 0, role: "director", number_of_shares: "", capital_amount: "", appointed_date: "" })
+      setLinkOpen(false)
+      setLinkDraft({
+        company_id: 0,
+        role: "director",
+        number_of_shares: "",
+        capital_amount: "",
+        appointed_date: "",
+      })
       await loadLinks(detailPerson.id)
       await fetchPeople()
     } catch (e: any) {
@@ -514,7 +361,6 @@ export default function PeoplePage() {
       if (!res.ok) throw new Error(await errorMessage(res, "Failed to unlink company"))
       await assertSuccess(res, "Failed to unlink company")
       toast.success("Company unlinked")
-      setArmedUnlink(null)
       await loadLinks(detailPerson.id)
       await fetchPeople()
     } catch (e: any) {
@@ -531,7 +377,6 @@ export default function PeoplePage() {
       if (!res.ok) throw new Error(await errorMessage(res, "Failed to delete person"))
       await assertSuccess(res, "Failed to delete person")
       toast.success(`"${person.full_name}" deleted`)
-      setArmedDeleteId(null)
       await fetchPeople()
       if (detailPerson?.id === person.id) {
         setDetailPerson(null)
@@ -546,522 +391,534 @@ export default function PeoplePage() {
   const backToList = () => {
     setView("list")
     setDetailPerson(null)
-    setArmedDeleteId(null)
-    setArmedUnlink(null)
   }
 
   const term = searchTerm.trim().toLowerCase()
-  const filtered = term
-    ? people.filter(
-        (p) =>
-          (p.full_name || "").toLowerCase().includes(term) ||
-          (p.nrc_passport_no || "").toLowerCase().includes(term)
-      )
-    : people
+  const filtered = useMemo(
+    () =>
+      term
+        ? people.filter(
+            (p) =>
+              (p.full_name || "").toLowerCase().includes(term) ||
+              (p.nrc_passport_no || "").toLowerCase().includes(term)
+          )
+        : people,
+    [people, term]
+  )
 
-  // ── Loading ──
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-full bg-[#f5f5e8]">
-        <Loader2 className="w-8 h-8 animate-spin text-[#007518]" />
-      </div>
-    )
-  }
+  const stats = useMemo(() => {
+    const linked = people.filter((p) => (p.companies?.length ?? 0) > 0).length
+    const directors = people.filter((p) =>
+      p.companies?.some((l) => l.role === "director" || l.role === "both")
+    ).length
+    const incomplete = people.filter((p) => missingFields(p).length > 0).length
+    return { total: people.length, linked, directors, incomplete }
+  }, [people])
 
-  // ── Add / Edit form ──
-  if (view === "form") {
-    return (
-      <div className="flex flex-col h-full bg-[#f5f5e8] font-brutalist">
-        <div className="flex items-center gap-3 p-4 border-b-[3px] border-[#383832] bg-[#feffd6]">
-          <button onClick={backToList} aria-label="Back to people list" className={ICON_BTN}>
-            <ArrowLeft className="w-4 h-4" />
-          </button>
-          <h1 className="text-lg font-black uppercase tracking-wider text-[#383832]">
-            {editingId ? "Edit Person" : "Add Person"}
-          </h1>
-        </div>
+  const companyName = useCallback(
+    (l: CompanyLink) =>
+      l.company_name || companies.find((c) => c.id === l.company_id)?.company_name || `Company #${l.company_id}`,
+    [companies]
+  )
 
-        <div className="flex-1 overflow-y-auto p-6">
-          <div className="max-w-3xl mx-auto bg-[#fffff0] ink-border stamp-shadow p-6">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <Field
-                label="Full Name"
-                value={formData.full_name}
-                onChange={(v) => setFormData({ ...formData, full_name: v })}
-                required
-                wide
-                placeholder="As it appears on the NRC or passport"
-              />
-              <Field
-                label="NRC / Passport No."
-                value={formData.nrc_passport_no}
-                onChange={(v) => setFormData({ ...formData, nrc_passport_no: v })}
-                placeholder="e.g. 12/ABC(N)123456"
-                hint="Must be unique across the register"
-              />
-              <Field
-                label="Nationality"
-                value={formData.nationality}
-                onChange={(v) => setFormData({ ...formData, nationality: v })}
-                placeholder="e.g. Myanmar"
-              />
-              <SelectField
-                label="Gender"
-                value={formData.gender}
-                onChange={(v) => setFormData({ ...formData, gender: v })}
-                options={[
-                  { value: "", label: "— Not specified —" },
-                  { value: "Male", label: "Male" },
-                  { value: "Female", label: "Female" },
-                  { value: "Other", label: "Other" },
-                ]}
-              />
-              <Field
-                label="Date of Birth"
-                value={formData.date_of_birth}
-                onChange={(v) => setFormData({ ...formData, date_of_birth: v })}
-                type="date"
-                hint="Optional"
-              />
-              <Field
-                label="Phone"
-                value={formData.phone}
-                onChange={(v) => setFormData({ ...formData, phone: v })}
-                placeholder="e.g. +95 9 123 456 789"
-              />
-              <Field
-                label="Email"
-                value={formData.email}
-                onChange={(v) => setFormData({ ...formData, email: v })}
-                type="email"
-                placeholder="name@example.com"
-              />
-              <Field
-                label="Residential Address"
-                value={formData.residential_address}
-                onChange={(v) => setFormData({ ...formData, residential_address: v })}
-                wide
-                placeholder="Full residential address"
-              />
-            </div>
-
-            <div className="mt-6 p-3 bg-[#feffd6] border-l-4 border-[#007518]">
-              <p className="text-[11px] font-bold uppercase tracking-wide text-[#383832]">
-                Shares and capital are not person fields
-              </p>
-              <p className="mt-1 text-[11px] text-[#383832]/70">
-                A person holds shares <em>in a company</em>. Record share count and capital on the company
-                link, from the person&apos;s detail page.
-              </p>
-            </div>
-          </div>
-        </div>
-
-        <div className="flex items-center justify-end gap-2 px-4 py-3 border-t-[3px] border-[#383832] bg-[#feffd6]">
-          <button onClick={backToList} className={BTN_PLAIN}>
+  // ── The add / edit form, shared by both views ──
+  const personForm = (
+    <Modal
+      open={formOpen}
+      onOpenChange={setFormOpen}
+      title={editingId ? "Edit person" : "Add person"}
+      description="Eight fields describe a person. Shareholdings are recorded per company, on the link."
+      size="md"
+      footer={
+        <>
+          <Button variant="ghost" onClick={() => setFormOpen(false)}>
             Cancel
-          </button>
-          <button onClick={handleSave} disabled={saving || !formData.full_name.trim()} className={BTN_GREEN}>
-            <Check className="w-3.5 h-3.5" />
-            {saving ? "Saving..." : editingId ? "Update Person" : "Save Person"}
-          </button>
-        </div>
+          </Button>
+          <Button
+            variant="primary"
+            onClick={handleSave}
+            loading={saving}
+            disabled={!formData.full_name.trim()}
+            icon={<Check className="w-3.5 h-3.5" />}
+          >
+            {editingId ? "Update person" : "Save person"}
+          </Button>
+        </>
+      }
+    >
+      <FormGrid>
+        <TextField
+          label="Full name"
+          value={formData.full_name}
+          onChange={(v) => setFormData({ ...formData, full_name: v })}
+          required
+          wide
+          placeholder="As it appears on the NRC or passport"
+        />
+        <TextField
+          label="NRC / passport no."
+          value={formData.nrc_passport_no}
+          onChange={(v) => setFormData({ ...formData, nrc_passport_no: v })}
+          placeholder="12/ABC(N)123456"
+          hint="Must be unique across the register"
+          mono
+        />
+        <TextField
+          label="Nationality"
+          value={formData.nationality}
+          onChange={(v) => setFormData({ ...formData, nationality: v })}
+          placeholder="Myanmar"
+        />
+        <SelectField
+          label="Gender"
+          value={formData.gender}
+          onChange={(v) => setFormData({ ...formData, gender: v })}
+          options={[
+            { value: "", label: "Not specified" },
+            { value: "Male", label: "Male" },
+            { value: "Female", label: "Female" },
+            { value: "Other", label: "Other" },
+          ]}
+        />
+        <TextField
+          label="Date of birth"
+          value={formData.date_of_birth}
+          onChange={(v) => setFormData({ ...formData, date_of_birth: v })}
+          type="date"
+        />
+        <TextField
+          label="Phone"
+          value={formData.phone}
+          onChange={(v) => setFormData({ ...formData, phone: v })}
+          placeholder="+95 9 123 456 789"
+        />
+        <TextField
+          label="Email"
+          value={formData.email}
+          onChange={(v) => setFormData({ ...formData, email: v })}
+          type="email"
+          placeholder="name@example.com"
+        />
+        <TextField
+          label="Residential address"
+          value={formData.residential_address}
+          onChange={(v) => setFormData({ ...formData, residential_address: v })}
+          wide
+          placeholder="Full residential address"
+        />
+      </FormGrid>
+
+      <div className="mt-4">
+        <Notice title="Shares are not a person field">
+          A person holds shares <em>in a company</em>. Record share count, capital and appointment date on the
+          company link, from the person&apos;s detail page.
+        </Notice>
       </div>
-    )
-  }
+    </Modal>
+  )
+
+  if (loading) return <LoadingScreen label="Loading people" />
 
   // ── Detail ──
   if (view === "detail" && detailPerson) {
     const p = detailPerson
+    const gaps = missingFields(p)
     return (
-      <div className="flex flex-col h-full bg-[#f5f5e8] font-brutalist">
-        <div className="flex items-center justify-between gap-3 p-4 border-b-[3px] border-[#383832] bg-[#feffd6]">
-          <div className="flex items-center gap-3 min-w-0">
-            <button onClick={backToList} aria-label="Back to people list" className={ICON_BTN}>
-              <ArrowLeft className="w-4 h-4" />
-            </button>
-            <h1 className="text-lg font-black uppercase tracking-wider text-[#383832] truncate">
-              {p.full_name}
-            </h1>
-          </div>
-          <div className="flex items-center gap-2 shrink-0">
-            <button onClick={() => openEdit(p)} className={BTN_DARK}>
-              <Pencil className="w-3.5 h-3.5" /> Edit
-            </button>
-            <ConfirmDelete
-              armed={armedDeleteId === p.id}
-              onArm={() => setArmedDeleteId(p.id ?? null)}
-              onConfirm={() => handleDelete(p)}
-              onCancel={() => setArmedDeleteId(null)}
-              label={`Delete ${p.full_name}`}
-            />
-          </div>
-        </div>
+      <Page>
+        <PageHeader
+          back={
+            <IconButton aria-label="Back to people" onClick={backToList} icon={<ArrowLeft className="w-4 h-4" />} />
+          }
+          title={p.full_name}
+          meta={
+            gaps.length > 0 ? (
+              <Badge tone="warn" dot>
+                {gaps.length} field{gaps.length > 1 ? "s" : ""} missing
+              </Badge>
+            ) : (
+              <Badge tone="ok" dot>
+                Complete
+              </Badge>
+            )
+          }
+          actions={
+            <>
+              <Button onClick={() => openEdit(p)} icon={<Pencil className="w-3.5 h-3.5" />}>
+                Edit
+              </Button>
+              <ConfirmButton
+                label={`Delete ${p.full_name}`}
+                icon={<Trash2 className="w-3.5 h-3.5" />}
+                onConfirm={() => handleDelete(p)}
+              >
+                Delete
+              </ConfirmButton>
+            </>
+          }
+        />
 
-        <div className="flex-1 overflow-y-auto p-6 space-y-6">
-          {/* Person record */}
-          <div className="bg-[#fffff0] ink-border stamp-shadow p-5">
-            <div className="flex items-center gap-2 mb-4">
-              <Contact className="w-4 h-4 text-[#007518]" />
-              <span className="text-[11px] font-black uppercase tracking-wider text-[#383832]">
-                Person Record
-              </span>
-            </div>
-            <dl className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {[
-                ["Full Name", p.full_name],
-                ["NRC / Passport", p.nrc_passport_no],
+        <PageBody className="space-y-4">
+          {gaps.length > 0 && (
+            <Notice tone="warn" title="Incomplete record">
+              Missing {gaps.join(", ")}. Documents that reference this person will fall back to a placeholder.
+            </Notice>
+          )}
+
+          <Card title="Person record" meta={<Badge tone="neutral">8 fields</Badge>}>
+            <DetailList
+              items={[
+                ["Full name", p.full_name],
+                ["NRC / passport", <span key="nrc" className="font-mono tabular-nums">{p.nrc_passport_no || "—"}</span>],
                 ["Nationality", p.nationality],
                 ["Gender", p.gender],
-                ["Date of Birth", p.date_of_birth ? formatDate(p.date_of_birth) : ""],
+                ["Date of birth", p.date_of_birth ? formatDate(p.date_of_birth) : ""],
                 ["Phone", p.phone],
                 ["Email", p.email],
-                ["Residential Address", p.residential_address],
-              ].map(([label, value]) => (
-                <div key={label as string}>
-                  <dt className="mb-1">
-                    <span className="tag-label">{label}</span>
-                  </dt>
-                  <dd className="text-sm text-[#383832] break-words">{(value as string) || "—"}</dd>
-                </div>
-              ))}
-            </dl>
-          </div>
+                ["Residential address", p.residential_address],
+              ]}
+            />
+          </Card>
 
-          {/* Company links */}
-          <div className="bg-[#fffff0] ink-border stamp-shadow p-5">
-            <div className="flex items-center justify-between gap-3 mb-2">
-              <div className="flex items-center gap-2">
-                <Link2 className="w-4 h-4 text-[#007518]" />
-                <span className="text-[11px] font-black uppercase tracking-wider text-[#383832]">
-                  Company Links ({links.length})
-                </span>
-              </div>
-              <button onClick={() => setShowLinkForm((s) => !s)} className={BTN_DARK}>
-                <Plus className="w-3.5 h-3.5" /> {showLinkForm ? "Close" : "Link Company"}
-              </button>
-            </div>
-
-            <div className="mb-4 p-3 bg-[#feffd6] border-l-4 border-[#007518]">
-              <p className="text-[11px] text-[#383832]/80">
-                <strong className="uppercase tracking-wide">Shares and capital belong to the link.</strong>{" "}
+          <Card
+            title="Company links"
+            meta={<Badge tone="neutral">{links.length}</Badge>}
+            actions={
+              <Button variant="primary" size="sm" onClick={() => setLinkOpen(true)} icon={<Plus className="w-3.5 h-3.5" />}>
+                Link company
+              </Button>
+            }
+            padded={false}
+          >
+            <div className="px-4 pt-3">
+              <Notice title="Shares belong to the link">
                 The same person can hold different shareholdings in different companies, so those numbers are
                 recorded here — never on the person record above.
-              </p>
+              </Notice>
             </div>
 
-            {showLinkForm && (
-              <div className="mb-4 p-4 bg-[#feffd6] ink-border">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  <SelectField
-                    label="Company"
-                    value={linkDraft.company_id ? String(linkDraft.company_id) : ""}
-                    onChange={(v) => setLinkDraft({ ...linkDraft, company_id: Number(v) || 0 })}
-                    options={[
-                      { value: "", label: companies.length ? "— Choose a company —" : "No companies yet" },
-                      ...companies.map((c) => ({ value: String(c.id), label: c.company_name })),
-                    ]}
-                    wide
-                  />
-                  <SelectField
-                    label="Role"
-                    value={linkDraft.role}
-                    onChange={(v) => setLinkDraft({ ...linkDraft, role: v as Role })}
-                    options={ROLE_OPTIONS}
-                  />
-                  <Field
-                    label="Appointed Date"
-                    value={toDateInput(linkDraft.appointed_date)}
-                    onChange={(v) => setLinkDraft({ ...linkDraft, appointed_date: v })}
-                    type="date"
-                  />
-                  <Field
-                    label="Number of Shares"
-                    value={linkDraft.number_of_shares || ""}
-                    onChange={(v) => setLinkDraft({ ...linkDraft, number_of_shares: v })}
-                    placeholder="e.g. 10,000"
-                    hint="Held in this company only"
-                  />
-                  <Field
-                    label="Capital Amount"
-                    value={linkDraft.capital_amount || ""}
-                    onChange={(v) => setLinkDraft({ ...linkDraft, capital_amount: v })}
-                    placeholder="e.g. 10,000,000 MMK"
-                    hint="Held in this company only"
-                  />
-                </div>
-                <div className="flex justify-end gap-2 mt-4">
-                  <button onClick={() => setShowLinkForm(false)} className={BTN_PLAIN}>
-                    Cancel
-                  </button>
-                  <button onClick={handleLink} disabled={linking || !linkDraft.company_id} className={BTN_GREEN}>
-                    <Check className="w-3.5 h-3.5" /> {linking ? "Linking..." : "Link Company"}
-                  </button>
-                </div>
-              </div>
-            )}
+            <div className="p-4">
+              <DataTable<CompanyLink>
+                loading={linksLoading}
+                rows={links}
+                rowKey={(l, i) => `${l.company_id}-${l.role}-${i}`}
+                empty={
+                  <div className="py-2">
+                    <Building className="w-6 h-6 mx-auto text-[var(--text-muted)]" />
+                    <p className="mt-2 text-[length:var(--text-sm)] text-[var(--text)]">Not linked to any company</p>
+                    <p className="mt-0.5 text-[length:var(--text-xs)] text-[var(--text-muted)]">
+                      Link this person to a company to record their role, shareholding and appointment date.
+                    </p>
+                  </div>
+                }
+                columns={[
+                  {
+                    key: "company",
+                    header: "Company",
+                    sortValue: (l) => companyName(l),
+                    render: (l) => (
+                      <span className="font-medium text-[var(--text)]">{companyName(l)}</span>
+                    ),
+                  },
+                  {
+                    key: "role",
+                    header: "Role",
+                    sortValue: (l) => l.role,
+                    render: (l) => <Badge tone={roleTone(l.role)}>{roleLabel(l.role)}</Badge>,
+                  },
+                  {
+                    key: "shares",
+                    header: "Shares",
+                    numeric: true,
+                    render: (l) => l.number_of_shares || "—",
+                  },
+                  {
+                    key: "capital",
+                    header: "Capital",
+                    numeric: true,
+                    hideBelow: "sm",
+                    render: (l) => l.capital_amount || "—",
+                  },
+                  {
+                    key: "appointed",
+                    header: "Appointed",
+                    hideBelow: "md",
+                    sortValue: (l) => dateSort(l.appointed_date),
+                    render: (l) => formatDate(l.appointed_date),
+                  },
+                  {
+                    key: "actions",
+                    header: "",
+                    align: "right",
+                    width: "1%",
+                    stopClickPropagation: true,
+                    render: (l) => (
+                      <ConfirmButton
+                        compact
+                        label={`Unlink ${companyName(l)}`}
+                        icon={<Trash2 className="w-3.5 h-3.5" />}
+                        onConfirm={() => handleUnlink(l)}
+                      />
+                    ),
+                  },
+                ]}
+              />
+            </div>
+          </Card>
+        </PageBody>
 
-            {linksLoading ? (
-              <div className="flex items-center gap-2 py-6 text-sm text-[#383832]/70">
-                <Loader2 className="w-4 h-4 animate-spin" /> Loading links...
-              </div>
-            ) : links.length === 0 ? (
-              <div className="py-8 text-center">
-                <Building className="w-7 h-7 mx-auto text-[#383832]/30" />
-                <p className="mt-2 text-sm font-bold uppercase tracking-wide text-[#383832]">
-                  Not linked to any company
-                </p>
-                <p className="mt-1 text-xs text-[#383832]/70">
-                  Link this person to a company to record their role, shareholding and appointment date.
-                </p>
-              </div>
-            ) : (
-              <div className="space-y-3">
-                {links.map((l, i) => {
-                  const key = `${l.company_id}-${l.role}-${i}`
-                  return (
-                    <div key={key} className="p-4 bg-[#feffd6] ink-border">
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <p className="text-sm font-bold text-[#383832] truncate">
-                            {l.company_name ||
-                              companies.find((c) => c.id === l.company_id)?.company_name ||
-                              `Company #${l.company_id}`}
-                          </p>
-                          <span className="tag-label mt-1">{roleLabel(l.role)}</span>
-                        </div>
-                        <ConfirmDelete
-                          compact
-                          armed={armedUnlink === key}
-                          onArm={() => setArmedUnlink(key)}
-                          onConfirm={() => handleUnlink(l)}
-                          onCancel={() => setArmedUnlink(null)}
-                          label="Unlink company"
-                        />
-                      </div>
-                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-3 pt-3 border-t-2 border-[#383832]/20">
-                        <div>
-                          <span className="tag-label">Shares</span>
-                          <p className="mt-1 text-sm text-[#383832]">{l.number_of_shares || "—"}</p>
-                        </div>
-                        <div>
-                          <span className="tag-label">Capital</span>
-                          <p className="mt-1 text-sm text-[#383832]">{l.capital_amount || "—"}</p>
-                        </div>
-                        <div>
-                          <span className="tag-label">Appointed</span>
-                          <p className="mt-1 text-sm text-[#383832]">{formatDate(l.appointed_date)}</p>
-                        </div>
-                      </div>
-                    </div>
-                  )
-                })}
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
+        {personForm}
+
+        <Modal
+          open={linkOpen}
+          onOpenChange={setLinkOpen}
+          title="Link a company"
+          description={`Record ${p.full_name}'s role and shareholding in one company.`}
+          footer={
+            <>
+              <Button variant="ghost" onClick={() => setLinkOpen(false)}>
+                Cancel
+              </Button>
+              <Button
+                variant="primary"
+                onClick={handleLink}
+                loading={linking}
+                disabled={!linkDraft.company_id}
+                icon={<Link2 className="w-3.5 h-3.5" />}
+              >
+                Link company
+              </Button>
+            </>
+          }
+        >
+          <FormGrid>
+            <SelectField
+              label="Company"
+              wide
+              value={linkDraft.company_id ? String(linkDraft.company_id) : ""}
+              onChange={(v) => setLinkDraft({ ...linkDraft, company_id: Number(v) || 0 })}
+              options={[
+                { value: "", label: companies.length ? "Choose a company" : "No companies yet" },
+                ...companies.map((c) => ({ value: String(c.id), label: c.company_name })),
+              ]}
+            />
+            <SelectField
+              label="Role"
+              value={linkDraft.role}
+              onChange={(v) => setLinkDraft({ ...linkDraft, role: v as Role })}
+              options={ROLE_OPTIONS}
+            />
+            <TextField
+              label="Appointed date"
+              type="date"
+              value={toDateInput(linkDraft.appointed_date)}
+              onChange={(v) => setLinkDraft({ ...linkDraft, appointed_date: v })}
+            />
+            <TextField
+              label="Number of shares"
+              value={linkDraft.number_of_shares || ""}
+              onChange={(v) => setLinkDraft({ ...linkDraft, number_of_shares: v })}
+              placeholder="10,000"
+              hint="Held in this company only"
+              mono
+            />
+            <TextField
+              label="Capital amount"
+              value={linkDraft.capital_amount || ""}
+              onChange={(v) => setLinkDraft({ ...linkDraft, capital_amount: v })}
+              placeholder="10,000,000 MMK"
+              hint="Held in this company only"
+              mono
+            />
+          </FormGrid>
+        </Modal>
+      </Page>
     )
   }
 
   // ── List ──
-  return (
-    <div className="flex flex-col h-full bg-[#f5f5e8] font-brutalist">
-      <div className="flex items-center justify-between gap-3 p-4 border-b-[3px] border-[#383832] bg-[#feffd6]">
-        <div className="flex items-center gap-3">
-          <h1 className="text-lg font-black uppercase tracking-wider text-[#383832]">People</h1>
-          <span className="tag-label">{people.length} on register</span>
+  const columns: Column<Person>[] = [
+    {
+      key: "full_name",
+      header: "Name",
+      sortValue: (p) => p.full_name,
+      render: (p) => (
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="w-6 h-6 shrink-0 grid place-items-center bg-[var(--bg-secondary)] border border-[var(--border)] text-[length:var(--text-2xs)] font-semibold text-[var(--text-secondary)] rounded-[var(--radius-sm)]">
+            {(p.full_name || "?").charAt(0).toUpperCase()}
+          </span>
+          <span className="font-medium text-[var(--text)] truncate">{p.full_name}</span>
         </div>
-        <button onClick={openCreate} className={BTN_GREEN}>
-          <Plus className="w-4 h-4" /> Add Person
-        </button>
-      </div>
-
-      {loadError && (
-        <div className="px-4 py-3 border-b-2 border-[#be2d06] bg-[#be2d06]/10 text-xs font-bold uppercase tracking-wide text-[#be2d06]">
-          {loadError}
-        </div>
-      )}
-
-      <div className="p-4 border-b-[3px] border-[#383832] bg-[#feffd6]">
-        <div className="relative">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#383832]/60 pointer-events-none" />
-          <input
-            type="search"
-            aria-label="Search people by name or NRC"
-            placeholder="Search by name or NRC / passport..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            className={`${INPUT} pl-10`}
-          />
-        </div>
-      </div>
-
-      <div className="flex-1 overflow-auto p-4">
-        {people.length === 0 ? (
-          // First-run empty state — this is the first thing a new install sees.
-          <div className="max-w-2xl mx-auto mt-6 bg-[#fffff0] ink-border stamp-shadow p-8">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 bg-[#383832] flex items-center justify-center shrink-0">
-                <Contact className="w-5 h-5 text-[#feffd6]" />
-              </div>
-              <div>
-                <h2 className="text-base font-black uppercase tracking-wider text-[#383832]">
-                  The People Register is empty
-                </h2>
-                <p className="text-xs text-[#383832]/70">Nobody has been added yet.</p>
-              </div>
-            </div>
-
-            <p className="mt-5 text-sm text-[#383832]/80">
-              This register holds every individual who appears in your documents — directors, individual
-              shareholders, and anyone who signs. Record a person <strong>once</strong>, then link them to as
-              many companies as you need.
-            </p>
-
-            <div className="mt-5 space-y-3">
-              {[
-                ["1", "Add the person", "Eight fields: name, nationality, NRC / passport, gender, date of birth, phone, email and address."],
-                ["2", "Link them to a company", "Pick a role — Director, Individual Shareholder, or Both."],
-                ["3", "Record shares on the link", "Shares, capital and appointed date belong to the company link, not to the person."],
-              ].map(([n, title, body]) => (
-                <div key={n} className="flex gap-3 p-3 bg-[#feffd6] ink-border">
-                  <span className="w-6 h-6 shrink-0 bg-[#007518] text-white text-xs font-black flex items-center justify-center">
-                    {n}
-                  </span>
-                  <div>
-                    <p className="text-xs font-black uppercase tracking-wide text-[#383832]">{title}</p>
-                    <p className="mt-0.5 text-xs text-[#383832]/70">{body}</p>
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            <button onClick={openCreate} className={`${BTN_GREEN} mt-6`}>
-              <UserPlus className="w-4 h-4" /> Add the first person
-            </button>
+      ),
+    },
+    {
+      key: "nrc_passport_no",
+      header: "NRC / passport",
+      sortValue: (p) => p.nrc_passport_no,
+      render: (p) =>
+        p.nrc_passport_no ? (
+          <span className="font-mono tabular-nums">{p.nrc_passport_no}</span>
+        ) : (
+          <Badge tone="warn">Missing</Badge>
+        ),
+    },
+    {
+      key: "nationality",
+      header: "Nationality",
+      hideBelow: "lg",
+      sortValue: (p) => p.nationality,
+      render: (p) => p.nationality || "—",
+    },
+    {
+      key: "date_of_birth",
+      header: "Born",
+      hideBelow: "lg",
+      sortValue: (p) => dateSort(p.date_of_birth),
+      render: (p) => <span className="tabular-nums whitespace-nowrap">{formatDate(p.date_of_birth)}</span>,
+    },
+    {
+      key: "phone",
+      header: "Phone",
+      hideBelow: "md",
+      render: (p) => <span className="tabular-nums whitespace-nowrap">{p.phone || "—"}</span>,
+    },
+    {
+      key: "companies",
+      header: "Linked companies",
+      sortValue: (p) => p.companies?.length ?? 0,
+      render: (p) =>
+        p.companies && p.companies.length > 0 ? (
+          <div className="flex flex-wrap gap-1">
+            {p.companies.slice(0, 3).map((l, i) => (
+              <Badge key={`${l.company_id}-${l.role}-${i}`} tone={roleTone(l.role)}>
+                {companyName(l)}
+              </Badge>
+            ))}
+            {p.companies.length > 3 && <Badge tone="neutral">+{p.companies.length - 3}</Badge>}
           </div>
         ) : (
+          <span className="text-[var(--text-muted)]">Not linked</span>
+        ),
+    },
+    {
+      key: "actions",
+      header: "",
+      align: "right",
+      width: "1%",
+      stopClickPropagation: true,
+      render: (p) => (
+        <div className="flex items-center justify-end gap-0.5">
+          <IconButton
+            aria-label={`Edit ${p.full_name}`}
+            title="Edit"
+            onClick={() => openEdit(p)}
+            icon={<Pencil className="w-3.5 h-3.5" />}
+          />
+          <ConfirmButton
+            compact
+            label={`Delete ${p.full_name}`}
+            icon={<Trash2 className="w-3.5 h-3.5" />}
+            onConfirm={() => handleDelete(p)}
+          />
+        </div>
+      ),
+    },
+  ]
+
+  return (
+    <Page>
+      <PageHeader
+        title="People"
+        meta={<Badge tone="neutral">{people.length} on register</Badge>}
+        description="Every individual who appears in a document — directors, individual shareholders and signatories. Record a person once, then link them to as many companies as you need."
+        actions={
+          <Button variant="primary" onClick={openCreate} icon={<Plus className="w-4 h-4" />}>
+            Add person
+          </Button>
+        }
+      />
+
+      {people.length > 0 && (
+        <Toolbar>
+          <SearchInput
+            label="Search people by name or NRC"
+            placeholder="Name or NRC / passport…"
+            value={searchTerm}
+            onChange={setSearchTerm}
+          />
+          <span className="ml-auto text-[length:var(--text-xs)] text-[var(--text-muted)] tabular-nums">
+            {filtered.length} of {people.length}
+          </span>
+        </Toolbar>
+      )}
+
+      <PageBody className="space-y-4">
+        {loadError && <Notice tone="danger" title="Could not load the register">{loadError}</Notice>}
+
+        {people.length === 0 ? (
+          <EmptyState
+            icon={<Contact className="w-4 h-4" />}
+            title="The People Register is empty"
+            description="Nobody has been added yet."
+            steps={[
+              {
+                title: "Add the person",
+                body: "Eight fields: name, nationality, NRC / passport, gender, date of birth, phone, email and address.",
+              },
+              {
+                title: "Link them to a company",
+                body: "Pick a role — Director, Individual Shareholder, or Both.",
+              },
+              {
+                title: "Record shares on the link",
+                body: "Shares, capital and appointed date belong to the company link, not to the person.",
+              },
+            ]}
+            action={
+              <Button variant="primary" onClick={openCreate} icon={<UserPlus className="w-4 h-4" />}>
+                Add the first person
+              </Button>
+            }
+          />
+        ) : (
           <>
-            <div className="bg-[#fffff0] ink-border stamp-shadow overflow-x-auto">
-              <table className="w-full">
-                <thead className="bg-[#383832]">
-                  <tr className="text-left">
-                    {["Full Name", "NRC / Passport", "Nationality", "Gender", "Date of Birth", "Phone", "Linked Companies", ""].map(
-                      (h, i) => (
-                        <th
-                          key={i}
-                          className={`px-4 py-3 text-[10px] font-black uppercase tracking-wider text-[#feffd6] ${
-                            i === 7 ? "text-right" : ""
-                          }`}
-                        >
-                          {h || "Actions"}
-                        </th>
-                      )
-                    )}
-                  </tr>
-                </thead>
-                <tbody>
-                  {filtered.length === 0 ? (
-                    <tr>
-                      <td colSpan={8} className="px-4 py-12 text-center">
-                        <p className="text-sm font-bold uppercase tracking-wide text-[#383832]">
-                          No match for &ldquo;{searchTerm}&rdquo;
-                        </p>
-                        <p className="mt-1 text-xs text-[#383832]/70">
-                          Search matches full name and NRC / passport number.
-                        </p>
-                        <button onClick={() => setSearchTerm("")} className={`${BTN_PLAIN} mx-auto mt-3`}>
-                          Clear search
-                        </button>
-                      </td>
-                    </tr>
-                  ) : (
-                    filtered.map((p) => (
-                      <tr
-                        key={p.id}
-                        tabIndex={0}
-                        role="button"
-                        aria-label={`Open ${p.full_name}`}
-                        onClick={() => openDetail(p)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter" || e.key === " ") {
-                            e.preventDefault()
-                            openDetail(p)
-                          }
-                        }}
-                        className={`border-t-2 border-[#383832]/20 cursor-pointer hover:bg-[#383832]/[0.06] transition-colors ${FOCUS}`}
-                      >
-                        <td className="px-4 py-3">
-                          <div className="flex items-center gap-2.5">
-                            <div className="w-7 h-7 bg-[#383832] flex items-center justify-center shrink-0">
-                              <span className="text-[#feffd6] text-[11px] font-black">
-                                {(p.full_name || "?").charAt(0).toUpperCase()}
-                              </span>
-                            </div>
-                            <span className="text-sm font-bold text-[#383832]">{p.full_name}</span>
-                          </div>
-                        </td>
-                        <td className="px-4 py-3 text-sm text-[#383832]/80 font-mono">
-                          {p.nrc_passport_no || "—"}
-                        </td>
-                        <td className="px-4 py-3 text-sm text-[#383832]/80">{p.nationality || "—"}</td>
-                        <td className="px-4 py-3 text-sm text-[#383832]/80">{p.gender || "—"}</td>
-                        <td className="px-4 py-3 text-sm text-[#383832]/80 whitespace-nowrap">
-                          {formatDate(p.date_of_birth)}
-                        </td>
-                        <td className="px-4 py-3 text-sm text-[#383832]/80 whitespace-nowrap">
-                          {p.phone || "—"}
-                        </td>
-                        <td className="px-4 py-3">
-                          {p.companies && p.companies.length > 0 ? (
-                            <div className="flex flex-wrap gap-1">
-                              {p.companies.map((l, i) => (
-                                <span key={`${l.company_id}-${l.role}-${i}`} className="tag-label">
-                                  {(l.company_name ||
-                                    companies.find((c) => c.id === l.company_id)?.company_name ||
-                                    `#${l.company_id}`) +
-                                    " · " +
-                                    roleLabel(l.role)}
-                                </span>
-                              ))}
-                            </div>
-                          ) : (
-                            <span className="text-sm text-[#383832]/50">Not linked</span>
-                          )}
-                        </td>
-                        <td className="px-4 py-3 text-right" onClick={(e) => e.stopPropagation()}>
-                          <div className="flex items-center justify-end gap-1">
-                            <button
-                              onClick={() => openEdit(p)}
-                              title={`Edit ${p.full_name}`}
-                              aria-label={`Edit ${p.full_name}`}
-                              className={`${ICON_BTN} hover:text-[#007518]`}
-                            >
-                              <Pencil className="w-3.5 h-3.5" />
-                            </button>
-                            <ConfirmDelete
-                              compact
-                              armed={armedDeleteId === p.id}
-                              onArm={() => setArmedDeleteId(p.id ?? null)}
-                              onConfirm={() => handleDelete(p)}
-                              onCancel={() => setArmedDeleteId(null)}
-                              label={`Delete ${p.full_name}`}
-                            />
-                          </div>
-                        </td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
-            <p className="mt-2 text-[10px] font-bold uppercase tracking-wider text-[#383832]/60">
-              Showing {filtered.length} of {people.length} people
-            </p>
+            <StatRow>
+              <StatTile label="On register" value={stats.total} />
+              <StatTile label="Linked to a company" value={stats.linked} hint={`${stats.total - stats.linked} unlinked`} />
+              <StatTile label="Acting directors" value={stats.directors} />
+              <StatTile
+                label="Incomplete"
+                value={stats.incomplete}
+                tone={stats.incomplete > 0 ? "warn" : undefined}
+                hint={stats.incomplete > 0 ? "Will fall back to placeholders" : "All records complete"}
+              />
+            </StatRow>
+
+            <DataTable<Person>
+              rows={filtered}
+              columns={columns}
+              rowKey={(p) => p.id ?? p.full_name}
+              onRowClick={openDetail}
+              caption="People register"
+              rowTone={(p) => (missingFields(p).length > 0 ? "var(--warn)" : null)}
+              empty={
+                <div className="py-2">
+                  <p className="text-[length:var(--text-sm)] text-[var(--text)]">
+                    No match for &ldquo;{searchTerm}&rdquo;
+                  </p>
+                  <p className="mt-0.5 text-[length:var(--text-xs)] text-[var(--text-muted)]">
+                    Search matches full name and NRC / passport number.
+                  </p>
+                  <Button size="sm" className="mt-3" onClick={() => setSearchTerm("")}>
+                    Clear search
+                  </Button>
+                </div>
+              }
+            />
           </>
         )}
-      </div>
-    </div>
+      </PageBody>
+
+      {personForm}
+    </Page>
   )
 }

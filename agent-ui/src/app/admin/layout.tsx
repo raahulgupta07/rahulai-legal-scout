@@ -3,6 +3,7 @@
 import { Suspense, useState } from "react"
 import DashboardSidebar from "./components/Sidebar"
 import { Menu, X } from "lucide-react"
+import { IconButton } from "@/components/ui/kit"
 
 export default function DashboardLayout({
   children,
@@ -12,44 +13,47 @@ export default function DashboardLayout({
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
 
   return (
-    <div className="flex h-screen bg-[#f5f5e8]">
-      {/* Desktop Sidebar */}
-      <div className="hidden md:block">
-        <Suspense fallback={<div className="w-64 bg-[#feffd6] border-r-[3px] border-[#383832]" />}>
+    <div className="flex h-screen bg-[var(--bg-secondary)] font-[family-name:var(--font-body)]">
+      {/* Desktop rail */}
+      <div className="hidden md:block shrink-0">
+        <Suspense fallback={<div className="w-60 h-full bg-[var(--surface)] border-r border-[var(--border)]" />}>
           <DashboardSidebar />
         </Suspense>
       </div>
 
-      {/* Mobile Menu Overlay */}
+      {/* Mobile rail, as an overlay */}
       {mobileMenuOpen && (
         <div className="fixed inset-0 z-50 md:hidden">
-          <div className="absolute inset-0 bg-black/30" onClick={() => setMobileMenuOpen(false)} />
-          <div className="relative w-64 h-full">
-            <Suspense fallback={<div className="w-64 h-full bg-[#feffd6]" />}>
+          <div
+            className="absolute inset-0 bg-[color-mix(in_srgb,var(--surface-inverse)_45%,transparent)]"
+            onClick={() => setMobileMenuOpen(false)}
+          />
+          <div className="relative w-60 h-full" onClick={() => setMobileMenuOpen(false)}>
+            <Suspense fallback={<div className="w-60 h-full bg-[var(--surface)]" />}>
               <DashboardSidebar />
             </Suspense>
           </div>
         </div>
       )}
 
-      {/* Main Content */}
-      <div className="flex-1 overflow-hidden flex flex-col">
-        {/* Mobile Header */}
-        <div className="md:hidden flex items-center gap-3 p-3 border-b-[3px] border-[#383832] bg-[#feffd6]">
-          <button onClick={() => setMobileMenuOpen(!mobileMenuOpen)} className="p-1.5 hover:bg-[#383832]/10">
-            {mobileMenuOpen ? <X className="w-5 h-5 text-[#383832]" /> : <Menu className="w-5 h-5 text-[#383832]" />}
-          </button>
+      <div className="flex-1 min-w-0 overflow-hidden flex flex-col">
+        <div className="md:hidden flex items-center gap-2.5 px-3 py-2 border-b border-[var(--border)] bg-[var(--surface)]">
+          <IconButton
+            aria-label={mobileMenuOpen ? "Close menu" : "Open menu"}
+            onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+            icon={mobileMenuOpen ? <X className="w-4 h-4" /> : <Menu className="w-4 h-4" />}
+          />
           <div className="flex items-center gap-2">
-            <div className="w-6 h-6 bg-[#383832] flex items-center justify-center">
-              <span className="text-[#feffd6] font-black text-[9px]">LS</span>
-            </div>
-            <span className="text-sm font-black text-[#383832] uppercase tracking-wider font-brutalist">Legal Scout</span>
+            <span className="w-5 h-5 grid place-items-center bg-[var(--ink)] text-[var(--text-inverse)] text-[length:var(--text-2xs)] font-semibold rounded-[var(--radius-sm)]">
+              LS
+            </span>
+            <span className="font-[family-name:var(--font-display)] text-[length:var(--text-sm)] font-semibold text-[var(--text)]">
+              Legal Scout
+            </span>
           </div>
         </div>
 
-        <div className="flex-1 overflow-hidden">
-          {children}
-        </div>
+        <div className="flex-1 min-h-0 overflow-hidden">{children}</div>
       </div>
     </div>
   )

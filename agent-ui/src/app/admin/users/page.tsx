@@ -1,8 +1,39 @@
 "use client"
-import { authFetch } from "@/lib/api-client"
 
-import { useState, useEffect, useCallback } from "react"
-import { Plus, Pencil, Trash2, ChevronDown, ChevronRight, X } from "lucide-react"
+import { useState, useEffect, useCallback, useMemo } from "react"
+import { Pencil, Plus, Shield, Trash2 } from "lucide-react"
+import { authFetch } from "@/lib/api-client"
+import { toast } from "sonner"
+import {
+  Badge,
+  Button,
+  Card,
+  type Column,
+  ConfirmButton,
+  DataTable,
+  EmptyState,
+  FormGrid,
+  IconButton,
+  LoadingScreen,
+  Modal,
+  Notice,
+  Page,
+  PageBody,
+  PageHeader,
+  SearchInput,
+  SelectField,
+  StatRow,
+  StatTile,
+  TextField,
+  type Tone,
+  Toolbar,
+  assertSuccess,
+  dateSort,
+  ensureOk,
+  errorMessage,
+  formatDate,
+  formatDateTime,
+} from "@/components/ui/kit"
 
 interface User {
   id: number
@@ -23,388 +54,417 @@ interface ActivityLog {
 
 const API_BASE = `${process.env.NEXT_PUBLIC_API_URL || ""}/api/admin`
 
-function getHeaders() {
-  const token = localStorage.getItem("ls_token")
-  return {
-    "Content-Type": "application/json",
-    "Authorization": `Bearer ${token}`,
-  }
+const ROLE_OPTIONS = [
+  { value: "user", label: "User — chat only" },
+  { value: "editor", label: "Editor — manage registers" },
+  { value: "admin", label: "Admin — full access" },
+]
+
+const ROLE_TONE: Record<string, Tone> = { admin: "danger", editor: "info", user: "neutral" }
+
+/** What each role can actually reach, mirroring the sidebar's gating. */
+const ROLE_SCOPE: Record<string, string> = {
+  admin: "Everything, including users and settings",
+  editor: "Templates, companies, people and knowledge",
+  user: "Chat, documents and emails",
 }
 
 export default function UsersPage() {
   const [users, setUsers] = useState<User[]>([])
   const [logs, setLogs] = useState<ActivityLog[]>([])
   const [loading, setLoading] = useState(true)
-  const [showLogs, setShowLogs] = useState(false)
+  const [logsLoading, setLogsLoading] = useState(false)
   const [showModal, setShowModal] = useState(false)
   const [editingUser, setEditingUser] = useState<User | null>(null)
+  const [saving, setSaving] = useState(false)
   const [error, setError] = useState("")
-  const [formData, setFormData] = useState({
-    email: "",
-    name: "",
-    password: "",
-    role: "user",
-  })
+  const [formError, setFormError] = useState("")
+  const [searchTerm, setSearchTerm] = useState("")
+  const [formData, setFormData] = useState({ email: "", name: "", password: "", role: "user" })
 
   const fetchUsers = useCallback(async () => {
     try {
-      const res = await authFetch(`${API_BASE}/users`, { headers: getHeaders() })
+      const res = await authFetch(`${API_BASE}/users`)
+      await ensureOk(res, "Failed to load users")
       const data = await res.json()
-      if (Array.isArray(data)) setUsers(data)
-      else if (data.users) setUsers(data.users)
-    } catch {
-      setError("Failed to fetch users")
+      setUsers(Array.isArray(data) ? data : data.users || [])
+      setError("")
+    } catch (e: any) {
+      console.error("Fetch users error:", e)
+      setError(e?.message || "Failed to load users")
     } finally {
       setLoading(false)
     }
   }, [])
 
   const fetchLogs = useCallback(async () => {
+    setLogsLoading(true)
     try {
-      const res = await authFetch(`${API_BASE}/activity-logs`, { headers: getHeaders() })
+      const res = await authFetch(`${API_BASE}/activity-logs`)
+      await ensureOk(res, "Failed to load activity logs")
       const data = await res.json()
-      if (Array.isArray(data)) setLogs(data)
-      else if (data.logs) setLogs(data.logs)
-    } catch {
-      console.error("Failed to fetch logs")
+      setLogs(Array.isArray(data) ? data : data.logs || [])
+    } catch (e: any) {
+      console.error("Fetch logs error:", e)
+      toast.error(e?.message || "Failed to load activity logs")
+    } finally {
+      setLogsLoading(false)
     }
   }, [])
 
   useEffect(() => {
     fetchUsers()
-  }, [fetchUsers])
+    fetchLogs()
+  }, [fetchUsers, fetchLogs])
 
   const openCreateModal = () => {
     setEditingUser(null)
     setFormData({ email: "", name: "", password: "", role: "user" })
-    setError("")
+    setFormError("")
     setShowModal(true)
   }
 
   const openEditModal = (user: User) => {
     setEditingUser(user)
     setFormData({ email: user.email, name: user.name, password: "", role: user.role })
-    setError("")
+    setFormError("")
     setShowModal(true)
   }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    setError("")
+    setFormError("")
+    setSaving(true)
     try {
+      let res: Response
       if (editingUser) {
         const body: Record<string, string> = { name: formData.name, role: formData.role }
         if (formData.password) body.password = formData.password
-        const res = await authFetch(`${API_BASE}/users/${editingUser.id}`, {
+        res = await authFetch(`${API_BASE}/users/${editingUser.id}`, {
           method: "PUT",
-          headers: getHeaders(),
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body),
         })
-        const data = await res.json()
-        if (!res.ok || data.success === false) { setError(data.detail || data.error || "Update failed"); return }
       } else {
-        const res = await authFetch(`${API_BASE}/users`, {
+        res = await authFetch(`${API_BASE}/users`, {
           method: "POST",
-          headers: getHeaders(),
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify(formData),
         })
-        const data = await res.json()
-        if (!res.ok || data.success === false) { setError(data.detail || data.error || "Create failed"); return }
       }
+      if (!res.ok) throw new Error(await errorMessage(res, editingUser ? "Update failed" : "Create failed"))
+      await assertSuccess(res, editingUser ? "Update failed" : "Create failed")
+      toast.success(editingUser ? `"${formData.name}" updated` : `"${formData.name}" created`)
       setShowModal(false)
-      fetchUsers()
-    } catch {
-      setError("Request failed")
+      await fetchUsers()
+      await fetchLogs()
+    } catch (err: any) {
+      console.error("Save user error:", err)
+      setFormError(err?.message || "Request failed")
+    } finally {
+      setSaving(false)
     }
   }
 
   const handleDelete = async (user: User) => {
-    if (!confirm(`Delete user "${user.name}" (${user.email})?`)) return
     try {
-      await authFetch(`${API_BASE}/users/${user.id}`, {
-        method: "DELETE",
-        headers: getHeaders(),
-      })
-      fetchUsers()
-    } catch {
-      setError("Delete failed")
+      const res = await authFetch(`${API_BASE}/users/${user.id}`, { method: "DELETE" })
+      if (!res.ok) throw new Error(await errorMessage(res, "Failed to delete user"))
+      await assertSuccess(res, "Failed to delete user")
+      toast.success(`"${user.name}" deleted`)
+      await fetchUsers()
+      await fetchLogs()
+    } catch (e: any) {
+      console.error("Delete user error:", e)
+      toast.error(e?.message || "Failed to delete user")
     }
   }
 
-  const handleToggleLogs = () => {
-    if (!showLogs) fetchLogs()
-    setShowLogs(!showLogs)
-  }
+  const term = searchTerm.trim().toLowerCase()
+  const filtered = useMemo(
+    () =>
+      term
+        ? users.filter(
+            (u) => u.email?.toLowerCase().includes(term) || u.name?.toLowerCase().includes(term)
+          )
+        : users,
+    [users, term]
+  )
 
-  const formatDate = (dateStr: string) => {
-    try {
-      return new Date(dateStr).toLocaleDateString("en-US", {
-        year: "numeric",
-        month: "short",
-        day: "numeric",
-      })
-    } catch {
-      return dateStr
+  const stats = useMemo(() => {
+    const byRole = (role: string) => users.filter((u) => u.role === role).length
+    return {
+      total: users.length,
+      admins: byRole("admin"),
+      editors: byRole("editor"),
+      inactive: users.filter((u) => (u.status || "active") !== "active").length,
     }
-  }
+  }, [users])
 
-  const formatTimestamp = (dateStr: string) => {
-    try {
-      return new Date(dateStr).toLocaleString("en-US", {
-        month: "short",
-        day: "numeric",
-        hour: "2-digit",
-        minute: "2-digit",
-      })
-    } catch {
-      return dateStr
-    }
-  }
+  if (loading) return <LoadingScreen label="Loading users" />
 
-  const getRoleBadgeColor = (role: string) => {
-    switch (role) {
-      case "admin": return "bg-orange-100 text-orange-700 border-orange-200"
-      case "editor": return "bg-blue-100 text-blue-700 border-blue-200"
-      default: return "bg-gray-100 text-gray-700 border-gray-200"
-    }
-  }
-
-  const getStatusBadgeColor = (status: string) => {
-    return status === "active"
-      ? "bg-green-100 text-green-700 border-green-200"
-      : "bg-red-100 text-red-700 border-red-200"
-  }
+  const columns: Column<User>[] = [
+    {
+      key: "name",
+      header: "User",
+      sortValue: (u) => u.name || u.email,
+      render: (u) => (
+        <div className="flex items-center gap-2.5 min-w-0">
+          <span className="w-7 h-7 shrink-0 grid place-items-center bg-[var(--bg-secondary)] border border-[var(--border)] text-[length:var(--text-2xs)] font-semibold text-[var(--text-secondary)] rounded-[var(--radius-sm)]">
+            {(u.name || u.email || "?").charAt(0).toUpperCase()}
+          </span>
+          <span className="min-w-0">
+            <span className="block font-medium text-[var(--text)] truncate">{u.name || "—"}</span>
+            <span className="block text-[length:var(--text-2xs)] text-[var(--text-muted)] truncate">{u.email}</span>
+          </span>
+        </div>
+      ),
+    },
+    {
+      key: "role",
+      header: "Role",
+      sortValue: (u) => u.role,
+      render: (u) => (
+        <span className="inline-flex flex-col gap-0.5">
+          <Badge tone={ROLE_TONE[u.role] || "neutral"} dot>
+            {u.role}
+          </Badge>
+          <span className="text-[length:var(--text-2xs)] text-[var(--text-muted)]">{ROLE_SCOPE[u.role] || ""}</span>
+        </span>
+      ),
+    },
+    {
+      key: "status",
+      header: "Status",
+      sortValue: (u) => u.status || "active",
+      render: (u) =>
+        (u.status || "active") === "active" ? (
+          <Badge tone="ok" dot>
+            Active
+          </Badge>
+        ) : (
+          <Badge tone="danger" dot>
+            {u.status}
+          </Badge>
+        ),
+    },
+    {
+      key: "created_at",
+      header: "Created",
+      hideBelow: "md",
+      sortValue: (u) => dateSort(u.created_at),
+      render: (u) => <span className="tabular-nums whitespace-nowrap">{formatDate(u.created_at)}</span>,
+    },
+    {
+      key: "actions",
+      header: "",
+      align: "right",
+      width: "1%",
+      stopClickPropagation: true,
+      render: (u) => (
+        <div className="flex items-center justify-end gap-0.5">
+          <IconButton
+            aria-label={`Edit ${u.name || u.email}`}
+            title="Edit"
+            onClick={() => openEditModal(u)}
+            icon={<Pencil className="w-3.5 h-3.5" />}
+          />
+          <ConfirmButton
+            compact
+            label={`Delete ${u.name || u.email}`}
+            icon={<Trash2 className="w-3.5 h-3.5" />}
+            onConfirm={() => handleDelete(u)}
+          />
+        </div>
+      ),
+    },
+  ]
 
   return (
-    <div className="flex-1 overflow-y-auto p-6 bg-background">
-      <div className="max-w-6xl mx-auto">
-        {/* Header */}
-        <div className="flex items-center justify-between mb-6">
-          <div>
-            <h1 className="text-2xl font-bold text-primary">Users</h1>
-            <p className="text-sm text-muted mt-1">Manage user accounts and permissions</p>
-          </div>
-          <button
-            onClick={openCreateModal}
-            className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-orange-500 to-red-600 text-white text-sm font-medium hover:from-orange-600 hover:to-red-700 transition-all shadow-lg"
-          >
-            <Plus className="w-4 h-4" />
-            Create User
-          </button>
-        </div>
+    <Page>
+      <PageHeader
+        title="Users"
+        meta={<Badge tone="neutral">{users.length}</Badge>}
+        description="Accounts and what each one may reach. Role changes take effect on the user's next sign-in."
+        actions={
+          <Button variant="primary" onClick={openCreateModal} icon={<Plus className="w-4 h-4" />}>
+            Create user
+          </Button>
+        }
+      />
 
-        {error && (
-          <div className="mb-4 p-3 rounded-xl bg-red-50 border border-red-200 text-red-700 text-sm">
-            {error}
-          </div>
+      {users.length > 0 && (
+        <Toolbar>
+          <SearchInput
+            label="Search users by name or email"
+            placeholder="Name or email…"
+            value={searchTerm}
+            onChange={setSearchTerm}
+          />
+          <span className="ml-auto text-[length:var(--text-xs)] text-[var(--text-muted)] tabular-nums">
+            {filtered.length} of {users.length}
+          </span>
+        </Toolbar>
+      )}
+
+      <PageBody className="space-y-4">
+        {error && <Notice tone="danger" title="Could not load users">{error}</Notice>}
+
+        {users.length === 0 ? (
+          <EmptyState
+            icon={<Shield className="w-4 h-4" />}
+            title="No users yet"
+            description="Create an account for each person who needs access."
+            action={
+              <Button variant="primary" onClick={openCreateModal} icon={<Plus className="w-4 h-4" />}>
+                Create the first user
+              </Button>
+            }
+          />
+        ) : (
+          <>
+            <StatRow>
+              <StatTile label="Accounts" value={stats.total} />
+              <StatTile label="Admins" value={stats.admins} hint="Full access, including settings" />
+              <StatTile label="Editors" value={stats.editors} hint="Can manage the registers" />
+              <StatTile
+                label="Inactive"
+                value={stats.inactive}
+                tone={stats.inactive > 0 ? "warn" : undefined}
+              />
+            </StatRow>
+
+            <DataTable
+              rows={filtered}
+              columns={columns}
+              rowKey={(u) => u.id}
+              caption="User accounts"
+              rowTone={(u) => ((u.status || "active") === "active" ? null : "var(--danger-strong)")}
+              empty={
+                <div className="py-2">
+                  <p className="text-[length:var(--text-sm)] text-[var(--text)]">
+                    No match for &ldquo;{searchTerm}&rdquo;
+                  </p>
+                  <Button size="sm" className="mt-3" onClick={() => setSearchTerm("")}>
+                    Clear search
+                  </Button>
+                </div>
+              }
+            />
+          </>
         )}
 
-        {/* Users Table */}
-        <div className="bg-card border border-primary/10 rounded-2xl overflow-hidden">
-          <table className="w-full">
-            <thead>
-              <tr className="border-b border-primary/10 bg-accent/50">
-                <th className="text-left px-4 py-3 text-xs font-semibold text-muted uppercase tracking-wider">Email</th>
-                <th className="text-left px-4 py-3 text-xs font-semibold text-muted uppercase tracking-wider">Name</th>
-                <th className="text-left px-4 py-3 text-xs font-semibold text-muted uppercase tracking-wider">Role</th>
-                <th className="text-left px-4 py-3 text-xs font-semibold text-muted uppercase tracking-wider">Status</th>
-                <th className="text-left px-4 py-3 text-xs font-semibold text-muted uppercase tracking-wider">Created</th>
-                <th className="text-right px-4 py-3 text-xs font-semibold text-muted uppercase tracking-wider">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {loading ? (
-                <tr>
-                  <td colSpan={6} className="px-4 py-12 text-center text-sm text-muted">
-                    <div className="flex items-center justify-center gap-2">
-                      <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-orange-500"></div>
-                      Loading users...
-                    </div>
-                  </td>
-                </tr>
-              ) : users.length === 0 ? (
-                <tr>
-                  <td colSpan={6} className="px-4 py-12 text-center text-sm text-muted">
-                    No users found. Create one to get started.
-                  </td>
-                </tr>
-              ) : (
-                users.map((user) => (
-                  <tr key={user.id} className="border-b border-primary/5 hover:bg-accent/30 transition-colors">
-                    <td className="px-4 py-3 text-sm text-primary font-medium">{user.email}</td>
-                    <td className="px-4 py-3 text-sm text-primary">{user.name}</td>
-                    <td className="px-4 py-3">
-                      <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium border ${getRoleBadgeColor(user.role)}`}>
-                        {user.role}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3">
-                      <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium border ${getStatusBadgeColor(user.status || "active")}`}>
-                        {user.status || "active"}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-sm text-muted">{formatDate(user.created_at)}</td>
-                    <td className="px-4 py-3 text-right">
-                      <div className="flex items-center justify-end gap-1">
-                        <button
-                          onClick={() => openEditModal(user)}
-                          className="p-2 rounded-lg hover:bg-accent text-muted hover:text-primary transition-colors"
-                          title="Edit user"
-                        >
-                          <Pencil className="w-4 h-4" />
-                        </button>
-                        <button
-                          onClick={() => handleDelete(user)}
-                          className="p-2 rounded-lg hover:bg-red-50 text-muted hover:text-red-600 transition-colors"
-                          title="Delete user"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
+        <Card
+          title="Activity log"
+          meta={<Badge tone="neutral">{logs.length}</Badge>}
+          actions={
+            <Button size="sm" variant="ghost" onClick={fetchLogs} loading={logsLoading}>
+              Refresh
+            </Button>
+          }
+          padded={false}
+        >
+          <DataTable
+            className="border-0 rounded-none"
+            maxHeight="24rem"
+            loading={logsLoading}
+            rows={logs}
+            rowKey={(l) => l.id}
+            empty={<span className="text-[var(--text-muted)]">No activity recorded yet.</span>}
+            columns={[
+              {
+                key: "timestamp",
+                header: "Time",
+                sortValue: (l) => dateSort(l.timestamp),
+                render: (l) => (
+                  <span className="tabular-nums whitespace-nowrap text-[var(--text-muted)]">
+                    {formatDateTime(l.timestamp)}
+                  </span>
+                ),
+              },
+              { key: "user_email", header: "User", sortValue: (l) => l.user_email, render: (l) => l.user_email || "—" },
+              {
+                key: "action",
+                header: "Action",
+                sortValue: (l) => l.action,
+                render: (l) => <span className="font-medium text-[var(--text)]">{l.action}</span>,
+              },
+              { key: "details", header: "Details", hideBelow: "md", render: (l) => l.details || "—" },
+            ]}
+          />
+        </Card>
+      </PageBody>
 
-        {/* Activity Logs Section */}
-        <div className="mt-6 bg-card border border-primary/10 rounded-2xl overflow-hidden">
-          <button
-            onClick={handleToggleLogs}
-            className="flex items-center gap-2 w-full px-4 py-3 text-sm font-semibold text-primary hover:bg-accent/30 transition-colors"
-          >
-            {showLogs ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
-            Activity Logs
-          </button>
-          {showLogs && (
-            <div className="border-t border-primary/10">
-              {logs.length === 0 ? (
-                <div className="px-4 py-8 text-center text-sm text-muted">No activity logs found.</div>
-              ) : (
-                <div className="max-h-96 overflow-y-auto">
-                  <table className="w-full">
-                    <thead>
-                      <tr className="border-b border-primary/10 bg-accent/50">
-                        <th className="text-left px-4 py-2 text-xs font-semibold text-muted uppercase tracking-wider">Time</th>
-                        <th className="text-left px-4 py-2 text-xs font-semibold text-muted uppercase tracking-wider">User</th>
-                        <th className="text-left px-4 py-2 text-xs font-semibold text-muted uppercase tracking-wider">Action</th>
-                        <th className="text-left px-4 py-2 text-xs font-semibold text-muted uppercase tracking-wider">Details</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {logs.map((log) => (
-                        <tr key={log.id} className="border-b border-primary/5">
-                          <td className="px-4 py-2 text-xs text-muted whitespace-nowrap">{formatTimestamp(log.timestamp)}</td>
-                          <td className="px-4 py-2 text-xs text-primary">{log.user_email}</td>
-                          <td className="px-4 py-2 text-xs text-primary font-medium">{log.action}</td>
-                          <td className="px-4 py-2 text-xs text-muted">{log.details}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
+      <Modal
+        open={showModal}
+        onOpenChange={setShowModal}
+        size="sm"
+        title={editingUser ? "Edit user" : "Create user"}
+        description={editingUser ? editingUser.email : "The email address cannot be changed later."}
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setShowModal(false)}>
+              Cancel
+            </Button>
+            <Button variant="primary" onClick={handleSubmit} loading={saving}>
+              {editingUser ? "Update user" : "Create user"}
+            </Button>
+          </>
+        }
+      >
+        <form onSubmit={handleSubmit}>
+          {formError && (
+            <div className="mb-3">
+              <Notice tone="danger" title="Could not save">
+                {formError}
+              </Notice>
             </div>
           )}
-        </div>
-      </div>
 
-      {/* Create/Edit Modal */}
-      {showModal && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-xl border border-gray-200">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-semibold text-gray-900">
-                {editingUser ? "Edit User" : "Create User"}
-              </h2>
-              <button
-                onClick={() => setShowModal(false)}
-                className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-400 hover:text-gray-600 transition-colors"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
+          <FormGrid>
+            <TextField
+              label="Email"
+              type="email"
+              value={formData.email}
+              onChange={(v) => setFormData({ ...formData, email: v })}
+              required
+              wide
+              disabled={!!editingUser}
+              placeholder="user@example.com"
+              hint={editingUser ? "Email is fixed once the account exists" : undefined}
+            />
+            <TextField
+              label="Name"
+              value={formData.name}
+              onChange={(v) => setFormData({ ...formData, name: v })}
+              required
+              wide
+              placeholder="Full name"
+            />
+            <TextField
+              label="Password"
+              type="password"
+              value={formData.password}
+              onChange={(v) => setFormData({ ...formData, password: v })}
+              required={!editingUser}
+              wide
+              placeholder={editingUser ? "Leave blank to keep the current one" : "At least 10 characters"}
+              hint={editingUser ? "Only set this to reset the password" : "Minimum 10 characters"}
+            />
+            <SelectField
+              label="Role"
+              value={formData.role}
+              onChange={(v) => setFormData({ ...formData, role: v })}
+              options={ROLE_OPTIONS}
+              wide
+              hint={ROLE_SCOPE[formData.role]}
+            />
+          </FormGrid>
 
-            {error && (
-              <div className="mb-4 p-3 rounded-xl bg-red-50 border border-red-200 text-red-700 text-sm">
-                {error}
-              </div>
-            )}
-
-            <form onSubmit={handleSubmit} className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5">Email</label>
-                <input
-                  type="email"
-                  value={formData.email}
-                  onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-                  required
-                  disabled={!!editingUser}
-                  placeholder="user@example.com"
-                  className="w-full px-4 py-2.5 rounded-xl border border-gray-300 text-gray-900 text-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 transition-colors disabled:bg-gray-50 disabled:text-gray-500"
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5">Name</label>
-                <input
-                  type="text"
-                  value={formData.name}
-                  onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                  required
-                  placeholder="Full name"
-                  className="w-full px-4 py-2.5 rounded-xl border border-gray-300 text-gray-900 text-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 transition-colors"
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                  Password{editingUser && " (leave blank to keep current)"}
-                </label>
-                <input
-                  type="password"
-                  value={formData.password}
-                  onChange={(e) => setFormData({ ...formData, password: e.target.value })}
-                  required={!editingUser}
-                  placeholder={editingUser ? "Leave blank to keep current" : "Set a password"}
-                  className="w-full px-4 py-2.5 rounded-xl border border-gray-300 text-gray-900 text-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 transition-colors"
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5">Role</label>
-                <select
-                  value={formData.role}
-                  onChange={(e) => setFormData({ ...formData, role: e.target.value })}
-                  className="w-full px-4 py-2.5 rounded-xl border border-gray-300 text-gray-900 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 transition-colors"
-                >
-                  <option value="user">User</option>
-                  <option value="editor">Editor</option>
-                  <option value="admin">Admin</option>
-                </select>
-              </div>
-
-              <div className="flex gap-3 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setShowModal(false)}
-                  className="flex-1 py-2.5 px-4 rounded-xl border border-gray-300 text-gray-700 text-sm font-medium hover:bg-gray-50 transition-colors"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="flex-1 py-2.5 px-4 rounded-xl bg-gradient-to-r from-orange-500 to-red-600 text-white text-sm font-semibold hover:from-orange-600 hover:to-red-700 transition-all shadow-lg"
-                >
-                  {editingUser ? "Update" : "Create"}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-    </div>
+          {/* Lets the browser submit on Enter without showing a second button. */}
+          <button type="submit" className="hidden" aria-hidden tabIndex={-1} />
+        </form>
+      </Modal>
+    </Page>
   )
 }

@@ -1,11 +1,39 @@
 "use client"
 
 import { useEffect, useState, useMemo } from "react"
-import { Download, Eye, Loader2, Calendar, X, Search, CheckCircle, FileText, Trash2, ArrowUpDown, ArrowLeft } from "lucide-react"
+import { ArrowLeft, Download, Eye, FileText, Trash2 } from "lucide-react"
 import apiClient, { authFetch } from "@/lib/api-client"
+import { toast } from "sonner"
 import DocViewer from "@/components/ui/DocViewer"
+import {
+  Badge,
+  Button,
+  Card,
+  type Column,
+  ConfirmButton,
+  DataTable,
+  DetailList,
+  EmptyState,
+  Field,
+  IconButton,
+  Input,
+  LoadingScreen,
+  Notice,
+  Page,
+  PageBody,
+  PageHeader,
+  SearchInput,
+  StatRow,
+  StatTile,
+  Toolbar,
+  assertSuccess,
+  dateSort,
+  ensureOk,
+  errorMessage,
+  formatDateTime,
+} from "@/components/ui/kit"
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || ''
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || ""
 
 interface Document {
   id: string
@@ -19,28 +47,40 @@ interface Document {
   created_by_email?: string
 }
 
+/** A placeholder left as TBD means the document went out incomplete. */
+const isUnfilled = (v: unknown) =>
+  v == null || String(v).trim() === "" || String(v).trim().toUpperCase() === "TBD"
+
 export default function DocumentsPage() {
   const [documents, setDocuments] = useState<Document[]>([])
   const [loading, setLoading] = useState(true)
-  const [startDate, setStartDate] = useState<string>("")
-  const [endDate, setEndDate] = useState<string>("")
-  const [searchQuery, setSearchQuery] = useState<string>("")
+  const [loadError, setLoadError] = useState("")
+  const [startDate, setStartDate] = useState("")
+  const [endDate, setEndDate] = useState("")
+  const [searchQuery, setSearchQuery] = useState("")
   const [previewDoc, setPreviewDoc] = useState<Document | null>(null)
   const [previewDetail, setPreviewDetail] = useState<any>(null)
-  const [sortField, setSortField] = useState<string>("created_at")
-  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc")
 
   useEffect(() => {
-    if (!previewDoc) { setPreviewDetail(null); return }
+    if (!previewDoc) {
+      setPreviewDetail(null)
+      return
+    }
     let cancelled = false
     ;(async () => {
       try {
         const res = await authFetch(apiClient.documentDetail(previewDoc.id))
+        await ensureOk(res, "Failed to load document detail")
         const json = await res.json()
-        if (!cancelled && json.success) setPreviewDetail(json.data)
-      } catch {}
+        if (!cancelled) setPreviewDetail(json.data)
+      } catch (e: any) {
+        console.error("Document detail error:", e)
+        if (!cancelled) toast.error(e?.message || "Failed to load document detail")
+      }
     })()
-    return () => { cancelled = true }
+    return () => {
+      cancelled = true
+    }
   }, [previewDoc])
 
   useEffect(() => {
@@ -48,76 +88,61 @@ export default function DocumentsPage() {
   }, [])
 
   const fetchDocuments = async () => {
+    setLoadError("")
     try {
       const res = await authFetch(apiClient.getDashboardData())
-      if (!res.ok) throw new Error(`Request failed: ${res.status}`)
+      await ensureOk(res, "Failed to load documents")
       const data = await res.json()
       setDocuments(data.documents || [])
-    } catch (e) {
+    } catch (e: any) {
       console.error("Fetch error:", e)
+      setLoadError(e?.message || "Failed to load documents")
     } finally {
       setLoading(false)
     }
   }
 
-  // Filter documents by date range and search query
-  const filteredDocuments = useMemo(() => {
-    let filtered = documents
+  const filtered = useMemo(() => {
+    let rows = documents
 
-    // Date filter
     if (startDate || endDate) {
-      filtered = filtered.filter(doc => {
+      rows = rows.filter((doc) => {
         if (!doc.created_at) return true
-
         const docDate = new Date(doc.created_at)
         const start = startDate ? new Date(startDate) : null
         const end = endDate ? new Date(endDate) : null
-
-        // Set end date to end of day for inclusive filtering
-        if (end) {
-          end.setHours(23, 59, 59, 999)
-        }
-
-        if (start && end) {
-          return docDate >= start && docDate <= end
-        } else if (start) {
-          return docDate >= start
-        } else if (end) {
-          return docDate <= end
-        }
-
+        // Inclusive of the whole end day, not midnight on it.
+        if (end) end.setHours(23, 59, 59, 999)
+        if (start && end) return docDate >= start && docDate <= end
+        if (start) return docDate >= start
+        if (end) return docDate <= end
         return true
       })
     }
 
-    // Search filter
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase().trim()
-      filtered = filtered.filter(doc =>
-        (doc.file_name && doc.file_name.toLowerCase().includes(q)) ||
-        (doc.company_name && doc.company_name.toLowerCase().includes(q)) ||
-        (doc.template_name && doc.template_name.toLowerCase().includes(q))
+    const q = searchQuery.trim().toLowerCase()
+    if (q) {
+      rows = rows.filter(
+        (doc) =>
+          doc.file_name?.toLowerCase().includes(q) ||
+          doc.company_name?.toLowerCase().includes(q) ||
+          doc.template_name?.toLowerCase().includes(q)
       )
     }
 
-    // Sort
-    filtered.sort((a, b) => {
-      let aVal = (a as any)[sortField] || ""
-      let bVal = (b as any)[sortField] || ""
-      if (sortField === "created_at") {
-        aVal = aVal ? new Date(aVal).getTime() : 0
-        bVal = bVal ? new Date(bVal).getTime() : 0
-      } else {
-        aVal = String(aVal).toLowerCase()
-        bVal = String(bVal).toLowerCase()
-      }
-      if (aVal < bVal) return sortDir === "asc" ? -1 : 1
-      if (aVal > bVal) return sortDir === "asc" ? 1 : -1
-      return 0
-    })
+    return rows
+  }, [documents, startDate, endDate, searchQuery])
 
-    return filtered
-  }, [documents, startDate, endDate, searchQuery, sortField, sortDir])
+  const stats = useMemo(() => {
+    const now = Date.now()
+    const day = 24 * 60 * 60 * 1000
+    const last7 = documents.filter((d) => d.created_at && now - new Date(d.created_at).getTime() < 7 * day).length
+    const companies = new Set(documents.map((d) => d.company_name).filter(Boolean)).size
+    const templates = new Set(documents.map((d) => d.template_name).filter(Boolean)).size
+    return { total: documents.length, last7, companies, templates }
+  }, [documents])
+
+  const hasActiveFilters = !!(startDate || endDate || searchQuery.trim())
 
   const clearFilters = () => {
     setStartDate("")
@@ -126,318 +151,314 @@ export default function DocumentsPage() {
   }
 
   const handleDelete = async (doc: Document) => {
-    if (!confirm(`Delete "${doc.file_name}"?`)) return
     try {
       const docRef = doc.id || encodeURIComponent(doc.file_name)
       const res = await authFetch(`${API_BASE_URL}/api/dashboard/document/${docRef}`, { method: "DELETE" })
-      if (!res.ok) throw new Error(`Request failed: ${res.status}`)
-      const data = await res.json()
-      if (data.success) {
-        setDocuments(prev => prev.filter(d => d.file_name !== doc.file_name))
-        if (previewDoc?.file_name === doc.file_name) setPreviewDoc(null)
-      } else {
-        alert(data.error || "Failed to delete")
-      }
-    } catch (e) {
+      if (!res.ok) throw new Error(await errorMessage(res, "Failed to delete document"))
+      await assertSuccess(res, "Failed to delete document")
+      toast.success(`"${doc.file_name}" deleted`)
+      setDocuments((prev) => prev.filter((d) => d.file_name !== doc.file_name))
+      if (previewDoc?.file_name === doc.file_name) setPreviewDoc(null)
+    } catch (e: any) {
       console.error("Delete error:", e)
-      alert("Failed to delete document")
+      toast.error(e?.message || "Failed to delete document")
     }
   }
 
-  const toggleSort = (field: string) => {
-    if (sortField === field) {
-      setSortDir(prev => prev === "asc" ? "desc" : "asc")
-    } else {
-      setSortField(field)
-      setSortDir("desc")
-    }
-  }
+  const previewUrl = (fileName: string) =>
+    `${API_BASE_URL}/api/documents/preview-pdf/${encodeURIComponent(fileName)}`
 
-  const hasActiveFilters = startDate || endDate || searchQuery.trim()
+  const downloadUrl = (doc: Document) =>
+    doc.download_url || `${API_BASE_URL}/documents/legal/output/${encodeURIComponent(doc.file_name)}`
 
-  const handleRowClick = (doc: Document) => {
-    setPreviewDoc(prev => prev?.file_name === doc.file_name ? null : doc)
-  }
+  if (loading) return <LoadingScreen label="Loading documents" />
 
-  const getPreviewUrl = (fileName: string) => {
-    return `${API_BASE_URL}/api/documents/preview-pdf/${encodeURIComponent(fileName)}`
-  }
-
-  const getDownloadUrl = (doc: Document) => {
-    return doc.download_url || `${API_BASE_URL}/documents/legal/output/${encodeURIComponent(doc.file_name)}`
-  }
-
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-full">
-        <Loader2 className="w-8 h-8 animate-spin text-primary" />
-      </div>
-    )
-  }
-
-  // ── Split-view preview screen ──
+  // ── Preview ──
   if (previewDoc) {
-    const tok = typeof window !== 'undefined' ? (localStorage.getItem('ls_token') || '') : ''
+    const tok = typeof window !== "undefined" ? localStorage.getItem("ls_token") || "" : ""
     const customData = previewDetail?.custom_data || {}
     const validation = previewDetail?.validation_result || {}
     const placeholders: Array<[string, any]> = Object.entries(customData)
+    const unfilledCount = placeholders.filter(([, v]) => isUnfilled(v)).length
+
     return (
-      <div className="flex flex-col h-full m-1.5 rounded-xl bg-background overflow-hidden">
-        {/* Top bar — back + filename + download */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-primary/10 bg-card">
-          <div className="flex items-center gap-3 min-w-0">
-            <button onClick={() => setPreviewDoc(null)} className="p-1.5 rounded-lg hover:bg-accent text-muted hover:text-primary shrink-0">
-              <ArrowLeft className="w-4 h-4" />
-            </button>
-            <FileText className="w-4 h-4 text-brand shrink-0" />
-            <span className="text-sm font-semibold text-primary truncate">{previewDoc.file_name}</span>
-          </div>
-          <a href={getDownloadUrl(previewDoc)} download
-            className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium bg-black text-white rounded-lg hover:bg-black/80 shrink-0">
-            <Download className="w-3 h-3" /> Download
-          </a>
-        </div>
-        {/* Split: PDF left, info right */}
-        <div className="flex flex-1 overflow-hidden">
-          <div className="w-1/2 flex flex-col border-r border-primary/10">
-            <div className="flex items-center gap-2 px-4 py-2.5 border-b border-primary/10 bg-accent/30 shrink-0">
-              <Eye className="w-4 h-4 text-brand" />
-              <span className="text-xs font-semibold text-primary">Document Preview</span>
+      <Page>
+        <PageHeader
+          back={
+            <IconButton
+              aria-label="Back to documents"
+              onClick={() => setPreviewDoc(null)}
+              icon={<ArrowLeft className="w-4 h-4" />}
+            />
+          }
+          title={previewDoc.file_name}
+          meta={
+            unfilledCount > 0 ? (
+              <Badge tone="warn" dot>
+                {unfilledCount} placeholder{unfilledCount === 1 ? "" : "s"} unfilled
+              </Badge>
+            ) : placeholders.length > 0 ? (
+              <Badge tone="ok" dot>
+                Fully filled
+              </Badge>
+            ) : undefined
+          }
+          actions={
+            <Button
+              variant="primary"
+              onClick={() => window.open(downloadUrl(previewDoc), "_blank")}
+              icon={<Download className="w-3.5 h-3.5" />}
+            >
+              Download
+            </Button>
+          }
+        />
+
+        <div className="flex flex-1 min-h-0 split-view-mobile">
+          <div className="w-1/2 flex flex-col min-w-0 border-r border-[var(--border)]">
+            <div className="flex items-center gap-2 px-4 py-2 border-b border-[var(--border)] bg-[var(--surface)]">
+              <Eye className="w-3.5 h-3.5 text-[var(--text-muted)]" />
+              <span className="text-[length:var(--text-xs)] font-medium text-[var(--text-secondary)]">Preview</span>
             </div>
             <DocViewer
-              url={`${getPreviewUrl(previewDoc.file_name)}?token=${tok}`}
+              url={`${previewUrl(previewDoc.file_name)}?token=${tok}`}
               forceFormat="pdf"
-              className="flex-1 w-full bg-white"
+              className="flex-1 w-full"
             />
           </div>
-          <div className="w-1/2 flex flex-col">
-            <div className="flex items-center gap-2 px-4 py-2.5 border-b border-primary/10 bg-accent/30 shrink-0">
-              <FileText className="w-4 h-4 text-brand" />
-              <span className="text-xs font-semibold text-primary">Placeholders & Metadata</span>
-            </div>
-            <div className="flex-1 overflow-auto p-4 space-y-4 text-sm">
-              <div className="grid grid-cols-2 gap-3">
-                <div className="p-3 bg-accent/30 rounded-lg">
-                  <div className="text-xs text-muted">Template</div>
-                  <div className="font-medium text-primary truncate">{previewDoc.template_name}</div>
-                </div>
-                <div className="p-3 bg-accent/30 rounded-lg">
-                  <div className="text-xs text-muted">Company</div>
-                  <div className="font-medium text-primary truncate">{previewDoc.company_name}</div>
-                </div>
-                <div className="p-3 bg-accent/30 rounded-lg">
-                  <div className="text-xs text-muted">Created</div>
-                  <div className="font-medium text-primary">{new Date(previewDoc.created_at).toLocaleString()}</div>
-                </div>
-                <div className="p-3 bg-accent/30 rounded-lg">
-                  <div className="text-xs text-muted">Generated by</div>
-                  <div className="font-medium text-primary truncate">{previewDoc.user_name || previewDoc.created_by_email || '—'}</div>
-                </div>
-              </div>
 
-              {validation && (validation.total_placeholders !== undefined) && (
-                <div className="p-3 border border-primary/10 rounded-lg bg-card">
-                  <div className="text-xs font-semibold text-muted mb-2">Validation</div>
-                  <div className="grid grid-cols-4 gap-2 text-center">
-                    <div><div className="text-lg font-bold text-primary">{validation.total_placeholders ?? '—'}</div><div className="text-[10px] text-muted">Total</div></div>
-                    <div><div className="text-lg font-bold text-green-600">{validation.filled_from_data ?? '—'}</div><div className="text-[10px] text-muted">Filled</div></div>
-                    <div><div className="text-lg font-bold text-amber-600">{validation.unfilled ?? '—'}</div><div className="text-[10px] text-muted">Unfilled</div></div>
-                    <div><div className="text-xs font-bold text-primary">{validation.validation_status ?? '—'}</div><div className="text-[10px] text-muted">Status</div></div>
-                  </div>
-                </div>
+          <div className="w-1/2 flex flex-col min-w-0 overflow-y-auto bg-[var(--bg-secondary)]">
+            <div className="flex items-center gap-2 px-4 py-2 border-b border-[var(--border)] bg-[var(--surface)] shrink-0">
+              <FileText className="w-3.5 h-3.5 text-[var(--text-muted)]" />
+              <span className="text-[length:var(--text-xs)] font-medium text-[var(--text-secondary)]">
+                Placeholders & metadata
+              </span>
+            </div>
+
+            <div className="p-4 space-y-3">
+              <Card title="Provenance">
+                <DetailList
+                  items={[
+                    ["Template", previewDoc.template_name],
+                    ["Company", previewDoc.company_name],
+                    ["Created", formatDateTime(previewDoc.created_at)],
+                    ["Generated by", previewDoc.user_name || previewDoc.created_by_email || "—"],
+                  ]}
+                />
+              </Card>
+
+              {validation?.total_placeholders !== undefined && (
+                <StatRow>
+                  <StatTile label="Placeholders" value={validation.total_placeholders ?? "—"} />
+                  <StatTile label="Filled" value={validation.filled_from_data ?? "—"} tone="ok" />
+                  <StatTile
+                    label="Unfilled"
+                    value={validation.unfilled ?? "—"}
+                    tone={validation.unfilled > 0 ? "warn" : undefined}
+                  />
+                  <StatTile label="Status" value={validation.validation_status ?? "—"} />
+                </StatRow>
               )}
 
-              <div>
-                <div className="text-xs font-semibold text-muted mb-2 flex items-center gap-2">
-                  <CheckCircle className="w-3 h-3" /> Placeholder Values ({placeholders.length})
-                </div>
+              <Card
+                title="Placeholder values"
+                meta={<Badge tone="neutral">{placeholders.length}</Badge>}
+                padded={false}
+              >
                 {placeholders.length === 0 ? (
-                  <div className="text-xs text-muted italic p-3 bg-accent/20 rounded-lg">No custom_data recorded for this document.</div>
+                  <p className="p-4 text-[length:var(--text-xs)] text-[var(--text-muted)]">
+                    No placeholder values were recorded for this document.
+                  </p>
                 ) : (
-                  <div className="border border-primary/10 rounded-lg overflow-hidden">
-                    <table className="w-full text-xs">
-                      <thead className="bg-accent/40 text-muted">
-                        <tr><th className="text-left px-3 py-2 font-semibold">Field</th><th className="text-left px-3 py-2 font-semibold">Value</th></tr>
-                      </thead>
-                      <tbody>
-                        {placeholders.map(([k, v]) => {
-                          const isTBD = String(v).trim().toUpperCase() === "TBD" || v === "" || v == null
-                          return (
-                            <tr key={k} className="border-t border-primary/5 hover:bg-accent/20">
-                              <td className="px-3 py-2 font-mono text-primary/80 align-top">{`{{${k}}}`}</td>
-                              <td className={`px-3 py-2 break-words ${isTBD ? "text-amber-600" : "text-primary"}`}>{String(v ?? "—")}</td>
-                            </tr>
-                          )
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
+                  <DataTable
+                    className="border-0 rounded-none"
+                    rows={placeholders.map(([field, value]) => ({ field, value }))}
+                    rowKey={(r: any) => r.field}
+                    rowTone={(r: any) => (isUnfilled(r.value) ? "var(--warn)" : null)}
+                    columns={[
+                      {
+                        key: "field",
+                        header: "Field",
+                        sortValue: (r: any) => r.field,
+                        render: (r: any) => (
+                          <span className="font-mono text-[var(--text-secondary)]">{`{{${r.field}}}`}</span>
+                        ),
+                      },
+                      {
+                        key: "value",
+                        header: "Value",
+                        render: (r: any) =>
+                          isUnfilled(r.value) ? (
+                            <Badge tone="warn">{String(r.value || "TBD")}</Badge>
+                          ) : (
+                            <span className="break-words">{String(r.value)}</span>
+                          ),
+                      },
+                    ]}
+                  />
                 )}
-              </div>
+              </Card>
             </div>
           </div>
         </div>
-      </div>
+      </Page>
     )
   }
 
-  return (
-    <div className="flex flex-col h-full m-1.5 rounded-xl bg-background">
-      {/* Header */}
-      <div className="flex flex-col gap-3 p-4 border-b border-gray-400 dark:border-primary/10">
-        <div className="flex items-center justify-between">
-          <h1 className="text-lg font-semibold">
-            Generated Documents ({filteredDocuments.length}
-            {hasActiveFilters && ` of ${documents.length}`})
-          </h1>
+  // ── List ──
+  const columns: Column<Document>[] = [
+    {
+      key: "created_at",
+      header: "Created",
+      sortValue: (d) => dateSort(d.created_at),
+      render: (d) => (
+        <span className="tabular-nums whitespace-nowrap">{formatDateTime(d.created_at)}</span>
+      ),
+    },
+    {
+      key: "file_name",
+      header: "Document",
+      sortValue: (d) => d.file_name,
+      render: (d) => (
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="w-7 h-7 shrink-0 grid place-items-center bg-[var(--bg-secondary)] border border-[var(--border)] rounded-[var(--radius-sm)]">
+            <FileText className="w-3.5 h-3.5 text-[var(--text-muted)]" />
+          </span>
+          <span className="font-medium text-[var(--text)] truncate max-w-[320px]">{d.file_name}</span>
         </div>
-
-        {/* Search Input */}
-        <div className="relative">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted" />
-          <input
-            type="text"
-            placeholder="Search by document name, company, or template..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full pl-10 pr-4 py-2 text-sm bg-card border border-primary/10 rounded-lg text-primary placeholder:text-muted focus:outline-none focus:border-primary/40"
+      ),
+    },
+    {
+      key: "company_name",
+      header: "Company",
+      sortValue: (d) => d.company_name,
+      render: (d) => (
+        <span className="block truncate max-w-[180px]">{d.company_name?.split("\n")[0] || "—"}</span>
+      ),
+    },
+    {
+      key: "template_name",
+      header: "Template",
+      hideBelow: "md",
+      sortValue: (d) => d.template_name,
+      render: (d) => <span className="block truncate max-w-[180px]">{d.template_name || "—"}</span>,
+    },
+    {
+      key: "created_by_email",
+      header: "By",
+      hideBelow: "lg",
+      sortValue: (d) => d.created_by_email,
+      render: (d) => d.created_by_email || "—",
+    },
+    {
+      key: "actions",
+      header: "",
+      align: "right",
+      width: "1%",
+      stopClickPropagation: true,
+      render: (d) => (
+        <div className="flex items-center justify-end gap-0.5">
+          <IconButton
+            aria-label={`Preview ${d.file_name}`}
+            title="Preview"
+            onClick={() => setPreviewDoc(d)}
+            icon={<Eye className="w-3.5 h-3.5" />}
+          />
+          <IconButton
+            aria-label={`Download ${d.file_name}`}
+            title="Download"
+            onClick={() => window.open(downloadUrl(d), "_blank")}
+            icon={<Download className="w-3.5 h-3.5" />}
+          />
+          <ConfirmButton
+            compact
+            label={`Delete ${d.file_name}`}
+            icon={<Trash2 className="w-3.5 h-3.5" />}
+            onConfirm={() => handleDelete(d)}
           />
         </div>
+      ),
+    },
+  ]
 
-        {/* Date Filter */}
-        <div className="flex items-center gap-3 flex-wrap">
-          <div className="flex items-center gap-2">
-            <Calendar className="w-4 h-4 text-muted" />
-            <span className="text-sm text-muted">Filter by date:</span>
+  return (
+    <Page>
+      <PageHeader
+        title="Documents"
+        meta={<Badge tone="neutral">{documents.length} generated</Badge>}
+        description="Every document the agent has produced, with the values it used to fill each placeholder."
+      />
+
+      {documents.length > 0 && (
+        <Toolbar className="gap-3">
+          <SearchInput
+            label="Search documents"
+            placeholder="Document, company or template…"
+            value={searchQuery}
+            onChange={setSearchQuery}
+          />
+          <div className="flex items-end gap-2">
+            <Field label="From" htmlFor="doc-from" className="w-36">
+              <Input id="doc-from" type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
+            </Field>
+            <Field label="To" htmlFor="doc-to" className="w-36">
+              <Input id="doc-to" type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
+            </Field>
+            {hasActiveFilters && (
+              <Button size="sm" variant="ghost" onClick={clearFilters} className="mb-1">
+                Clear
+              </Button>
+            )}
           </div>
+          <span className="ml-auto self-center text-[length:var(--text-xs)] text-[var(--text-muted)] tabular-nums">
+            {filtered.length} of {documents.length}
+          </span>
+        </Toolbar>
+      )}
 
-          <div className="flex items-center gap-2">
-            <label className="text-xs text-muted">From:</label>
-            <input
-              type="date"
-              value={startDate}
-              onChange={(e) => setStartDate(e.target.value)}
-              className="px-2 py-1 text-sm bg-card border border-primary/10 rounded-lg text-white focus:outline-none focus:border-primary/40"
+      <PageBody className="space-y-4">
+        {loadError && <Notice tone="danger" title="Could not load documents">{loadError}</Notice>}
+
+        {documents.length === 0 ? (
+          <EmptyState
+            icon={<FileText className="w-4 h-4" />}
+            title="No documents generated yet"
+            description="Documents appear here once the agent produces them."
+            steps={[
+              { title: "Add companies and templates", body: "Both are needed before anything can be generated." },
+              { title: "Train the agent", body: "Training teaches it which template answers which request." },
+              { title: "Ask in chat", body: 'For example: "Create an AGM minute for City Holdings".' },
+            ]}
+          />
+        ) : (
+          <>
+            <StatRow>
+              <StatTile label="Documents" value={stats.total} />
+              <StatTile label="Last 7 days" value={stats.last7} />
+              <StatTile label="Companies covered" value={stats.companies} />
+              <StatTile label="Templates used" value={stats.templates} />
+            </StatRow>
+
+            <DataTable
+              rows={filtered}
+              columns={columns}
+              rowKey={(d, i) => d.id || `${d.file_name}-${i}`}
+              onRowClick={setPreviewDoc}
+              caption="Generated documents"
+              empty={
+                <div className="py-2">
+                  <p className="text-[length:var(--text-sm)] text-[var(--text)]">
+                    No documents match the current filters.
+                  </p>
+                  <Button size="sm" className="mt-3" onClick={clearFilters}>
+                    Clear filters
+                  </Button>
+                </div>
+              }
             />
-          </div>
-
-          <div className="flex items-center gap-2">
-            <label className="text-xs text-muted">To:</label>
-            <input
-              type="date"
-              value={endDate}
-              onChange={(e) => setEndDate(e.target.value)}
-              className="px-2 py-1 text-sm bg-card border border-primary/10 rounded-lg text-white focus:outline-none focus:border-primary/40"
-            />
-          </div>
-
-          {hasActiveFilters && (
-            <button
-              onClick={clearFilters}
-              className="flex items-center gap-1 px-3 py-1 text-xs font-medium bg-accent hover:bg-accent/80 text-white rounded-lg transition-colors"
-            >
-              <X className="w-3 h-3" />
-              Clear Filters
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* Documents Table */}
-      <div className="flex-1 overflow-auto p-4">
-        <div className="border border-primary/10 rounded-xl overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead className="bg-card">
-                <tr className="text-left text-xs text-muted border-b border-primary/10">
-                  <th className="px-4 py-3 font-medium whitespace-nowrap">Status</th>
-                  <th className="px-4 py-3 font-medium whitespace-nowrap cursor-pointer hover:text-primary select-none" onClick={() => toggleSort("created_at")}>
-                    Created {sortField === "created_at" && <ArrowUpDown className="w-3 h-3 inline ml-1" />}
-                  </th>
-                  <th className="px-4 py-3 font-medium whitespace-nowrap cursor-pointer hover:text-primary select-none" onClick={() => toggleSort("file_name")}>
-                    Document Name {sortField === "file_name" && <ArrowUpDown className="w-3 h-3 inline ml-1" />}
-                  </th>
-                  <th className="px-4 py-3 font-medium whitespace-nowrap cursor-pointer hover:text-primary select-none" onClick={() => toggleSort("company_name")}>
-                    Company {sortField === "company_name" && <ArrowUpDown className="w-3 h-3 inline ml-1" />}
-                  </th>
-                  <th className="px-4 py-3 font-medium whitespace-nowrap cursor-pointer hover:text-primary select-none" onClick={() => toggleSort("template_name")}>
-                    Template {sortField === "template_name" && <ArrowUpDown className="w-3 h-3 inline ml-1" />}
-                  </th>
-                  <th className="px-4 py-3 font-medium whitespace-nowrap">Created By</th>
-                  <th className="px-4 py-3 font-medium text-center whitespace-nowrap">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-primary/15">
-                {filteredDocuments.length === 0 ? (
-                  <tr>
-                    <td colSpan={7} className="px-4 py-8 text-center text-muted text-sm">
-                      {hasActiveFilters ? 'No documents found for the current filters' : 'No documents generated yet'}
-                    </td>
-                  </tr>
-                ) : (
-                  filteredDocuments.map((d: Document, i: number) => (
-                    <tr
-                      key={d.id || i}
-                      className="hover:bg-accent/50 cursor-pointer transition-colors"
-                      onClick={() => handleRowClick(d)}
-                    >
-                      {/* Status */}
-                      <td className="px-4 py-3">
-                        <span className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded-full bg-green-500/10 text-green-700">
-                          <CheckCircle className="w-3 h-3" />
-                          Success
-                        </span>
-                      </td>
-                      {/* Created Date */}
-                      <td className="px-4 py-3 text-sm text-muted whitespace-nowrap">
-                        {d.created_at ? new Date(d.created_at).toLocaleString('en-US', {
-                          month: 'short', day: 'numeric', year: 'numeric',
-                          hour: '2-digit', minute: '2-digit', hour12: true
-                        }) : '-'}
-                      </td>
-                      {/* Document Name with View + Download icons */}
-                      <td className="px-4 py-3">
-                        <div className="flex items-center gap-2">
-                          <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
-                            <button onClick={() => handleRowClick(d)} className="p-1 text-muted hover:text-brand hover:bg-brand/10 rounded" title="Preview">
-                              <Eye className="w-3.5 h-3.5" />
-                            </button>
-                            <a href={getDownloadUrl(d)} download className="p-1 text-muted hover:text-primary hover:bg-accent rounded" title="Download">
-                              <Download className="w-3.5 h-3.5" />
-                            </a>
-                          </div>
-                          <p className="text-sm font-medium text-primary truncate max-w-[350px]">{d.file_name}</p>
-                        </div>
-                      </td>
-                      {/* Company */}
-                      <td className="px-4 py-3 text-sm text-muted whitespace-nowrap">
-                        {d.company_name ? d.company_name.split('\n')[0] : '-'}
-                      </td>
-                      {/* Template */}
-                      <td className="px-4 py-3 text-sm text-muted whitespace-nowrap">{d.template_name || '-'}</td>
-                      {/* Created By */}
-                      <td className="px-4 py-3 text-xs text-gray-500">{d.created_by_email || '—'}</td>
-                      {/* Actions */}
-                      <td className="px-4 py-3">
-                        <div className="flex items-center justify-center" onClick={(e) => e.stopPropagation()}>
-                          <button
-                            onClick={() => handleDelete(d)}
-                            className="p-1.5 text-muted hover:text-red-500 hover:bg-red-500/10 rounded-lg transition-colors"
-                            title="Delete"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-      </div>
-    </div>
+          </>
+        )}
+      </PageBody>
+    </Page>
   )
 }
