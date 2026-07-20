@@ -19,6 +19,15 @@ from typing import Any
 from docx import Document
 
 from scout.tools.document_tracker import record_document
+from scout.tools.field_aliases import canonical_field, normalize_field, tokens_match
+from scout.tools.placeholders import (
+    PLACEHOLDER_PATTERN,
+    is_empty_placeholder,
+    new_empty_counter,
+    placeholder_name,
+)
+
+LEFT_BLANK = ""
 
 
 def extract_placeholders_from_template(template_path: Path) -> dict[str, Any]:
@@ -29,13 +38,13 @@ def extract_placeholders_from_template(template_path: Path) -> dict[str, Any]:
     doc = Document(str(template_path))
 
     placeholders = {}
-    placeholder_pattern = re.compile(r"\{\{([^}]+)\}\}|\{([^}]+)\}|\[([^\]]+)\]")
+    empty_counter = new_empty_counter()
 
     for idx, paragraph in enumerate(doc.paragraphs):
         text = paragraph.text
-        matches = placeholder_pattern.findall(text)
+        matches = PLACEHOLDER_PATTERN.findall(text)
         for match in matches:
-            placeholder = (match[0] or match[1] or match[2]).strip()
+            placeholder = placeholder_name(match, empty_counter)
             if placeholder:
                 placeholders[placeholder.lower()] = {
                     "field": placeholder,
@@ -47,9 +56,9 @@ def extract_placeholders_from_template(template_path: Path) -> dict[str, Any]:
         for row_idx, row in enumerate(table.rows):
             for cell_idx, cell in enumerate(row.cells):
                 text = cell.text
-                matches = placeholder_pattern.findall(text)
+                matches = PLACEHOLDER_PATTERN.findall(text)
                 for match in matches:
-                    placeholder = (match[0] or match[1] or match[2]).strip()
+                    placeholder = placeholder_name(match, empty_counter)
                     if placeholder:
                         placeholders[placeholder.lower()] = {
                             "field": placeholder,
@@ -316,7 +325,6 @@ def validate_filled_document(document_path: Path, all_placeholders: list = None)
         return {"success": False, "error": "Document not found"}
 
     doc = Document(str(document_path))
-    placeholder_pattern = re.compile(r"\{\{([^}]+)\}\}|\{([^}]+)\}|\[([^\]]+)\]")
 
     # Find unfilled placeholders in the filled document
     unfilled_placeholders = []
@@ -324,9 +332,9 @@ def validate_filled_document(document_path: Path, all_placeholders: list = None)
 
     for paragraph in doc.paragraphs:
         text = paragraph.text
-        matches = placeholder_pattern.findall(text)
+        matches = PLACEHOLDER_PATTERN.findall(text)
         for match in matches:
-            placeholder = (match[0] or match[1] or match[2]).strip()
+            placeholder = placeholder_name(match)
             if placeholder and placeholder.lower() not in ["", " ", "null", "none"]:
                 unfilled_placeholders.append(placeholder)
                 unfilled_locations.append(f"Paragraph: {text[:50]}...")
@@ -335,9 +343,9 @@ def validate_filled_document(document_path: Path, all_placeholders: list = None)
         for row in table.rows:
             for cell in row.cells:
                 text = cell.text
-                matches = placeholder_pattern.findall(text)
+                matches = PLACEHOLDER_PATTERN.findall(text)
                 for match in matches:
-                    placeholder = (match[0] or match[1] or match[2]).strip()
+                    placeholder = placeholder_name(match)
                     if placeholder and placeholder.lower() not in ["", " ", "null", "none"]:
                         unfilled_placeholders.append(placeholder)
                         unfilled_locations.append(f"Table: {text[:50]}...")
@@ -420,12 +428,18 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
             db_fields_list = field_classification.get("db_fields", [])
             field_descriptions = field_classification.get("field_descriptions", {})
 
+            # Only ask for fields the template actually renders
+            template_fields = {
+                canonical_field(f) for f in result.get("template_analysis", {}).get("required_fields", [])
+            }
+
             # Check which user_input_fields are actually missing from data
             normalized_data = result.get("normalized_data", {})
             missing_user_fields = []
             for uf in user_input_fields:
-                uf_norm = uf.lower().replace(" ", "_").replace("-", "_")
-                if not normalized_data.get(uf_norm):
+                if template_fields and canonical_field(uf) not in template_fields:
+                    continue
+                if not _resolve_from_data(uf, normalized_data):
                     missing_user_fields.append(uf)
 
             # Auto-filled DB fields
@@ -436,22 +450,11 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
                     db_fields_filled.append(df)
 
             # Generate smart defaults for missing fields
-            try:
-                import zoneinfo, os as _dos
-                _tz = zoneinfo.ZoneInfo(_dos.getenv("TZ", "Asia/Yangon"))
-                _today = datetime.now(_tz).strftime("%Y-%m-%d")
-            except Exception:
-                _today = datetime.now().strftime("%Y-%m-%d")
-
             field_defaults = {}
             for mf in missing_user_fields:
                 mf_lower = mf.lower()
-                if "date" in mf_lower and "financial" not in mf_lower:
-                    field_defaults[mf] = _today
-                elif "location" in mf_lower or "meeting_location" in mf_lower:
+                if "location" in mf_lower or "venue" in mf_lower:
                     field_defaults[mf] = normalized_data.get("registered_office_address", normalized_data.get("registered_office", "TBD"))
-                elif "pronoun" in mf_lower:
-                    field_defaults[mf] = "they"
                 else:
                     field_defaults[mf] = "TBD"
 
@@ -473,22 +476,10 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
         # Auto-generate defaults for missing fields
         if not result.get("ready_to_generate") and not custom_data:
             custom_data = {}
-            try:
-                import zoneinfo, os
-                tz = zoneinfo.ZoneInfo(os.getenv("TZ", "Asia/Yangon"))
-                today = datetime.now(tz).strftime("%Y-%m-%d")
-            except Exception:
-                today = datetime.now().strftime("%Y-%m-%d")
-
             for field in validation.get("missing_fields", []):
                 field_lower = field.lower()
-                # Smart defaults for date fields
-                if "date" in field_lower and "financial" not in field_lower:
-                    custom_data[field] = today
-                elif "meeting_location" in field_lower or "location" in field_lower:
+                if "location" in field_lower or "venue" in field_lower:
                     custom_data[field] = result.get("normalized_data", {}).get("registered_office_address", "TBD")
-                elif "pronoun" in field_lower:
-                    custom_data[field] = "they"
                 else:
                     custom_data[field] = "TBD"
             result["message"] = f"Auto-filling {len(validation.get('missing_fields', []))} fields with defaults"
@@ -726,7 +717,7 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
     }
 
 
-def _fill_paragraph_highlighted(paragraph, data: dict[str, Any], placeholder_pattern, template_name: str = None, company_name: str = None):
+def _fill_paragraph_highlighted(paragraph, data: dict[str, Any], placeholder_pattern=None, template_name: str = None, company_name: str = None, empty_counter=None):
     """Fill placeholders in a paragraph, highlighting replaced text in yellow."""
     from docx.shared import RGBColor
     from docx.oxml.ns import qn
@@ -734,7 +725,7 @@ def _fill_paragraph_highlighted(paragraph, data: dict[str, Any], placeholder_pat
     import lxml.etree as etree
 
     text = paragraph.text
-    matches = list(placeholder_pattern.finditer(text))
+    matches = list((placeholder_pattern or PLACEHOLDER_PATTERN).finditer(text))
     if not matches:
         return
 
@@ -750,14 +741,18 @@ def _fill_paragraph_highlighted(paragraph, data: dict[str, Any], placeholder_pat
     segments = []
     last_end = 0
     for match in matches:
-        placeholder = (match.group(1) or match.group(2) or match.group(3)).strip().lower()
+        placeholder = placeholder_name(
+            (match.group(1), match.group(2), match.group(3)), empty_counter
+        ).lower()
         replacement = find_replacement(placeholder, data,
-            template_name=template_name, company_name=company_name)
+            template_name=template_name, company_name=company_name) if placeholder else None
 
         if match.start() > last_end:
             segments.append((text[last_end:match.start()], None))
 
-        if replacement:
+        if replacement == LEFT_BLANK and replacement is not None:
+            segments.append((LEFT_BLANK, None))
+        elif replacement:
             is_tbd = str(replacement).strip().upper() == "TBD"
             segments.append((str(replacement), "red" if is_tbd else "yellow"))
         else:
@@ -794,16 +789,16 @@ def _fill_paragraph_highlighted(paragraph, data: dict[str, Any], placeholder_pat
 def fill_template_with_validation(template_path: Path, data: dict[str, Any], template_name: str = None, company_name: str = None) -> Document:
     """Fill template with data, highlighting filled values in yellow."""
     doc = Document(str(template_path))
-    placeholder_pattern = re.compile(r"\{\{([^}]+)\}\}|\{([^}]+)\}|\[([^\]]+)\]")
+    empty_counter = new_empty_counter()
 
     for paragraph in doc.paragraphs:
-        _fill_paragraph_highlighted(paragraph, data, placeholder_pattern, template_name=template_name, company_name=company_name)
+        _fill_paragraph_highlighted(paragraph, data, PLACEHOLDER_PATTERN, template_name=template_name, company_name=company_name, empty_counter=empty_counter)
 
     for table in doc.tables:
         for row in table.rows:
             for cell in row.cells:
                 for paragraph in cell.paragraphs:
-                    _fill_paragraph_highlighted(paragraph, data, placeholder_pattern, template_name=template_name, company_name=company_name)
+                    _fill_paragraph_highlighted(paragraph, data, PLACEHOLDER_PATTERN, template_name=template_name, company_name=company_name, empty_counter=empty_counter)
 
     return doc
 
@@ -850,8 +845,30 @@ def _get_field_mapping(template_name: str) -> dict | None:
     return None
 
 
+def _company_row_to_dict(row) -> dict:
+    """Map a companies table row to the resolver's field dict."""
+    return {
+        "company_name_english": row[0], "company_registration_number": row[1],
+        "registered_office_address": row[2], "principal_place_of_business": row[3],
+        "status": row[4], "company_type": row[5],
+        "directors": row[6] if isinstance(row[6], list) else [],
+        "members": row[7] if isinstance(row[7], list) else [],
+        "total_shares_issued": row[8], "currency_of_share_capital": row[9],
+        "date_of_last_annual_return": str(row[10]) if row[10] else None,
+        "financial_year_end_date": str(row[11]) if row[11] else None,
+        "ultimate_holding_company_name": row[12],
+        "next_financial_year_end_date": str(row[13]) if row[13] else None,
+        "auditor_name": row[14], "auditor_fee": row[15],
+    }
+
+
 def _get_company_from_db(company_name: str) -> dict | None:
-    """Get full company record directly from companies table."""
+    """Get full company record directly from companies table.
+
+    Matches exact name first, then prefix, then substring. When more than one
+    company matches at the chosen tier the result is flagged ambiguous with the
+    candidate names so the caller can ask the user which one is meant.
+    """
     conn = None
     try:
         from db.connection import get_db_conn
@@ -863,24 +880,26 @@ def _get_company_from_db(company_name: str) -> dict | None:
                    total_shares_issued, currency_of_share_capital, date_of_last_annual_return,
                    financial_year_end_date, ultimate_holding_company_name,
                    next_financial_year_end_date, auditor_name, auditor_fee
-            FROM companies WHERE company_name_english ILIKE %s LIMIT 1
+            FROM companies WHERE company_name_english ILIKE %s
+            ORDER BY company_name_english
         """, (f"%{company_name}%",))
-        row = cur.fetchone()
+        rows = cur.fetchall()
         cur.close()
-        if row:
+
+        needle = str(company_name or "").strip().lower()
+        exact = [r for r in rows if str(r[0] or "").strip().lower() == needle]
+        prefix = [r for r in rows if str(r[0] or "").strip().lower().startswith(needle)]
+        tier = exact or prefix or list(rows)
+
+        if not tier:
+            return None
+        if len(tier) > 1:
             return {
-                "company_name_english": row[0], "company_registration_number": row[1],
-                "registered_office_address": row[2], "principal_place_of_business": row[3],
-                "status": row[4], "company_type": row[5],
-                "directors": row[6] if isinstance(row[6], list) else [],
-                "members": row[7] if isinstance(row[7], list) else [],
-                "total_shares_issued": row[8], "currency_of_share_capital": row[9],
-                "date_of_last_annual_return": str(row[10]) if row[10] else None,
-                "financial_year_end_date": str(row[11]) if row[11] else None,
-                "ultimate_holding_company_name": row[12],
-                "next_financial_year_end_date": str(row[13]) if row[13] else None,
-                "auditor_name": row[14], "auditor_fee": row[15],
+                "ambiguous": True,
+                "matches": [r[0] for r in tier],
+                "message": f"'{company_name}' matches {len(tier)} companies",
             }
+        return _company_row_to_dict(tier[0])
     except Exception as e:
         logging.getLogger("legalscout").warning(f"Failed to load company '{company_name}' from DB: {e}")
     finally:
@@ -889,9 +908,42 @@ def _get_company_from_db(company_name: str) -> dict | None:
     return None
 
 
+def _resolve_from_data(placeholder: str, data: dict[str, Any]) -> str | None:
+    """Resolve a placeholder against supplied data: exact, alias, then token set."""
+    placeholder_norm = normalize_field(placeholder)
+    placeholder_canonical = canonical_field(placeholder)
+
+    direct = data.get(placeholder) or data.get(placeholder_norm)
+    if direct and str(direct) != "TBD":
+        return str(direct)
+
+    normalized_items = []
+    for key, value in data.items():
+        if not value or str(value) == "TBD":
+            continue
+        normalized_items.append((normalize_field(key), canonical_field(key), str(value)))
+
+    for key_norm, _key_canonical, value in normalized_items:
+        if key_norm == placeholder_norm:
+            return value
+
+    for _key_norm, key_canonical, value in normalized_items:
+        if key_canonical == placeholder_canonical:
+            return value
+
+    for key_norm, _key_canonical, value in normalized_items:
+        if tokens_match(placeholder_norm, key_norm):
+            return value
+
+    return None
+
+
 def find_replacement(placeholder: str, data: dict[str, Any], template_name: str = None, company_name: str = None) -> str | None:
     """Find replacement value using learned field_mapping (if available) or fallback to data lookup."""
-    placeholder_norm = placeholder.lower().replace(" ", "_").replace("-", "_")
+    placeholder_norm = normalize_field(placeholder)
+
+    if is_empty_placeholder(placeholder_norm):
+        return _resolve_from_data(placeholder, data)
 
     # === LEARNED MAPPING (Priority 1) ===
     if template_name:
@@ -907,53 +959,26 @@ def find_replacement(placeholder: str, data: dict[str, Any], template_name: str 
                 if source == "db" and db_column:
                     # Get value from company DB
                     company_row = _get_company_from_db(company_name) if company_name else None
-                    if company_row:
+                    if company_row and not company_row.get("ambiguous"):
                         val = _get_company_field(company_row, db_column)
                         if val:
                             return val
 
                 elif source == "user_input":
-                    # Check if user provided this value in data
-                    user_val = data.get(placeholder) or data.get(placeholder_norm)
-                    if user_val and str(user_val) != "TBD":
-                        return str(user_val)
-                    # Use default
-                    if default == "today":
-                        from datetime import datetime
-                        try:
-                            import zoneinfo, os
-                            tz = zoneinfo.ZoneInfo(os.getenv("TZ", "Asia/Yangon"))
-                            return datetime.now(tz).strftime("%Y-%m-%d")
-                        except Exception:
-                            return datetime.now().strftime("%Y-%m-%d")
-                    return default if default else "TBD"
+                    # Check if user provided this value in data, under this name or an alias
+                    resolved = _resolve_from_data(placeholder, data)
+                    if resolved:
+                        return resolved
+                    if default and default != "today" and str(default).strip():
+                        return str(default)
+                    return LEFT_BLANK
 
     # === DATA LOOKUP (Priority 2 — fallback) ===
-    # Direct match in provided data
-    direct = data.get(placeholder) or data.get(placeholder_norm)
-    if direct and str(direct) != "TBD":
-        return str(direct)
-
-    # Fuzzy match in data keys
-    for key, value in data.items():
-        if not value:
-            continue
-        key_norm = str(key).lower().replace(" ", "_").replace("-", "_")
-        if key_norm == placeholder_norm or placeholder_norm in key_norm or key_norm in placeholder_norm:
-            return str(value)
+    resolved = _resolve_from_data(placeholder, data)
+    if resolved:
+        return resolved
 
     # === SMART DEFAULTS (Priority 3) ===
-    if "date" in placeholder_norm and "financial" not in placeholder_norm:
-        from datetime import datetime
-        try:
-            import zoneinfo, os
-            tz = zoneinfo.ZoneInfo(os.getenv("TZ", "Asia/Yangon"))
-            return datetime.now(tz).strftime("%Y-%m-%d")
-        except Exception:
-            return datetime.now().strftime("%Y-%m-%d")
-
-    if placeholder_norm == "pronoun":
-        return "they"
     if "location" in placeholder_norm or "venue" in placeholder_norm:
         return data.get("registered_office", data.get("registered_office_address", "TBD"))
 
