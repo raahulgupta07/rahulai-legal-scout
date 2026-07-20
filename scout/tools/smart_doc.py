@@ -421,11 +421,24 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
         if not result.get("success"):
             return result
 
-        slot_data = dict(result.get("normalized_data", {}))
+        mapping = _get_field_mapping(template_name) or {}
+
+        # A slot names a PERSON the user must choose. prepare_document_data
+        # pre-fills those placeholders from the company record (directors[0] and
+        # friends), which would make an unanswered slot look already resolved —
+        # the picker would then never be asked, and a selection the user did make
+        # would be silently overwritten by the first director on file. So only an
+        # explicit selection counts here: drop the auto-filled slot placeholders
+        # and let custom_data (which carries the picker's answer) speak alone.
+        slot_data = {
+            key: value
+            for key, value in (result.get("normalized_data") or {}).items()
+            if not slot_of(mapping.get(key))
+        }
         if custom_data:
             slot_data.update(custom_data)
         slot_requests = collect_slot_requests(
-            _get_field_mapping(template_name) or {},
+            mapping,
             result.get("template_analysis", {}).get("required_fields", []),
             slot_data,
             company_name=company_name,
@@ -441,7 +454,11 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
                     f"{r['lookup_tool']} → {r['picker']} for {r['kind']}"
                     + (f" of {r['candidates_from']}" if r["candidates_from"] else "")
                     for r in slot_requests
-                ),
+                )
+                + ". Once the user has picked, call generate_document again with "
+                + "custom_data={"
+                + ", ".join(f'"{r["placeholder"]}": "<chosen name>"' for r in slot_requests)
+                + "}.",
             }
 
         # Smart default: If 90%+ fields available, proceed automatically

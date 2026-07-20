@@ -140,13 +140,13 @@ const PickerCard = ({ request, onSubmit, disabled }: PickerCardProps) => {
   if (request.parse_error) {
     return (
       <div
-        className="mt-2 border-[2px] border-r-[3px] border-b-[3px] border-[#be2d06] bg-[#feffd6] p-3 font-brutalist"
+        className="mt-2 border-[2px] border-r-[3px] border-b-[3px] border-[var(--danger-strong)] bg-[var(--bg)] p-3 font-brutalist"
         role="alert"
       >
-        <span className="tag-label" style={{ background: '#be2d06' }}>
+        <span className="tag-label" style={{ background: 'var(--danger-strong)' }}>
           Picker unavailable
         </span>
-        <p className="mt-2 text-[12px] font-bold text-[#383832]">
+        <p className="mt-2 text-[12px] font-bold text-[var(--ink)]">
           {request.parse_error} Please answer in chat instead.
         </p>
       </div>
@@ -156,21 +156,21 @@ const PickerCard = ({ request, onSubmit, disabled }: PickerCardProps) => {
   return (
     <section
       aria-label={`${title}${companyName ? ` for ${companyName}` : ''}`}
-      className="mt-2 border-[2px] border-l-[2px] border-r-[3px] border-b-[3px] border-[#383832] bg-[#feffd6] font-brutalist"
-      style={{ boxShadow: '4px 4px 0px 0px #383832', borderRadius: 0 }}
+      className="mt-2 border-[2px] border-l-[2px] border-r-[3px] border-b-[3px] border-[var(--ink)] bg-[var(--bg)] font-brutalist"
+      style={{ boxShadow: '4px 4px 0px 0px var(--ink)', borderRadius: 0 }}
     >
       {/* Header */}
-      <header className="flex flex-wrap items-center justify-between gap-2 border-b-[2px] border-[#383832] bg-[#383832] px-3 py-2">
+      <header className="flex flex-wrap items-center justify-between gap-2 border-b-[2px] border-[var(--ink)] bg-[var(--ink)] px-3 py-2">
         <div className="flex flex-wrap items-center gap-2">
-          <span className="text-[10px] font-black uppercase tracking-[0.15em] text-[#00fc40]">
+          <span className="text-[10px] font-black uppercase tracking-[0.15em] text-[var(--ok-neon)]">
             {multi ? 'Select all that apply' : 'Select one'}
           </span>
-          <span className="text-[11px] font-black uppercase tracking-[0.1em] text-[#feffd6]">
+          <span className="text-[11px] font-black uppercase tracking-[0.1em] text-[var(--bg)]">
             {title}
           </span>
         </div>
         {companyName && (
-          <span className="text-[10px] font-bold uppercase tracking-[0.1em] text-[#feffd6]/60">
+          <span className="text-[10px] font-bold uppercase tracking-[0.1em] text-[color-mix(in_srgb,var(--bg)_60%,transparent)]">
             {companyName}
           </span>
         )}
@@ -178,25 +178,25 @@ const PickerCard = ({ request, onSubmit, disabled }: PickerCardProps) => {
 
       {/* Context */}
       {(payload.purpose || payload.note) && (
-        <div className="border-b-[2px] border-[#383832]/20 px-3 py-2">
+        <div className="border-b-[2px] border-[color-mix(in_srgb,var(--ink)_20%,transparent)] px-3 py-2">
           {payload.purpose && (
-            <p className="text-[12px] font-bold text-[#383832]">
+            <p className="text-[12px] font-bold text-[var(--ink)]">
               {payload.purpose}
             </p>
           )}
           {payload.note && (
-            <p className="mt-1 text-[11px] text-[#383832]/70">{payload.note}</p>
+            <p className="mt-1 text-[11px] text-[color-mix(in_srgb,var(--ink)_70%,transparent)]">{payload.note}</p>
           )}
         </div>
       )}
 
       {/* Resolved banner */}
       {status !== 'pending' && (
-        <div className="border-b-[2px] border-[#383832]/20 bg-[#00fc40]/15 px-3 py-2">
+        <div className="border-b-[2px] border-[color-mix(in_srgb,var(--ink)_20%,transparent)] bg-[color-mix(in_srgb,var(--ok-neon)_15%,transparent)] px-3 py-2">
           <span className="tag-label">
             {status === 'answered' ? 'Answered' : 'Closed'}
           </span>
-          <p className="mt-1 text-[12px] font-bold text-[#383832]">
+          <p className="mt-1 text-[12px] font-bold text-[var(--ink)]">
             {request.answer_summary
               ? request.answer_summary
               : status === 'historical'
@@ -214,7 +214,7 @@ const PickerCard = ({ request, onSubmit, disabled }: PickerCardProps) => {
         className="flex flex-col"
       >
         {payload.candidates.length === 0 && (
-          <p className="px-3 py-3 text-[12px] font-bold text-[#383832]/60">
+          <p className="px-3 py-3 text-[12px] font-bold text-[color-mix(in_srgb,var(--ink)_60%,transparent)]">
             No candidates on record.
             {payload.allow_new ? ' Enter someone new below.' : ''}
           </p>
@@ -230,7 +230,7 @@ const PickerCard = ({ request, onSubmit, disabled }: PickerCardProps) => {
           return (
             <div
               key={candidateKey(candidate, index)}
-              className="border-b-[1px] border-[#383832]/15 last:border-b-0"
+              className="border-b-[1px] border-[color-mix(in_srgb,var(--ink)_15%,transparent)] last:border-b-0"
             >
               <div
                 role={multi ? 'checkbox' : 'radio'}
@@ -244,30 +244,30 @@ const PickerCard = ({ request, onSubmit, disabled }: PickerCardProps) => {
                     toggle(id)
                   }
                 }}
-                className={`flex cursor-pointer items-start gap-3 px-3 py-2.5 outline-none transition-none focus-visible:bg-[#00fc40]/20 focus-visible:ring-[3px] focus-visible:ring-inset focus-visible:ring-[#383832] ${
-                  checked ? 'bg-[#00fc40]/20' : 'hover:bg-[#383832]/5'
+                className={`flex cursor-pointer items-start gap-3 px-3 py-2.5 outline-none transition-none focus-visible:bg-[color-mix(in_srgb,var(--ok-neon)_20%,transparent)] focus-visible:ring-[3px] focus-visible:ring-inset focus-visible:ring-[var(--ink)] ${
+                  checked ? 'bg-[color-mix(in_srgb,var(--ok-neon)_20%,transparent)]' : 'hover:bg-[color-mix(in_srgb,var(--ink)_5%,transparent)]'
                 } ${readOnly ? 'cursor-default opacity-70' : ''}`}
               >
                 {/* Marker: square = checkbox, square-with-dot = radio */}
                 <span
                   aria-hidden="true"
-                  className="mt-[2px] flex h-4 w-4 flex-shrink-0 items-center justify-center border-[2px] border-[#383832] bg-[#fffff0]"
+                  className="mt-[2px] flex h-4 w-4 flex-shrink-0 items-center justify-center border-[2px] border-[var(--ink)] bg-[var(--surface-raised)]"
                 >
                   {checked && (
-                    <span className="block h-2 w-2 bg-[#00fc40] ring-1 ring-[#383832]" />
+                    <span className="block h-2 w-2 bg-[var(--ok-neon)] ring-1 ring-[var(--ink)]" />
                   )}
                 </span>
 
                 <span className="min-w-0 flex-1">
                   <span className="flex flex-wrap items-center gap-2">
-                    <span className="text-[13px] font-black uppercase tracking-[0.03em] text-[#383832]">
+                    <span className="text-[13px] font-black uppercase tracking-[0.03em] text-[var(--ink)]">
                       {candidate.name}
                     </span>
                     <span
                       className="tag-label"
                       style={
                         isCorporate
-                          ? { background: '#be2d06', color: '#feffd6' }
+                          ? { background: 'var(--danger-strong)', color: 'var(--bg)' }
                           : undefined
                       }
                     >
@@ -276,14 +276,14 @@ const PickerCard = ({ request, onSubmit, disabled }: PickerCardProps) => {
                     {multi && order > 0 && (
                       <span
                         className="tag-label"
-                        style={{ background: '#007518' }}
+                        style={{ background: 'var(--ok-strong)' }}
                       >
                         #{order}
                       </span>
                     )}
                   </span>
                   {(candidate.identifier || candidate.subtitle) && (
-                    <span className="mt-0.5 block text-[11px] text-[#383832]/70">
+                    <span className="mt-0.5 block text-[11px] text-[color-mix(in_srgb,var(--ink)_70%,transparent)]">
                       {[candidate.identifier, candidate.subtitle]
                         .filter(Boolean)
                         .join(' · ')}
@@ -294,10 +294,10 @@ const PickerCard = ({ request, onSubmit, disabled }: PickerCardProps) => {
 
               {/* Second-level: a corporate party signs THROUGH a representative */}
               {isCorporate && checked && (
-                <div className="ml-[26px] border-l-[3px] border-[#be2d06] bg-[#383832]/[0.04] px-3 py-2">
+                <div className="ml-[26px] border-l-[3px] border-[var(--danger-strong)] bg-[color-mix(in_srgb,var(--ink)_4%,transparent)] px-3 py-2">
                   <span className="tag-label">Signs through</span>
                   {reps.length === 0 ? (
-                    <p className="mt-1 text-[11px] font-bold text-[#be2d06]">
+                    <p className="mt-1 text-[11px] font-bold text-[var(--danger-strong)]">
                       No representative directors on record for{' '}
                       {candidate.name}. Ask the agent to look them up.
                     </p>
@@ -330,22 +330,22 @@ const PickerCard = ({ request, onSubmit, disabled }: PickerCardProps) => {
                                   }))
                               }
                             }}
-                            className={`flex cursor-pointer items-center gap-2 px-1 py-1.5 outline-none focus-visible:ring-[3px] focus-visible:ring-inset focus-visible:ring-[#383832] ${
-                              repChecked ? 'bg-[#00fc40]/25' : ''
+                            className={`flex cursor-pointer items-center gap-2 px-1 py-1.5 outline-none focus-visible:ring-[3px] focus-visible:ring-inset focus-visible:ring-[var(--ink)] ${
+                              repChecked ? 'bg-[color-mix(in_srgb,var(--ok-neon)_25%,transparent)]' : ''
                             } ${readOnly ? 'cursor-default' : ''}`}
                           >
                             <span
                               aria-hidden="true"
-                              className="flex h-3.5 w-3.5 flex-shrink-0 items-center justify-center border-[2px] border-[#383832] bg-[#fffff0]"
+                              className="flex h-3.5 w-3.5 flex-shrink-0 items-center justify-center border-[2px] border-[var(--ink)] bg-[var(--surface-raised)]"
                             >
                               {repChecked && (
-                                <span className="block h-1.5 w-1.5 bg-[#be2d06]" />
+                                <span className="block h-1.5 w-1.5 bg-[var(--danger-strong)]" />
                               )}
                             </span>
-                            <span className="text-[12px] font-bold text-[#383832]">
+                            <span className="text-[12px] font-bold text-[var(--ink)]">
                               {rep.name}
                               {rep.identifier || rep.subtitle ? (
-                                <span className="font-normal text-[#383832]/60">
+                                <span className="font-normal text-[color-mix(in_srgb,var(--ink)_60%,transparent)]">
                                   {' '}
                                   ·{' '}
                                   {[rep.identifier, rep.subtitle]
@@ -368,7 +368,7 @@ const PickerCard = ({ request, onSubmit, disabled }: PickerCardProps) => {
 
       {/* Enter someone new */}
       {payload.allow_new && newFields.length > 0 && status === 'pending' && (
-        <div className="border-t-[2px] border-[#383832]/20 px-3 py-2">
+        <div className="border-t-[2px] border-[color-mix(in_srgb,var(--ink)_20%,transparent)] px-3 py-2">
           <button
             type="button"
             disabled={readOnly}
@@ -377,7 +377,7 @@ const PickerCard = ({ request, onSubmit, disabled }: PickerCardProps) => {
               setNewOpen((open) => !open)
               setSelectedIds([])
             }}
-            className="stamp-press border-[2px] border-b-[3px] border-r-[3px] border-[#383832] bg-[#fffff0] px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] text-[#383832] outline-none focus-visible:ring-[3px] focus-visible:ring-[#383832] disabled:opacity-40"
+            className="stamp-press border-[2px] border-b-[3px] border-r-[3px] border-[var(--ink)] bg-[var(--surface-raised)] px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] text-[var(--ink)] outline-none focus-visible:ring-[3px] focus-visible:ring-[var(--ink)] disabled:opacity-40"
           >
             {newOpen ? '− Cancel new entry' : '+ Enter someone new'}
           </button>
@@ -401,7 +401,7 @@ const PickerCard = ({ request, onSubmit, disabled }: PickerCardProps) => {
                         [field.name]: event.target.value
                       }))
                     }
-                    className="border-[2px] border-b-[3px] border-r-[3px] border-[#383832] bg-[#fffff0] px-2 py-1 text-[12px] font-bold text-[#383832] outline-none focus-visible:ring-[3px] focus-visible:ring-[#00fc40]"
+                    className="border-[2px] border-b-[3px] border-r-[3px] border-[var(--ink)] bg-[var(--surface-raised)] px-2 py-1 text-[12px] font-bold text-[var(--ink)] outline-none focus-visible:ring-[3px] focus-visible:ring-[var(--ok-neon)]"
                     style={{ borderRadius: 0 }}
                   />
                 </label>
@@ -413,9 +413,9 @@ const PickerCard = ({ request, onSubmit, disabled }: PickerCardProps) => {
 
       {/* Footer */}
       {status === 'pending' && (
-        <footer className="flex flex-wrap items-center justify-between gap-2 border-t-[2px] border-[#383832] px-3 py-2">
+        <footer className="flex flex-wrap items-center justify-between gap-2 border-t-[2px] border-[var(--ink)] px-3 py-2">
           <span
-            className="text-[10px] font-bold uppercase tracking-[0.1em] text-[#383832]/60"
+            className="text-[10px] font-bold uppercase tracking-[0.1em] text-[color-mix(in_srgb,var(--ink)_60%,transparent)]"
             aria-live="polite"
           >
             {corporateNeedsRep
@@ -430,7 +430,7 @@ const PickerCard = ({ request, onSubmit, disabled }: PickerCardProps) => {
             type="button"
             onClick={handleConfirm}
             disabled={!canConfirm}
-            className="stamp-press border-[2px] border-b-[3px] border-r-[3px] border-[#383832] bg-[#00fc40] px-3 py-1.5 text-[11px] font-black uppercase tracking-[0.1em] text-[#383832] outline-none focus-visible:ring-[3px] focus-visible:ring-[#383832] disabled:cursor-not-allowed disabled:bg-[#383832]/10 disabled:text-[#383832]/40"
+            className="stamp-press border-[2px] border-b-[3px] border-r-[3px] border-[var(--ink)] bg-[var(--ok-neon)] px-3 py-1.5 text-[11px] font-black uppercase tracking-[0.1em] text-[var(--ink)] outline-none focus-visible:ring-[3px] focus-visible:ring-[var(--ink)] disabled:cursor-not-allowed disabled:bg-[color-mix(in_srgb,var(--ink)_10%,transparent)] disabled:text-[color-mix(in_srgb,var(--ink)_40%,transparent)]"
             style={{ borderRadius: 0 }}
           >
             {submitting ? 'Sending…' : 'Confirm'}

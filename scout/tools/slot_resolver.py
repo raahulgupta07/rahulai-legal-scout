@@ -373,12 +373,75 @@ def _parties_from_document(document_id: Any, slot: dict) -> list[dict]:
     return parties
 
 
-def selected_parties(placeholder: str, entry: dict, data: dict, document_id: Any = None) -> list[dict]:
-    """Explicit selections for a slot: this document first, then supplied data."""
+def _parties_from_picker_log(company_name: str | None, slot: dict) -> list[dict]:
+    """The most recent in-chat picker answer for this company and slot kind.
+
+    The picker and the document generation are separate tool calls, so the answer
+    is written to party_selections when the user confirms and read back here.
+    Without this the model has to remember to pass the name through custom_data,
+    and when it forgets the fill silently falls back to the first director on
+    file — which is the wrong person.
+    """
+    kind = slot.get("kind", "")
+    if not company_name or not kind:
+        return []
+
+    pickers = [p for p, kinds in PICKER_KINDS.items() if kind in kinds]
+    if not pickers:
+        return []
+
+    conn = None
+    try:
+        from db.connection import get_db_conn
+
+        conn = get_db_conn()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT selection FROM party_selections
+            WHERE LOWER(company_name) = LOWER(%s)
+              AND picker = ANY(%s)
+              AND created_at > NOW() - INTERVAL '30 minutes'
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            """,
+            (company_name.strip(), pickers),
+        )
+        row = cur.fetchone()
+        cur.close()
+    except Exception as e:  # noqa: BLE001
+        _logger.warning(f"Failed to read party_selections for '{company_name}': {e}")
+        return []
+    finally:
+        if conn is not None:
+            conn.close()
+
+    return _coerce_parties(row[0]) if row and row[0] else []
+
+
+def selected_parties(
+    placeholder: str,
+    entry: dict,
+    data: dict,
+    document_id: Any = None,
+    company_name: str | None = None,
+) -> list[dict]:
+    """Explicit selections for a slot, most authoritative first.
+
+    The picker log outranks `data`: by fill time `data` carries the company
+    record's auto-filled value for the placeholder (the first director on file),
+    which is a guess, whereas the picker log is a person the user actually
+    clicked. Letting `data` win is what silently replaced the chosen director
+    with directors[0].
+    """
     slot = slot_of(entry)
     if not slot:
         return []
-    return _parties_from_document(document_id, slot) or _parties_from_data(placeholder, slot, data)
+    return (
+        _parties_from_document(document_id, slot)
+        or _parties_from_picker_log(company_name, slot)
+        or _parties_from_data(placeholder, slot, data)
+    )
 
 
 def _party_text(party: dict, kind: str) -> str:
@@ -492,7 +555,9 @@ def resolve_slot(
     if not slot:
         return None
 
-    parties = selected_parties(placeholder, entry, data, document_id=document_id)
+    parties = selected_parties(
+        placeholder, entry, data, document_id=document_id, company_name=company_name
+    )
     if parties:
         return render_parties(placeholder, slot, parties, blank=blank)
 

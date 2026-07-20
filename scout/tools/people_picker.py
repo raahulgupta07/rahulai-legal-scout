@@ -370,8 +370,68 @@ def lookup_register_candidates(search: str = "") -> str:
             conn.close()
 
 
-def _selection_result(picker: str, selected: str) -> str:
-    """Normalise whatever the UI sent back into a result the agent can use."""
+def _describe(entry: Dict[str, Any]) -> str:
+    """"NAME (represented by REP)" — how one chosen party reads in prose."""
+    name = str(entry.get("name") or "").strip()
+    rep = entry.get("representative")
+    rep_name = str(rep.get("name") or "").strip() if isinstance(rep, dict) else ""
+    return f"{name} (represented by {rep_name})" if rep_name else name
+
+
+PICKER_SLOT_KINDS = {
+    "choose_director": "signatory",
+    "choose_representative_director": "representative",
+    "choose_attendees": "attendee",
+    "choose_person_from_register": "signatory",
+}
+
+
+def _record_selection(picker: str, company_name: str, chosen: List[Dict]) -> None:
+    """Persist a confirmed selection so document generation can find it.
+
+    Choosing the person and filling the template are two separate tool calls, and
+    the model cannot be relied on to carry the name between them — it routinely
+    calls generate_document with an empty custom_data. Writing the choice down
+    makes the fill deterministic. Best-effort: a failure here must never break
+    the picker itself.
+    """
+    if not chosen:
+        return
+    conn = None
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO party_selections (company_name, picker, slot_kind, selection)
+            VALUES (%s, %s, %s, %s)
+            """,
+            (
+                (company_name or "").strip(),
+                picker,
+                PICKER_SLOT_KINDS.get(picker, ""),
+                json.dumps(chosen),
+            ),
+        )
+        conn.commit()
+        cur.close()
+    except Exception as e:  # noqa: BLE001
+        import logging
+
+        logging.getLogger("legalscout").warning(f"Could not record {picker} selection: {e}")
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def _selection_result(picker: str, selected: str, company_name: str = "") -> str:
+    """Normalise whatever the UI sent back into a result the agent can use.
+
+    The result carries an explicit `instruction`, not just the raw choice. Without
+    it the model reads the JSON echo as "here are some candidates" and re-asks the
+    same question as an a)/b)/c) text list — which is the one interaction the
+    client rejected. The picker card is the only place a person may be chosen.
+    """
     try:
         parsed = json.loads(selected) if isinstance(selected, str) else selected
     except (ValueError, TypeError):
@@ -381,10 +441,47 @@ def _selection_result(picker: str, selected: str) -> str:
         chosen = [parsed]
     elif isinstance(parsed, list):
         chosen = [p if isinstance(p, dict) else {"name": str(p)} for p in parsed]
+    elif parsed in (None, ""):
+        chosen = []
     else:
         chosen = [{"name": str(parsed)}]
 
-    return json.dumps({"picker": picker, "selected": chosen, "count": len(chosen)})
+    chosen = [c for c in chosen if str(c.get("name") or "").strip()]
+    names = [str(c.get("name")).strip() for c in chosen]
+
+    if not chosen:
+        return json.dumps(
+            {
+                "picker": picker,
+                "selected": [],
+                "count": 0,
+                "status": "no_selection",
+                "instruction": (
+                    "The user has not chosen anyone yet. Call this picker tool again so the "
+                    "choice is made from the in-chat card. NEVER ask for the name as a text "
+                    "question and NEVER offer a), b), c) options."
+                ),
+            }
+        )
+
+    _record_selection(picker, company_name, chosen)
+
+    return json.dumps(
+        {
+            "picker": picker,
+            "selected": chosen,
+            "count": len(chosen),
+            "status": "confirmed",
+            "chosen_names": names,
+            "instruction": (
+                f"The user has ALREADY chosen: {', '.join(_describe(c) for c in chosen)}. "
+                "This selection is final and confirmed. Do NOT ask who to use, do NOT list "
+                "the candidates again, and do NOT offer a), b), c) options. Use exactly "
+                "these names and continue the task now — if a document was requested, "
+                "generate it immediately, passing these names through custom_data."
+            ),
+        }
+    )
 
 
 @tool(requires_user_input=True, user_input_fields=["selected"])
@@ -399,7 +496,7 @@ def choose_director(company_name: str, purpose: str, candidates_json: str, selec
         candidates_json: JSON payload from lookup_director_candidates, passed through unchanged.
         selected: Filled in by the user from the chat picker. Never set this yourself.
     """
-    return _selection_result("choose_director", selected)
+    return _selection_result("choose_director", selected, company_name)
 
 
 @tool(requires_user_input=True, user_input_fields=["selected"])
@@ -423,7 +520,7 @@ def choose_representative_director(
         candidates_json: JSON payload from lookup_representative_candidates, passed through unchanged.
         selected: Filled in by the user from the chat picker. Never set this yourself.
     """
-    return _selection_result("choose_representative_director", selected)
+    return _selection_result("choose_representative_director", selected, document_company)
 
 
 @tool(requires_user_input=True, user_input_fields=["selected"])
@@ -438,7 +535,7 @@ def choose_attendees(company_name: str, purpose: str, candidates_json: str, sele
         candidates_json: JSON payload from lookup_attendee_candidates, passed through unchanged.
         selected: Ordered list filled in by the user from the chat picker. Never set this yourself.
     """
-    return _selection_result("choose_attendees", selected)
+    return _selection_result("choose_attendees", selected, company_name)
 
 
 @tool(requires_user_input=True, user_input_fields=["selected"])
