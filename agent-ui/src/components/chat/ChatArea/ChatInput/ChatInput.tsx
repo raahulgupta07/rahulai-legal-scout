@@ -63,12 +63,16 @@ const ChatInput = () => {
         `body .rounded-xl { border-radius: var(--radius-none) !important }` sweep
         that squares off the standard Tailwind rounding classes. The arbitrary
         value generates a different class name and slips past it.
+
+        The ring uses color-mix rather than a `/25` alpha modifier: Tailwind
+        cannot apply an alpha modifier to a var() holding a hex, and emits no
+        style at all — silently leaving the focus ring uncoloured.
       */}
       <div
         className="rounded-[var(--radius-xl)] border border-[var(--border)] bg-[var(--surface)]
                    shadow-sm transition-colors duration-150 motion-reduce:transition-none
                    focus-within:border-[var(--brand)]
-                   focus-within:ring-2 focus-within:ring-[var(--brand)]/25"
+                   focus-within:ring-2 focus-within:ring-[color-mix(in_srgb,var(--brand)_25%,transparent)]"
       >
         <TextArea
           placeholder={
