@@ -55,90 +55,20 @@ function extractDocuments(content: string): Array<{fileName: string, downloadUrl
   return documents
 }
 
-interface Option {
-  key: string
-  label: string
-}
+/*
+  There is deliberately no a) / b) / c) option parser here.
 
-function extractOptions(content: string): Option[] {
-  // Check if message ends with "What would you like to do?" or similar follow-up phrases
-  const hasFollowUpPhrase = /what would you like to do\?|what would you like\?|would you like to|what can i do for you/i.test(content)
+  An earlier version scanned the agent's prose for lettered options and
+  rendered them as buttons, stripping the same lines out of the displayed
+  text. The client rejected lettered lists outright — "no different from
+  filling manually" — so a person is only ever chosen from the in-chat
+  picker card, which carries a real candidate list and a confirmed
+  selection. Parsing prose back into buttons re-created the rejected
+  interaction on the client side and hid the original text while doing it.
 
-  if (!hasFollowUpPhrase) {
-    return []
-  }
-
-  // Extract options with pattern: a) text, b) text, c) text (each on separate line or inline)
-  const lines = content.split('\n')
-  const options: Option[] = []
-  const optionPattern = /^([a-e])\)\s*(.+?)(?:\s*[b-e]\)|$)/i
-
-  // Try multi-line detection first (each option on separate line)
-  for (const line of lines) {
-    const trimmed = line.trim()
-    const match = trimmed.match(/^([a-e])\)\s*(.+)$/i)
-    if (match) {
-      const key = match[1].toLowerCase()
-      const label = match[2].trim()
-      if (label) {
-        options.push({ key, label })
-      }
-    }
-  }
-
-  // If no multi-line options found, try inline detection (a) ... b) ... on same line)
-  if (options.length === 0) {
-    const inlinePattern = /([a-e])\)\s*([^a-e]+?)(?=\s*[b-e]\)|$)/gi
-    let match
-    while ((match = inlinePattern.exec(content)) !== null) {
-      const key = match[1].toLowerCase()
-      const label = match[2].trim()
-      if (label && !label.match(/^[a-e]\)/)) {
-        options.push({ key, label })
-      }
-    }
-  }
-
-  // Only return if we have 2-5 options (filter out noise)
-  if (options.length >= 2 && options.length <= 5) {
-    return options
-  }
-
-  return []
-}
-
-function removeButtonSection(content: string): string {
-  // Remove the pattern: "a) ... b) ... What would you like to do?" from text
-  const lines = content.split('\n')
-  const result: string[] = []
-  let skipNext = false
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trim()
-
-    // Skip lines that are options (a), b), c), etc.)
-    if (/^[a-e]\)\s*/.test(line)) {
-      skipNext = true
-      continue
-    }
-
-    // Skip "What would you like to do?" line
-    if (/what would you like to do\?|what would you like\?/i.test(line)) {
-      skipNext = false
-      continue
-    }
-
-    // If we just skipped options, skip empty lines too
-    if (skipNext && line === '') {
-      continue
-    }
-
-    skipNext = false
-    result.push(lines[i])
-  }
-
-  return result.join('\n').trim()
-}
+  If the agent still emits a lettered list somewhere, it now renders as
+  ordinary prose: visible to the reader, but not dressed up as a control.
+*/
 
 // Detect missing fields pattern from AI response
 function extractMissingFields(content: string): string[] {
@@ -335,37 +265,14 @@ function InlineEmailComposer({ defaultTo, defaultAttachment, onSent }: { default
   )
 }
 
-function OptionButtons({ options, onSelect }: { options: Option[], onSelect: (key: string) => void }) {
-  if (options.length === 0) return null
-
-  return (
-    <div className="mt-3 flex max-w-2xl flex-wrap gap-2">
-      {options.map((option) => (
-        <button
-          key={option.key}
-          onClick={() => onSelect(option.label)}
-          className="inline-flex cursor-pointer items-center gap-1.5 rounded-[999px] border border-[var(--border)] bg-[var(--surface)] px-3.5 py-1.5 text-[length:var(--text-sm)] text-[var(--text-secondary)] transition-colors hover:border-[var(--border-strong)] hover:bg-[var(--bg-secondary)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]"
-        >
-          {option.label}
-        </button>
-      ))}
-    </div>
-  )
-}
-
 const AgentMessage = ({ message }: MessageProps) => {
   const { streamingErrorMessage, setPendingMessage } = useStore()
 
   const documents = message.content ? extractDocuments(message.content) : []
-  const options = message.content ? extractOptions(message.content) : []
   const missingFields = message.content ? extractMissingFields(message.content) : []
   const showEmailForm = message.content ? isEmailRelated(message.content) : false
   const emailTo = message.content ? extractEmailAddress(message.content) : ""
   const emailAttachment = message.content ? extractDocFilename(message.content) : ""
-
-  const handleOptionSelect = (key: string) => {
-    setPendingMessage(key)
-  }
 
   const handleFieldsSubmit = (values: Record<string, string>) => {
     const lines = Object.entries(values)
@@ -376,10 +283,7 @@ const AgentMessage = ({ message }: MessageProps) => {
     }
   }
 
-  // Remove button section from content if buttons will be rendered
-  const displayContent = message.content && options.length > 0
-    ? removeButtonSection(message.content)
-    : message.content
+  const displayContent = message.content
 
   let messageContent
   if (message.streamingError) {
@@ -406,9 +310,6 @@ const AgentMessage = ({ message }: MessageProps) => {
         ) : missingFields.length > 0 ? (
           <MissingFieldsForm fields={missingFields} onSubmit={handleFieldsSubmit} />
         ) : null}
-        {options.length > 0 && (
-          <OptionButtons options={options} onSelect={handleOptionSelect} />
-        )}
         {documents.length > 0 && (
           <DocumentCards documents={documents} />
         )}
