@@ -39,27 +39,25 @@ const VideoItem = memo(({ video }: { video: VideoData }) => {
   }
 
   return (
-    <div>
-      <div className="group relative w-full max-w-xl">
-        {}
-        <video
-          src={videoUrl}
-          autoPlay
-          muted
-          loop
-          controls
-          className="w-full rounded-lg"
-          style={{ aspectRatio: '16 / 9' }}
-        />
-        <button
-          type="button"
-          onClick={handleDownload}
-          className="absolute right-2 top-2 flex items-center justify-center rounded-sm bg-secondary/80 p-1.5 opacity-0 transition-opacity duration-200 hover:bg-secondary group-hover:opacity-100"
-          aria-label="Download GIF"
-        >
-          <Icon type="download" size="xs" />
-        </button>
-      </div>
+    <div className="group relative w-full min-w-0 max-w-xl border-[2px] border-b-[3px] border-r-[3px] border-[var(--ink)] bg-[var(--surface-raised)] p-1">
+      <video
+        src={videoUrl}
+        autoPlay
+        muted
+        loop
+        controls
+        className="block w-full max-w-full"
+        style={{ aspectRatio: '16 / 9' }}
+      />
+      <button
+        type="button"
+        onClick={handleDownload}
+        className="stamp-press absolute right-3 top-3 flex items-center justify-center border-[2px] border-b-[3px] border-r-[3px] border-[var(--ink)] bg-[var(--surface-raised)] p-1.5 text-[var(--ink)] opacity-0 outline-none transition-opacity duration-150 focus-visible:opacity-100 focus-visible:ring-[3px] focus-visible:ring-[var(--ok-neon)] group-hover:opacity-100"
+        style={{ borderRadius: 0 }}
+        aria-label="Download video"
+      >
+        <Icon type="download" size="xs" />
+      </button>
     </div>
   )
 })
@@ -67,7 +65,7 @@ const VideoItem = memo(({ video }: { video: VideoData }) => {
 VideoItem.displayName = 'VideoItem'
 
 const Videos = memo(({ videos }: { videos: VideoData[] }) => (
-  <div className="flex flex-col gap-4">
+  <div className="flex w-full min-w-0 flex-col gap-3">
     {videos.map((video) => (
       <VideoItem key={video.id} video={video} />
     ))}

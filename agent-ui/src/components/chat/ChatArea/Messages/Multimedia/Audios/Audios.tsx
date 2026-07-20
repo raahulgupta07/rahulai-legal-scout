@@ -34,12 +34,14 @@ const AudioItem = memo(({ audio }: { audio: AudioData }) => {
   if (!audioUrl) return null
 
   return (
-    <audio
-      src={audioUrl}
-      controls
-      className="w-full rounded-lg"
-      preload="metadata"
-    />
+    <div className="w-full max-w-xl border-[2px] border-b-[3px] border-r-[3px] border-[var(--ink)] bg-[var(--surface-raised)] p-1.5">
+      <audio
+        src={audioUrl}
+        controls
+        className="block w-full max-w-full"
+        preload="metadata"
+      />
+    </div>
   )
 })
 
@@ -50,7 +52,7 @@ AudioItem.displayName = 'AudioItem'
  * @param audio - Array of AudioData objects
  */
 const Audios = memo(({ audio }: { audio: AudioData[] }) => (
-  <div className="flex flex-col gap-4">
+  <div className="flex w-full min-w-0 flex-col gap-3">
     {audio.map((audio_item, index) => (
       // TODO :: find a better way to handle the key
       <AudioItem key={audio_item.id ?? `audio-${index}`} audio={audio_item} />
