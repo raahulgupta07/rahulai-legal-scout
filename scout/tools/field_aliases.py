@@ -9,6 +9,8 @@ To extend: add a new entry to ALIAS_GROUPS. Keys are matched after
 normalisation (lowercase, spaces/hyphens folded to underscores).
 """
 
+import re
+
 ALIAS_GROUPS: dict[str, list[str]] = {
     "nrc_no": [
         "nric", "nrc", "nrc_no", "nrc_number", "nrc_passport",
@@ -50,9 +52,16 @@ def _build_alias_map() -> dict[str, str]:
 ALIAS_MAP: dict[str, str] = _build_alias_map()
 
 
+_SEPARATORS = re.compile(r"[\s   \-]+")
+
+
 def normalize_field(name: str) -> str:
-    """Normalise a placeholder or data key to comparison form."""
-    return str(name or "").strip().lower().replace(" ", "_").replace("-", "_")
+    """Normalise a placeholder or data key to comparison form.
+
+    Word processors emit non-breaking spaces inside placeholder names, so
+    separators are matched by class rather than by literal " ".
+    """
+    return _SEPARATORS.sub("_", str(name or "").strip().lower()).strip("_")
 
 
 def canonical_field(name: str) -> str:

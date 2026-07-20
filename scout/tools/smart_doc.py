@@ -26,6 +26,12 @@ from scout.tools.placeholders import (
     new_empty_counter,
     placeholder_name,
 )
+from scout.tools.slot_resolver import (
+    collect_slot_requests,
+    normalise_mapping,
+    resolve_slot,
+    slot_of,
+)
 
 LEFT_BLANK = ""
 
@@ -294,9 +300,18 @@ def prepare_document_data(template_name: str, company_name: str, documents_dir: 
         key_normalized = str(key).lower().replace(" ", "_").replace("-", "_")
         normalized_company_data[key_normalized] = value
 
+    slot_requests = collect_slot_requests(
+        _get_field_mapping(template_name) or {},
+        required_fields,
+        normalized_company_data,
+        company_name=company_name,
+    )
+
     return {
         "success": True,
         "step": "complete",
+        "slot_requests": slot_requests,
+        "unresolved_slots": [r["placeholder"] for r in slot_requests],
         "template_analysis": {
             "template": template_name,
             "required_fields": required_fields,
@@ -306,11 +321,20 @@ def prepare_document_data(template_name: str, company_name: str, documents_dir: 
         "company_data": company_data,
         "normalized_data": normalized_company_data,
         "validation": validation,
-        "ready_to_generate": validation["is_complete"],
-        "message": "Ready to generate document"
-        if validation["is_complete"]
-        else f"Missing fields: {', '.join(validation['missing_fields'])}",
+        "ready_to_generate": validation["is_complete"] and not slot_requests,
+        "message": _prepare_message(validation, slot_requests),
     }
+
+
+def _prepare_message(validation: dict, slot_requests: list) -> str:
+    """Separate 'ask the picker for a party' from 'ask the user for a value'."""
+    parts = []
+    if slot_requests:
+        pickers = ", ".join(sorted({f"{r['picker']}({r['kind']})" for r in slot_requests}))
+        parts.append(f"Choose the parties for these roles with the person pickers: {pickers}")
+    if validation.get("missing_fields"):
+        parts.append(f"Missing fields: {', '.join(validation['missing_fields'])}")
+    return " | ".join(parts) if parts else "Ready to generate document"
 
 
 def validate_filled_document(document_path: Path, all_placeholders: list = None) -> dict[str, Any]:
@@ -396,6 +420,29 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
 
         if not result.get("success"):
             return result
+
+        slot_data = dict(result.get("normalized_data", {}))
+        if custom_data:
+            slot_data.update(custom_data)
+        slot_requests = collect_slot_requests(
+            _get_field_mapping(template_name) or {},
+            result.get("template_analysis", {}).get("required_fields", []),
+            slot_data,
+            company_name=company_name,
+        )
+        if slot_requests:
+            return {
+                "success": False,
+                "error": "Need party selection for role slots",
+                "slot_requests": slot_requests,
+                "unresolved_slots": [r["placeholder"] for r in slot_requests],
+                "message": "Ask with the person pickers, not in prose: "
+                + ", ".join(
+                    f"{r['lookup_tool']} → {r['picker']} for {r['kind']}"
+                    + (f" of {r['candidates_from']}" if r["candidates_from"] else "")
+                    for r in slot_requests
+                ),
+            }
 
         # Smart default: If 90%+ fields available, proceed automatically
         validation = result.get("validation", {})
@@ -836,7 +883,8 @@ def _get_field_mapping(template_name: str) -> dict | None:
         row = cur.fetchone()
         cur.close()
         if row and row[0]:
-            return row[0] if isinstance(row[0], dict) else __import__('json').loads(row[0])
+            raw = row[0] if isinstance(row[0], dict) else __import__('json').loads(row[0])
+            return normalise_mapping(raw)
     except Exception as e:
         logging.getLogger("legalscout").warning(f"Failed to load field mapping for '{template_name}': {e}")
     finally:
@@ -938,7 +986,7 @@ def _resolve_from_data(placeholder: str, data: dict[str, Any]) -> str | None:
     return None
 
 
-def find_replacement(placeholder: str, data: dict[str, Any], template_name: str = None, company_name: str = None) -> str | None:
+def find_replacement(placeholder: str, data: dict[str, Any], template_name: str = None, company_name: str = None, document_id: Any = None) -> str | None:
     """Find replacement value using learned field_mapping (if available) or fallback to data lookup."""
     placeholder_norm = normalize_field(placeholder)
 
@@ -955,6 +1003,16 @@ def find_replacement(placeholder: str, data: dict[str, Any], template_name: str 
                 source = config.get("source", "")
                 db_column = config.get("db_column", "")
                 default = config.get("default", "TBD")
+
+                if source == "slot" and slot_of(config):
+                    resolved = resolve_slot(
+                        placeholder, config, data,
+                        company_name=company_name, document_id=document_id,
+                        blank=LEFT_BLANK,
+                    )
+                    if isinstance(resolved, list):
+                        return ", ".join(str(item) for item in resolved)
+                    return resolved
 
                 if source == "db" and db_column:
                     # Get value from company DB

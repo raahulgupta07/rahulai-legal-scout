@@ -27,6 +27,7 @@ from app.model_config import (get_model, get_all_models, save_models, clear_cach
     get_timezone, save_timezone, get_current_datetime, get_current_date, OPENROUTER_BASE_URL)
 from db.connection import get_db_conn
 from app.s3_storage import s3_upload_async, s3_delete_async, s3_download, s3_test, s3_sync_all, s3_list, is_s3_enabled, save_s3_config, _get_s3_config, _local_to_s3_key
+from app.slot_contract import normalise_mapping, sanitise_mapping
 
 # ---------------------------------------------------------------------------
 # Production-safe host configuration
@@ -1730,6 +1731,27 @@ async def list_available_templates():
     return {"templates": list_analyzed_templates()}
 
 
+def load_field_mapping(template_name: str) -> dict:
+    """Load a stored field_mapping, upgraded to the slot contract."""
+    conn = None
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT field_mapping FROM templates WHERE name = %s", (template_name,))
+        row = cur.fetchone()
+        cur.close()
+        if not row or not row[0]:
+            return {}
+        raw = row[0] if isinstance(row[0], dict) else json.loads(row[0])
+        return normalise_mapping(raw)
+    except Exception as e:
+        logging.getLogger("legalscout").warning(f"Failed to load field mapping for '{template_name}': {e}")
+        return {}
+    finally:
+        if conn:
+            conn.close()
+
+
 @app.get("/api/dashboard/templates/{template_name}")
 async def get_template_info(template_name: str):
     """Get template details."""
@@ -1737,7 +1759,16 @@ async def get_template_info(template_name: str):
     safe_path = (base_dir / template_name).resolve()
     if not str(safe_path).startswith(str(base_dir)):
         return {"error": "Invalid filename"}
-    return analyze_template(template_name)
+    info = analyze_template(template_name)
+    if isinstance(info, dict):
+        info["field_mapping"] = load_field_mapping(template_name)
+    return info
+
+
+@app.get("/api/templates/field-mapping/{template_name}")
+async def get_template_field_mapping(template_name: str):
+    """Get a template's field_mapping in slot-contract form."""
+    return {"template": template_name, "field_mapping": load_field_mapping(template_name)}
 
 
 @app.get("/api/templates/categories")
@@ -2751,35 +2782,91 @@ Return ONLY a JSON object with: purpose, when_to_use, how_to_use (array), catego
             # Step 5.5: Generate field_mapping (learned placeholder → DB column mapping)
             yield _sse("mapping_start", "Generating field mapping...")
             try:
-                mapping_prompt = f"""You are a database mapping expert. Map each template placeholder to the correct data source.
+                mapping_prompt = f"""You are a database mapping expert for a Myanmar corporate law document system. Map each template placeholder to the correct data source.
 
 TEMPLATE: {template_name}
 PLACEHOLDERS: {', '.join(fields)}
 
-AVAILABLE DATABASE COLUMNS for companies table:
-- company_name_english (company's registered name)
+AVAILABLE DATABASE COLUMNS on the companies table (these describe the COMPANY, never a person):
+- company_name_english (registered English name)
+- company_name_myanmar (registered Myanmar name)
 - company_registration_number (DICA registration number)
-- registered_office_address (registered office address)
-- principal_place_of_business (business address)
+- registration_date (date of incorporation)
 - status (active/inactive)
 - company_type (private/public)
-- directors (JSONB array of objects with: name, position)
-- members (JSONB array of objects with: name, shares)
+- foreign_company (yes/no)
+- small_company (yes/no)
+- principal_activity (business activity)
+- registered_office_address (registered office address)
+- principal_place_of_business (business address)
+- date_of_last_annual_return (date)
+- previous_registration_number (prior DICA number)
 - total_shares_issued (total shares number)
 - currency_of_share_capital (currency code)
-- date_of_last_annual_return (date)
-- financial_year_end_date (date)
+- total_capital (total capital amount)
+- consideration_amount_paid (consideration paid)
+- under_corpsec_management (yes/no)
+- group_company (yes/no)
 - ultimate_holding_company_name (parent company)
+- ultimate_holding_company_jurisdiction (parent jurisdiction)
+- ultimate_holding_company_registration_number (parent registration number)
+- financial_year_end_date (financial year end, free text)
+- next_financial_year_end_date (next financial year end, free text)
+- auditor_name (appointed auditor)
+- auditor_fee (auditor remuneration)
+- custom_fields (JSONB of per-company extras; address a key as custom_fields.some_key)
 
-For EACH placeholder, return a JSON object with:
-- "source": "db" (from company database) or "user_input" (user must provide)
-- "db_column": exact column path if source=db. For arrays use: members[0].name, directors[1].position
-- "default": default value if source=user_input. Use "today" for dates, "TBD" for unknown
+HARD RULES:
+1. NEVER put an array index in db_column. "directors[0].name", "members[1].name" and any other
+   "[n]" path are FORBIDDEN — they freeze one person at training time and produce the wrong signatory.
+2. "directors", "members" and "shareholder_links" are person lists and are NEVER valid db_column values.
+3. NEVER use "today" (or "now"/"current_date") as a default. Dates are chosen by the user, never auto-filled.
+4. Any placeholder naming a PERSON or a SIGNING PARTY — signatory, chairperson, attendee, the director
+   resigning, the director being appointed, a shareholder, a corporate representative, the auditor as a
+   signing party — is a SLOT, not a db column and not plain user_input.
+
+A SLOT means "a person or party the USER must choose when the document is generated". It is resolved
+at generation time against the people register, so it must never be frozen to a position.
+
+"slot": {{"kind": <kind>, "of": <of>, "multi": true|false}}
+
+slot.kind is EXACTLY one of:
+  signatory           — the person who signs the document
+  attendee            — a person present at the meeting
+  chairperson         — the person chairing the meeting
+  resigning_director  — the director who is resigning
+  new_director        — the director being appointed
+  representative      — the individual signing on behalf of a corporate entity
+  shareholder_list    — the list of shareholders
+  auditor             — the auditor as a named party
+
+slot.of is EXACTLY one of:
+  document_company      — candidates are the people linked to the company the document is for
+  corporate_shareholder — candidates are the directors of a CORPORATE SHAREHOLDER of the document company
+                          (use with kind "representative" when a company signs through its own director)
+  people_register       — candidates are any person in the people register
+
+slot.multi is true when the placeholder holds several people (a list of attendees or shareholders),
+false when it holds exactly one.
+
+For EACH placeholder return a JSON object with:
+- "source": "db" | "user_input" | "slot"
+- "db_column": exact column name when source is "db", otherwise null. No array indexes, ever.
+- "slot": the slot object when source is "slot", otherwise null
+- "default": a literal fallback string for source "user_input", otherwise null. Never "today".
 - "description": short description of what this field is
 
-Return ONLY a JSON object where keys are placeholder names. Example:
-{{"company_name": {{"source":"db","db_column":"company_name_english","default":null,"description":"Company registered name"}},
-"date": {{"source":"user_input","db_column":null,"default":"today","description":"Date of the document"}}}}"""
+WORKED EXAMPLES:
+db field:
+  "company_name": {{"source":"db","db_column":"company_name_english","slot":null,"default":null,"description":"Company registered name"}}
+user_input field:
+  "meeting_date": {{"source":"user_input","db_column":null,"slot":null,"default":null,"description":"Date the meeting is held, supplied by the user"}}
+single signatory slot:
+  "director_name": {{"source":"slot","db_column":null,"slot":{{"kind":"signatory","of":"document_company","multi":false}},"default":null,"description":"Director who signs this document, chosen by the user"}}
+multi attendee slot:
+  "attendees": {{"source":"slot","db_column":null,"slot":{{"kind":"attendee","of":"document_company","multi":true}},"default":null,"description":"People present at the meeting, chosen by the user"}}
+
+Return ONLY a JSON object where keys are placeholder names."""
 
                 import httpx as _mhx
                 _m_res = _mhx.post(
@@ -2794,7 +2881,19 @@ Return ONLY a JSON object where keys are placeholder names. Example:
                     _m_text = _m_text.split("```")[1]
                     if _m_text.startswith("json"): _m_text = _m_text[4:]
                     _m_text = _m_text.strip()
-                field_mapping = _sj.loads(_m_text)
+                field_mapping, _m_rejected, _m_repaired = sanitise_mapping(_sj.loads(_m_text))
+                if _m_repaired:
+                    logging.getLogger("legalscout").warning(
+                        f"Field mapping for '{template_name}' repaired {len(_m_repaired)} entries: "
+                        + "; ".join(_m_repaired))
+                    yield _sse("mapping_repair", f"Repaired {len(_m_repaired)} off-contract mapping entries",
+                              repaired=_m_repaired[:10])
+                if _m_rejected:
+                    logging.getLogger("legalscout").warning(
+                        f"Field mapping for '{template_name}' dropped {len(_m_rejected)} invalid entries: "
+                        + "; ".join(_m_rejected))
+                    yield _sse("mapping_reject", f"Rejected {len(_m_rejected)} invalid mapping entries",
+                              rejected=_m_rejected[:10])
 
                 # Save to DB
                 _mc = get_db_connection()
@@ -2805,8 +2904,9 @@ Return ONLY a JSON object where keys are placeholder names. Example:
 
                 db_mapped = sum(1 for v in field_mapping.values() if v.get("source") == "db")
                 user_mapped = sum(1 for v in field_mapping.values() if v.get("source") == "user_input")
-                yield _sse("mapping", f"Mapped {db_mapped} fields to DB, {user_mapped} need user input",
-                          db_mapped=db_mapped, user_mapped=user_mapped)
+                slot_mapped = sum(1 for v in field_mapping.values() if v.get("source") == "slot")
+                yield _sse("mapping", f"Mapped {db_mapped} fields to DB, {slot_mapped} slots, {user_mapped} need user input",
+                          db_mapped=db_mapped, user_mapped=user_mapped, slot_mapped=slot_mapped)
             except Exception as _me:
                 yield _sse("mapping_warn", f"Field mapping warning: {_me}")
 
