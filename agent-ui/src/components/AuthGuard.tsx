@@ -20,11 +20,18 @@ function getUser(): UserInfo | null {
 
 function AccessDenied({ message }: { message: string }) {
   return (
-    <div className="flex flex-col items-center justify-center h-screen gap-4 bg-gray-50">
-      <ShieldAlert className="w-12 h-12 text-red-500" />
-      <h2 className="text-lg font-semibold text-gray-900">Access Denied</h2>
-      <p className="text-sm text-gray-500 max-w-sm text-center">{message}</p>
-      <a href="/" className="text-sm text-brand hover:underline">Go to Chat</a>
+    <div className="flex flex-col items-center justify-center h-screen gap-3 bg-[var(--bg-secondary)] px-6">
+      <ShieldAlert className="w-8 h-8 text-[var(--danger-strong)]" />
+      <h2 className="font-[family-name:var(--font-display)] text-[length:var(--text-lg)] font-semibold text-[var(--text)]">
+        Access denied
+      </h2>
+      <p className="text-[length:var(--text-sm)] text-[var(--text-muted)] max-w-sm text-center">{message}</p>
+      <a
+        href="/"
+        className="text-[length:var(--text-sm)] text-[var(--brand)] hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg-secondary)]"
+      >
+        Go to chat
+      </a>
     </div>
   )
 }
@@ -82,8 +89,15 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
 
   if (pathname === "/login" || pathname === "/login/") return <>{children}</>
   if (checking) return (
-    <div className="flex items-center justify-center h-screen">
-      <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-orange-500"></div>
+    <div
+      role="status"
+      aria-label="Checking your session"
+      className="flex items-center justify-center h-screen bg-[var(--bg-secondary)]"
+    >
+      {/* rounded-[999px] rather than rounded-full: globals.css carries a
+          `body .rounded-full { border-radius: 0 !important }` sweep, which
+          was turning this spinner into a spinning square. */}
+      <div className="animate-spin rounded-[999px] h-6 w-6 border-2 border-[var(--border)] border-t-[var(--brand)]" />
     </div>
   )
   if (denied) return <AccessDenied message={denied} />
