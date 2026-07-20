@@ -1,23 +1,15 @@
-import type { ChatMessage } from '@/types/os'
+import type { ChatMessage, ToolCall } from '@/types/os'
 
 import { AgentMessage, UserMessage } from './MessageItem'
-import Tooltip from '@/components/ui/tooltip'
-import { memo, useState, useEffect, useRef } from 'react'
-import {
-  ToolCallProps,
-  ReasoningStepProps,
-  ReasoningProps,
-  ReferenceData,
-  Reference
-} from '@/types/os'
+import { useState, useEffect, useRef } from 'react'
+import { ReferenceData, Reference } from '@/types/os'
 import React, { type FC } from 'react'
 
-import Icon from '@/components/ui/icon'
 import ChatBlankState from './ChatBlankState'
 import PickerCardList from '@/components/chat/PickerCardList'
 import AgentThinkingLoader from './AgentThinkingLoader'
 import { useStore } from '@/store'
-import { Copy, Check } from 'lucide-react'
+import { Copy, Check, ChevronRight, AlertTriangle } from 'lucide-react'
 
 // Instant fallback suggestions (shown immediately while LLM suggestions load)
 function getInstantSuggestions(content: string): string[] {
@@ -33,6 +25,16 @@ function getInstantSuggestions(content: string): string[] {
   return ["Show all templates", "List all companies"]
 }
 
+/** Tool names are snake_case identifiers; show them as readable labels. */
+function formatToolName(name: string): string {
+  return name.replace(/_/g, ' ')
+}
+
+function formatSeconds(ms?: number): string | null {
+  if (!ms && ms !== 0) return null
+  return `${(ms / 1000).toFixed(2)}s`
+}
+
 // Live timer that ticks every 100ms while waiting for response
 const LiveTimer = () => {
   const [elapsed, setElapsed] = useState(0)
@@ -46,8 +48,7 @@ const LiveTimer = () => {
   }, [])
 
   return (
-    <span className="inline-flex items-center gap-1.5 text-xs text-[#383832] font-brutalist font-bold">
-      <span className="inline-block h-2 w-2 bg-[#007518] animate-pulse" />
+    <span className="font-[family-name:var(--font-mono)] text-[length:var(--text-xs)] tabular-nums text-[var(--text-muted)]">
       {(elapsed / 1000).toFixed(1)}s
     </span>
   )
@@ -55,7 +56,7 @@ const LiveTimer = () => {
 
 // Static badge showing the final response time
 const ResponseTime = ({ ms }: { ms: number }) => (
-  <span className="inline-flex items-center gap-1 text-[10px] font-bold text-[#383832]/50 font-brutalist uppercase tracking-wider">
+  <span className="font-[family-name:var(--font-mono)] text-[length:var(--text-2xs)] tabular-nums text-[var(--text-muted)]">
     {(ms / 1000).toFixed(1)}s
   </span>
 )
@@ -78,27 +79,26 @@ interface ReferenceItemProps {
 }
 
 const ReferenceItem: FC<ReferenceItemProps> = ({ reference }) => (
-  <div className="relative flex h-[63px] w-[190px] cursor-default flex-col justify-between overflow-hidden rounded-md bg-background-secondary p-3 transition-colors hover:bg-background-secondary/80">
-    <p className="text-base font-medium text-primary">{reference.name}</p>
-    <p className="truncate text-sm text-primary/40">{reference.content}</p>
+  <div className="flex w-[190px] cursor-default flex-col gap-1 overflow-hidden rounded-[var(--radius-xl)] border border-[var(--border)] bg-[var(--surface)] p-3">
+    <p className="truncate text-[length:var(--text-sm)] font-medium text-[var(--text)]">
+      {reference.name}
+    </p>
+    <p className="truncate text-[length:var(--text-xs)] text-[var(--text-muted)]">
+      {reference.content}
+    </p>
   </div>
 )
 
 const References: FC<ReferenceProps> = ({ references }) => (
-  <div className="flex flex-col gap-4">
+  <div className="flex flex-col gap-3">
     {references.map((referenceData, index) => (
-      <div
-        key={`${referenceData.query}-${index}`}
-        className="flex flex-col gap-3"
-      >
-        <div className="flex flex-wrap gap-3">
-          {referenceData.references.map((reference, refIndex) => (
-            <ReferenceItem
-              key={`${reference.name}-${reference.meta_data.chunk}-${refIndex}`}
-              reference={reference}
-            />
-          ))}
-        </div>
+      <div key={`${referenceData.query}-${index}`} className="flex flex-wrap gap-2">
+        {referenceData.references.map((reference, refIndex) => (
+          <ReferenceItem
+            key={`${reference.name}-${reference.meta_data.chunk}-${refIndex}`}
+            reference={reference}
+          />
+        ))}
       </div>
     ))}
   </div>
@@ -112,8 +112,16 @@ const CopyButton = ({ content }: { content: string }) => {
     setTimeout(() => setCopied(false), 2000)
   }
   return (
-    <button onClick={handleCopy} className="inline-flex items-center gap-1 px-2 py-1 border border-[#383832]/30 text-[10px] font-bold uppercase tracking-wider text-[#383832]/60 hover:bg-[#383832]/5 transition-colors cursor-pointer font-brutalist">
-      {copied ? <><Check className="w-3 h-3 text-[#00fc40]" /> Copied</> : <><Copy className="w-3 h-3" /> Copy</>}
+    <button
+      onClick={handleCopy}
+      aria-label={copied ? 'Copied to clipboard' : 'Copy reply'}
+      className="inline-flex cursor-pointer items-center gap-1.5 rounded-[var(--radius-xl)] px-2 py-1 text-[length:var(--text-xs)] text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-secondary)] hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]"
+    >
+      {copied ? (
+        <><Check className="h-3.5 w-3.5 text-[var(--ok-strong)]" /> Copied</>
+      ) : (
+        <><Copy className="h-3.5 w-3.5" /> Copy</>
+      )}
     </button>
   )
 }
@@ -142,13 +150,13 @@ const SuggestionButtons = ({ content, isLast, userQuestion }: { content: string,
 
   if (!isLast || !content || suggestions.length === 0) return null
   return (
-    <div className="flex flex-wrap gap-2 mt-3 font-brutalist">
+    <div className="mt-3 flex flex-wrap gap-2">
       {suggestions.map((s, i) => (
-        <button key={i} onClick={() => setPendingMessage(s)}
-          className="px-3 py-2 text-[11px] font-bold uppercase tracking-[0.05em] text-[#383832] bg-[#fffff0]
-                     border-[2px] border-[#383832] border-r-[3px] border-b-[3px]
-                     hover:-translate-x-[1px] hover:-translate-y-[1px] hover:shadow-[3px_3px_0px_0px_#383832]
-                     active:translate-x-0 active:translate-y-0 active:shadow-none transition-all cursor-pointer">
+        <button
+          key={i}
+          onClick={() => setPendingMessage(s)}
+          className="cursor-pointer rounded-[999px] border border-[var(--border)] bg-[var(--surface)] px-3.5 py-1.5 text-[length:var(--text-sm)] text-[var(--text-secondary)] transition-colors hover:border-[var(--border-strong)] hover:bg-[var(--bg-secondary)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]"
+        >
           {s}
         </button>
       ))}
@@ -156,162 +164,220 @@ const SuggestionButtons = ({ content, isLast, userQuestion }: { content: string,
   )
 }
 
-const TraceToggle = ({ message }: { message: ChatMessage }) => {
-  const [open, setOpen] = React.useState(false)
-  const hasTools = message.tool_calls && message.tool_calls.length > 0
-  if (!hasTools) return null
+/* ---------------------------------------------------------------- *
+ * Tool trace — quiet structured events, not chat messages.
+ * ---------------------------------------------------------------- */
+
+type EventState = 'running' | 'done' | 'failed'
+
+interface TraceEvent {
+  key: string
+  label: string
+  state: EventState
+  duration: string | null
+}
+
+/** Colour + glyph per state, so state is legible without reading the word. */
+const STATE_STYLE: Record<EventState, { dot: string; text: string; label: string }> = {
+  running: { dot: 'bg-[var(--warn)] animate-pulse', text: 'text-[var(--text)]', label: 'Running' },
+  done: { dot: 'bg-[var(--ok)]', text: 'text-[var(--text-secondary)]', label: 'Done' },
+  failed: { dot: 'bg-[var(--danger)]', text: 'text-[var(--danger-strong)]', label: 'Failed' }
+}
+
+const ToolEventRow = ({ event }: { event: TraceEvent }) => {
+  const style = STATE_STYLE[event.state]
   return (
-    <div className="mt-1 font-brutalist">
-      <button onClick={() => setOpen(!open)}
-        className="w-full text-left bg-[#262622] text-[#e8e8d8] px-3 py-1.5 cursor-pointer hover:bg-[#2a2a25] transition-colors">
-        <div className="flex items-center justify-between text-xs">
-          <span><span className="text-[#00fc40]">$</span> trace</span>
-          <span className="opacity-40">{open ? '▲' : '▼'}</span>
-        </div>
+    <li className="flex items-center gap-2.5 py-1">
+      <span
+        aria-hidden
+        className={`h-1.5 w-1.5 shrink-0 rounded-[999px] ${style.dot}`}
+      />
+      <span
+        className={`min-w-0 flex-1 truncate font-[family-name:var(--font-mono)] text-[length:var(--text-xs)] ${style.text}`}
+      >
+        {event.label}
+      </span>
+      {event.state === 'failed' && (
+        <AlertTriangle className="h-3 w-3 shrink-0 text-[var(--danger-strong)]" />
+      )}
+      <span className="shrink-0 font-[family-name:var(--font-mono)] text-[length:var(--text-2xs)] tabular-nums text-[var(--text-muted)]">
+        {event.duration ?? '—'}
+      </span>
+      <span className="sr-only">{style.label}</span>
+    </li>
+  )
+}
+
+/**
+ * Collapsed to a single summary line when everything succeeded — the user
+ * scans past it. Auto-opens while work is in flight or when a step failed,
+ * because those are the only times the detail is worth the vertical space.
+ */
+const ToolTrace = ({
+  toolCalls,
+  reasoningTitles,
+  isStreaming
+}: {
+  toolCalls: ToolCall[]
+  reasoningTitles: string[]
+  isStreaming: boolean
+}) => {
+  const events: TraceEvent[] = [
+    ...reasoningTitles.map((title, i) => ({
+      key: `reasoning-${i}`,
+      label: title,
+      state: 'done' as EventState,
+      duration: null
+    })),
+    ...toolCalls.map((tc, i) => {
+      const isLastCall = i === toolCalls.length - 1
+      const state: EventState = tc.tool_call_error
+        ? 'failed'
+        : isStreaming && isLastCall
+          ? 'running'
+          : 'done'
+      return {
+        key: tc.tool_call_id || `${tc.tool_name}-${i}`,
+        label: formatToolName(tc.tool_name),
+        state,
+        duration: state === 'running' ? null : formatSeconds(tc.metrics?.time)
+      }
+    })
+  ]
+
+  const failedCount = events.filter((e) => e.state === 'failed').length
+  const runningCount = events.filter((e) => e.state === 'running').length
+  const needsAttention = failedCount > 0 || runningCount > 0
+
+  // Follows the run: opens when something is in flight or broken, folds itself
+  // away once the run lands clean. A manual toggle is never clobbered, since
+  // this only fires when needsAttention actually flips.
+  const [open, setOpen] = useState(needsAttention)
+  useEffect(() => {
+    setOpen(needsAttention)
+  }, [needsAttention])
+
+  if (events.length === 0) return null
+
+  const totalMs = toolCalls.reduce((sum, tc) => sum + (tc.metrics?.time ?? 0), 0)
+  const summaryState: EventState = failedCount > 0 ? 'failed' : runningCount > 0 ? 'running' : 'done'
+  const summary =
+    failedCount > 0
+      ? `${failedCount} of ${events.length} steps failed`
+      : runningCount > 0
+        ? `${events.length} ${events.length === 1 ? 'step' : 'steps'} · running`
+        : `${events.length} ${events.length === 1 ? 'step' : 'steps'}${totalMs ? ` · ${formatSeconds(totalMs)}` : ''}`
+
+  return (
+    <div
+      className={`mb-2 overflow-hidden rounded-[var(--radius-xl)] border bg-[var(--bg-secondary)] ${
+        summaryState === 'failed' ? 'border-[var(--danger)]' : 'border-[var(--border)]'
+      }`}
+    >
+      <button
+        onClick={() => setOpen(!open)}
+        aria-expanded={open}
+        className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left transition-colors hover:bg-[var(--accent)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]"
+      >
+        <ChevronRight
+          aria-hidden
+          className={`h-3.5 w-3.5 shrink-0 text-[var(--text-muted)] transition-transform ${open ? 'rotate-90' : ''}`}
+        />
+        <span
+          aria-hidden
+          className={`h-1.5 w-1.5 shrink-0 rounded-[999px] ${STATE_STYLE[summaryState].dot}`}
+        />
+        <span className="text-[length:var(--text-xs)] uppercase tracking-[var(--tracking-tag)] text-[var(--text-muted)]">
+          {summary}
+        </span>
       </button>
       {open && (
-        <div className="bg-[#262622] text-[#e8e8d8] px-3 pb-2 border-t border-[#e8e8d8]/10">
-          {message.tool_calls!.map((tc, i) => (
-            <div key={i} className="flex items-center justify-between text-[11px] py-1 opacity-60">
-              <span><span className="text-[#00fc40] mr-1">✓</span> {tc.tool_name}</span>
-              <span className="opacity-40">{tc.metrics?.time ? `${(tc.metrics.time / 1000).toFixed(2)}s` : '—'}</span>
-            </div>
+        <ul className="border-t border-[var(--border)] px-3 py-1.5">
+          {events.map((event) => (
+            <ToolEventRow key={event.key} event={event} />
           ))}
-          <div className="flex items-center gap-4 text-[9px] uppercase tracking-wider opacity-40 pt-1 border-t border-[#e8e8d8]/10 mt-1">
-            <span>Steps: {message.tool_calls!.length}</span>
-            <span>Model: gpt-4o-mini</span>
-          </div>
-        </div>
+        </ul>
       )}
     </div>
   )
 }
 
+/** Blinking caret shown while tokens are still arriving. */
+const StreamingCaret = () => (
+  <span className="inline-flex items-center gap-2">
+    <span
+      aria-hidden
+      className="inline-block h-3.5 w-[2px] animate-pulse bg-[var(--brand)]"
+    />
+    <span className="text-[length:var(--text-xs)] text-[var(--text-muted)]">Responding…</span>
+  </span>
+)
+
 const AgentMessageWrapper = ({ message, isLastMessage }: MessageWrapperProps) => {
   const isStreaming = useStore((state) => state.isStreaming)
-  const hasTools = message.tool_calls && message.tool_calls.length > 0
-  const hasReasoning = message.extra_data?.reasoning_steps && message.extra_data.reasoning_steps.length > 0
-  const hasRefs = message.extra_data?.references && message.extra_data.references.length > 0
-  const hasContent = message.content && message.content.trim() !== ''
+  const toolCalls = message.tool_calls ?? []
+  const reasoningTitles = (message.extra_data?.reasoning_steps ?? []).map((s) => s.title)
+  const hasRefs = (message.extra_data?.references?.length ?? 0) > 0
+  const hasContent = Boolean(message.content && message.content.trim() !== '')
   const isStillStreaming = isLastMessage && isStreaming
 
   return (
-    <div className="flex items-start gap-3 font-brutalist">
-      {/* Agent icon */}
-      <div className="flex-shrink-0 mt-1">
-        <div className="w-6 h-6 bg-[#262622] flex items-center justify-center">
-          <span className="text-[#e8e8d8] text-[9px] font-black">LS</span>
-        </div>
+    <div className="flex items-start gap-3">
+      {/* Agent identity mark — square against the pill-shaped user turn. */}
+      <div
+        aria-hidden
+        className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-[var(--radius-sm)] bg-[var(--surface-inverse)]"
+      >
+        <span className="font-[family-name:var(--font-display)] text-[length:var(--text-2xs)] font-bold tracking-[var(--tracking-tag)] text-[var(--text-inverse)]">
+          LS
+        </span>
       </div>
 
-      <div className="flex-1 min-w-0 flex flex-col gap-0">
-        {/* CLI Terminal Block */}
-        <div className="bg-[#262622] text-[#e8e8d8] p-3 rounded-none">
-          <p className="text-xs font-bold opacity-50 mb-1">
-            <span className="text-[#00fc40]">$</span> scout exec <span className="opacity-30">--agent legal</span>
-          </p>
-          {hasReasoning && message.extra_data!.reasoning_steps!.map((step, i) => (
-            <p key={i} className="text-xs opacity-60 ml-2">
-              <span className="text-[#00fc40] mr-1">&gt;</span>
-              <span className="text-[#00fc40] mr-1">✓</span>
-              {step.title}
-            </p>
-          ))}
-          {hasTools && message.tool_calls!.map((toolCall, i) => (
-            <p key={toolCall.tool_call_id || `${toolCall.tool_name}-${i}`} className="text-xs opacity-60 ml-2">
-              <span className="text-[#00fc40] mr-1">&gt;</span>
-              <span className="text-[#00fc40] mr-1">✓</span>
-              {toolCall.tool_name}
-            </p>
-          ))}
-          {!hasTools && !hasReasoning && (
-            <p className="text-xs opacity-60 ml-2">
-              <span className="text-[#00fc40] mr-1">&gt;</span>
-              <span className="text-[#00fc40] mr-1">✓</span>
-              direct response
-            </p>
-          )}
-          <div className="flex items-center justify-between text-xs mt-1">
-            <p>
-              <span className="text-[#00fc40]">$</span>{' '}
-              <span className="text-[#00fc40] font-bold">done</span>
-              <span className="opacity-30"> · {hasTools || hasReasoning ? `${(hasTools ? message.tool_calls!.length : 0) + (hasReasoning ? message.extra_data!.reasoning_steps!.length : 0)} steps` : 'direct response'}</span>
-            </p>
-            <span className="opacity-30">0.00s</span>
-          </div>
-        </div>
+      <div className="flex min-w-0 flex-1 flex-col">
+        <ToolTrace
+          toolCalls={toolCalls}
+          reasoningTitles={reasoningTitles}
+          isStreaming={isStillStreaming}
+        />
 
-        {/* References */}
         {hasRefs && (
-          <div className="bg-[#383832] text-[#feffd6] p-3 border-l-[3px] border-[#00fc40] mt-0">
+          <div className="mb-3">
+            <p className="mb-1.5 text-[length:var(--text-2xs)] uppercase tracking-[var(--tracking-wide)] text-[var(--text-muted)]">
+              Sources
+            </p>
             <References references={message.extra_data!.references!} />
           </div>
         )}
 
-        {/* Answer Box — show loading animation until streaming finishes */}
-        <div style={{ backgroundColor: '#fffff0', color: '#383832', borderColor: '#383832', borderWidth: '2px', borderStyle: 'solid', borderRightWidth: '4px', borderBottomWidth: '4px', boxShadow: '4px 4px 0px 0px #383832' }} className="p-4 mt-0">
-          {hasContent && <AgentMessage message={message} />}
-          {isStillStreaming && (
-            <div className={`flex items-center gap-2 ${hasContent ? 'mt-3 pt-3 border-t border-[#383832]/10' : ''}`}>
-              <svg className="w-4 h-4 text-[#383832]/40" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-              </svg>
-              <span className="inline-flex gap-[3px]">
-                <span className="inline-block size-[6px] bg-[#007518] animate-[cliBlink_1.2s_infinite_0s]" />
-                <span className="inline-block size-[6px] bg-[#ff9d00] animate-[cliBlink_1.2s_infinite_0.2s]" />
-                <span className="inline-block size-[6px] bg-[#be2d06] animate-[cliBlink_1.2s_infinite_0.4s]" />
-              </span>
-              <span className="text-[10px] font-bold text-[#383832]/30 uppercase tracking-wider font-brutalist">streaming</span>
-            </div>
-          )}
-          {!isStillStreaming && hasContent && (
-            <div className="flex items-center justify-end gap-2 mt-3 pt-3 border-t border-[#383832]/10">
-              <CopyButton content={message.content || ''} />
-            </div>
-          )}
-        </div>
+        {hasContent && <AgentMessage message={message} />}
+
+        {isStillStreaming && (
+          <div className={hasContent ? 'mt-2' : ''}>
+            <StreamingCaret />
+          </div>
+        )}
 
         {/* Interactive people pickers (paused HITL run) */}
         <PickerCardList requests={message.picker_requests} />
 
-        {/* Trace toggle */}
-        <TraceToggle message={message} />
+        {!isStillStreaming && hasContent && (
+          <div className="-ml-2 mt-2 flex items-center">
+            <CopyButton content={message.content || ''} />
+          </div>
+        )}
 
-        {/* Auto-suggestions — only on last message */}
-        {hasContent && <SuggestionButtons content={message.content || ''} isLast={isLastMessage} userQuestion={(message as any)._userQuestion} />}
+        {hasContent && (
+          <SuggestionButtons
+            content={message.content || ''}
+            isLast={isLastMessage}
+            userQuestion={(message as ChatMessage & { _userQuestion?: string })._userQuestion}
+          />
+        )}
       </div>
     </div>
   )
 }
-const Reasoning: FC<ReasoningStepProps> = ({ index, stepTitle }) => (
-  <div className="flex items-center gap-2 text-secondary">
-    <div className="flex h-[20px] items-center rounded-md bg-background-secondary p-2">
-      <p className="text-sm">STEP {index + 1}</p>
-    </div>
-    <p className="text-sm">{stepTitle}</p>
-  </div>
-)
-const Reasonings: FC<ReasoningProps> = ({ reasoning }) => (
-  <div className="flex flex-col items-start justify-center gap-2">
-    {reasoning.map((title, index) => (
-      <Reasoning
-        key={`${title.title}-${title.action}-${index}`}
-        stepTitle={title.title}
-        index={index}
-      />
-    ))}
-  </div>
-)
 
-const ToolComponent = memo(({ tools }: ToolCallProps) => (
-  <div className="cursor-default bg-[#383832] text-[#feffd6] px-3 py-1.5 text-xs border-l-[3px] border-[#007518]">
-    <p className="font-brutalist font-bold uppercase tracking-wider">
-      <span className="text-[#00fc40] mr-1">$</span>
-      {tools.tool_name}
-    </p>
-  </div>
-))
-ToolComponent.displayName = 'ToolComponent'
 const Messages = ({ messages }: MessageListProps) => {
   if (messages.length === 0) {
     return <ChatBlankState />
@@ -339,42 +405,52 @@ const Messages = ({ messages }: MessageListProps) => {
         const isLastMessage = index === messages.length - 1
 
         const msgTime = message.created_at
-          ? new Date(message.created_at * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true }).toUpperCase()
+          ? new Date(message.created_at * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true })
           : null
 
         if (message.role === 'agent') {
           // Find the previous user message for suggestion context
           const prevUserMsg = index > 0 && messages[index - 1]?.role === 'user' ? messages[index - 1].content : ''
-          const msgWithContext = { ...message, _userQuestion: prevUserMsg } as any
+          const msgWithContext = { ...message, _userQuestion: prevUserMsg }
           return (
-            <div key={key} className="flex flex-col gap-1">
+            <div key={key} className="flex flex-col gap-1.5">
               <AgentMessageWrapper
                 message={msgWithContext}
                 isLastMessage={isLastMessage}
               />
-              <div className="ml-9 mt-1 flex items-center gap-3">
-                {timings[index] && <ResponseTime ms={timings[index]} />}
-                {msgTime && <span className="text-[10px] font-bold text-[#383832]/40 uppercase tracking-wider font-brutalist">{msgTime} · AGENT</span>}
+              <div className="ml-9 flex items-center gap-2 text-[length:var(--text-2xs)] text-[var(--text-muted)]">
+                {msgTime && <span>{msgTime}</span>}
+                {timings[index] && (
+                  <>
+                    <span aria-hidden>·</span>
+                    <ResponseTime ms={timings[index]} />
+                  </>
+                )}
               </div>
             </div>
           )
         }
         return (
-          <div key={key} className="flex flex-col gap-1">
+          <div key={key} className="flex flex-col gap-1.5">
             <UserMessage message={message} />
             {msgTime && (
-              <div className="text-right mr-9 mt-0.5">
-                <span className="text-[10px] font-bold text-[#383832]/40 uppercase tracking-wider font-brutalist">{msgTime} · READ</span>
+              <div className="text-right text-[length:var(--text-2xs)] text-[var(--text-muted)]">
+                {msgTime}
               </div>
             )}
             {isLastMessage && isWaitingForResponse && (
-              <div className="flex items-start gap-3 mt-3">
-                <div className="w-6 h-6 bg-[#262622] flex items-center justify-center shrink-0">
-                  <span className="text-[#e8e8d8] text-[9px] font-black">LS</span>
+              <div className="mt-3 flex items-start gap-3">
+                <div
+                  aria-hidden
+                  className="flex h-6 w-6 shrink-0 items-center justify-center rounded-[var(--radius-sm)] bg-[var(--surface-inverse)]"
+                >
+                  <span className="font-[family-name:var(--font-display)] text-[length:var(--text-2xs)] font-bold tracking-[var(--tracking-tag)] text-[var(--text-inverse)]">
+                    LS
+                  </span>
                 </div>
-                <div className="flex-1 bg-[#262622] text-[#e8e8d8] p-3">
+                <div className="flex flex-1 items-center gap-3 rounded-[var(--radius-xl)] border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2">
                   <AgentThinkingLoader />
-                  <div className="mt-1"><LiveTimer /></div>
+                  <LiveTimer />
                 </div>
               </div>
             )}

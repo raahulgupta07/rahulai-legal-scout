@@ -14,11 +14,14 @@ const SessionTag = () => {
     const interval = setInterval(update, 60000)
     return () => clearInterval(interval)
   }, [])
+  // A quiet dated rule rather than a centred badge — it separates the thread
+  // from the header without competing with the first message for attention.
   return (
-    <div className="flex justify-center pt-4 pb-2">
-      <span className="inline-block bg-[#262622] text-[#feffd6] text-[10px] font-black uppercase tracking-[0.08em] px-4 py-1.5 font-brutalist">
+    <div className="flex items-center gap-3 pb-2 pt-4">
+      <span className="text-[length:var(--text-2xs)] uppercase tracking-[var(--tracking-wide)] text-[var(--text-muted)]">
         Legal Scout · {time}
       </span>
+      <span aria-hidden className="h-px flex-1 bg-[var(--border)]" />
     </div>
   )
 }
@@ -33,7 +36,7 @@ const MessageArea = () => {
       initial="smooth"
     >
       <StickToBottom.Content className="flex min-h-full flex-col justify-center">
-        <div className="mx-auto w-full max-w-full md:max-w-3xl lg:max-w-5xl space-y-9 px-4 pb-4">
+        <div className="mx-auto w-full max-w-3xl space-y-6 px-4 pb-4">
           {messages.length > 0 && <SessionTag />}
           <Messages messages={messages} />
         </div>

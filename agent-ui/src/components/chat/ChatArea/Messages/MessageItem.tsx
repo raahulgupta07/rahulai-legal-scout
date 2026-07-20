@@ -1,4 +1,3 @@
-import Icon from '@/components/ui/icon'
 import MarkdownRenderer from '@/components/ui/typography/MarkdownRenderer'
 import { useStore } from '@/store'
 import type { ChatMessage } from '@/types/os'
@@ -6,10 +5,8 @@ import Videos from './Multimedia/Videos'
 import Images from './Multimedia/Images'
 import Audios from './Multimedia/Audios'
 import { memo, useState, useEffect } from 'react'
-import AgentThinkingLoader from './AgentThinkingLoader'
 import { DocumentCards } from '@/components/ui/DocumentViewer'
-import { Button } from '@/components/ui/button'
-import { Mail, Send, X, Paperclip, Loader2 } from 'lucide-react'
+import { Mail, Send, Paperclip, Loader2 } from 'lucide-react'
 import { authFetch } from '@/lib/api-client'
 
 interface MessageProps {
@@ -196,31 +193,37 @@ function MissingFieldsForm({ fields, onSubmit }: { fields: string[]; onSubmit: (
   }
 
   return (
-    <div className="mt-3 max-w-lg border border-gray-300 rounded-xl overflow-hidden bg-white">
-      <div className="px-4 py-3 border-b border-gray-200 bg-gray-50">
-        <p className="text-xs font-semibold text-gray-700">Fill Missing Information</p>
-        <p className="text-[11px] text-gray-500 mt-0.5">Complete the fields below and submit to generate</p>
+    <div className="mt-3 max-w-lg overflow-hidden border border-[var(--border)] bg-[var(--surface)] rounded-[var(--radius-xl)]">
+      <div className="border-b border-[var(--border)] bg-[var(--bg-secondary)] px-4 py-3">
+        <p className="font-[family-name:var(--font-display)] text-[length:var(--text-sm)] font-semibold text-[var(--text)]">
+          Fill missing information
+        </p>
+        <p className="mt-0.5 text-[length:var(--text-xs)] text-[var(--text-muted)]">
+          Complete the fields below and submit to generate
+        </p>
       </div>
-      <div className="p-4 space-y-2.5">
+      <div className="space-y-3 p-4">
         {fields.map((field) => (
           <div key={field}>
-            <label className="block text-[11px] font-medium text-gray-600 mb-0.5">{formatLabel(field)}</label>
+            <label className="mb-1 block text-[length:var(--text-xs)] font-medium text-[var(--text-secondary)]">
+              {formatLabel(field)}
+            </label>
             <input
               type={/date|birth/.test(field) ? 'date' : /email/.test(field) ? 'email' : /phone/.test(field) ? 'tel' : 'text'}
               placeholder={`Enter ${formatLabel(field).toLowerCase()}`}
               value={values[field] || ''}
               onChange={(e) => setValues(prev => ({ ...prev, [field]: e.target.value }))}
-              className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg text-gray-900 placeholder:text-gray-400 focus:outline-none focus:border-brand/50 focus:ring-1 focus:ring-brand/20"
+              className="w-full rounded-[var(--radius-xl)] border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-[length:var(--text-sm)] text-[var(--text)] placeholder:text-[var(--text-muted)] focus:border-[var(--brand)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]"
             />
           </div>
         ))}
       </div>
-      <div className="px-4 py-3 border-t border-gray-200 bg-gray-50 flex justify-end gap-2">
+      <div className="flex justify-end gap-2 border-t border-[var(--border)] bg-[var(--bg-secondary)] px-4 py-3">
         <button
           onClick={handleSubmit}
-          className="flex items-center gap-1.5 px-4 py-2 text-xs font-medium bg-brand text-white rounded-lg hover:bg-brand/90 transition-colors"
+          className="flex items-center gap-1.5 rounded-[var(--radius-xl)] bg-[var(--brand)] px-4 py-2 text-[length:var(--text-sm)] font-medium text-[var(--brand-fg)] transition-opacity hover:opacity-90 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg-secondary)]"
         >
-          Submit & Generate
+          Submit &amp; generate
         </button>
       </div>
     </div>
@@ -263,8 +266,8 @@ function InlineEmailComposer({ defaultTo, defaultAttachment, onSent }: { default
 
   if (sent) {
     return (
-      <div className="mt-3 max-w-lg p-4 rounded-xl border border-green-300 bg-green-50 text-sm text-green-800 flex items-center gap-2">
-        <Mail className="w-4 h-4" /> Email sent to {to}
+      <div className="mt-3 flex max-w-lg items-center gap-2 rounded-[var(--radius-xl)] border border-[var(--ok)] bg-[var(--surface)] p-4 text-[length:var(--text-sm)] text-[var(--text)]">
+        <Mail className="h-4 w-4 shrink-0 text-[var(--ok-strong)]" /> Email sent to {to}
       </div>
     )
   }
@@ -289,41 +292,43 @@ function InlineEmailComposer({ defaultTo, defaultAttachment, onSent }: { default
   }
 
   return (
-    <div className="mt-3 max-w-lg border-[2px] border-[#383832] overflow-hidden bg-[#feffd6] stamp-shadow">
-      <div className="flex items-center justify-between px-4 py-2 bg-[#383832]">
-        <div className="flex items-center gap-2 text-white">
-          <Mail className="w-4 h-4" />
-          <span className="text-xs font-semibold">Email</span>
+    <div className="mt-3 max-w-lg overflow-hidden border border-[var(--border)] bg-[var(--surface)] rounded-[var(--radius-xl)]">
+      <div className="flex items-center justify-between border-b border-[var(--border)] bg-[var(--bg-secondary)] px-4 py-2.5">
+        <div className="flex items-center gap-2 text-[var(--text)]">
+          <Mail className="h-4 w-4 text-[var(--text-muted)]" />
+          <span className="font-[family-name:var(--font-display)] text-[length:var(--text-sm)] font-semibold">Email</span>
         </div>
         <button onClick={handleSend} disabled={sending || !to}
-          className="flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium bg-white/20 text-white rounded-md hover:bg-white/30 disabled:opacity-50">
-          {sending ? <Loader2 className="w-3 h-3 animate-spin" /> : <Send className="w-3 h-3" />}
-          {sending ? "Sending..." : "Send"}
+          className="flex items-center gap-1.5 rounded-[var(--radius-xl)] bg-[var(--brand)] px-3 py-1.5 text-[length:var(--text-xs)] font-medium text-[var(--brand-fg)] transition-opacity hover:opacity-90 disabled:opacity-40 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg-secondary)]">
+          {sending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Send className="h-3 w-3" />}
+          {sending ? "Sending…" : "Send"}
         </button>
       </div>
-      <div className="divide-y divide-gray-100">
-        <div className="flex items-center px-4 py-1.5">
-          <span className="text-[11px] text-gray-500 w-14">To:</span>
+      <div className="divide-y divide-[var(--border)]">
+        <div className="flex items-center gap-2 px-4 py-2">
+          <span className="w-16 shrink-0 text-[length:var(--text-xs)] text-[var(--text-muted)]">To</span>
           <input value={to} onChange={e => setTo(e.target.value)} placeholder="email@example.com" type="email"
-            className="flex-1 text-sm text-gray-900 outline-none placeholder:text-gray-400" />
+            className="flex-1 bg-transparent text-[length:var(--text-sm)] text-[var(--text)] outline-none placeholder:text-[var(--text-muted)]" />
         </div>
-        <div className="flex items-center px-4 py-1.5">
-          <span className="text-[11px] text-gray-500 w-14">Subject:</span>
+        <div className="flex items-center gap-2 px-4 py-2">
+          <span className="w-16 shrink-0 text-[length:var(--text-xs)] text-[var(--text-muted)]">Subject</span>
           <input value={subject} onChange={e => setSubject(e.target.value)}
-            className="flex-1 text-sm text-gray-900 outline-none" />
+            className="flex-1 bg-transparent text-[length:var(--text-sm)] text-[var(--text)] outline-none" />
         </div>
-        <div className="flex items-center px-4 py-1.5">
-          <span className="text-[11px] text-gray-500 w-14 flex items-center gap-0.5"><Paperclip className="w-3 h-3" /></span>
+        <div className="flex items-center gap-2 px-4 py-2">
+          <span className="flex w-16 shrink-0 items-center gap-1 text-[length:var(--text-xs)] text-[var(--text-muted)]">
+            <Paperclip className="h-3 w-3" /> File
+          </span>
           <select value={attachment} onChange={e => setAttachment(e.target.value)}
-            className="flex-1 text-sm text-gray-900 outline-none bg-transparent">
+            className="flex-1 bg-transparent text-[length:var(--text-sm)] text-[var(--text)] outline-none">
             <option value="">No attachment</option>
             {docs.map(d => <option key={d} value={d}>{d}</option>)}
           </select>
         </div>
         <div className="px-4 py-2">
           <textarea value={message} onChange={e => setMessage(e.target.value)}
-            placeholder="Write your message..." rows={3}
-            className="w-full text-sm text-gray-900 outline-none resize-none placeholder:text-gray-400" />
+            placeholder="Write your message…" rows={3}
+            className="w-full resize-none bg-transparent text-[length:var(--text-sm)] text-[var(--text)] outline-none placeholder:text-[var(--text-muted)]" />
         </div>
       </div>
     </div>
@@ -334,14 +339,12 @@ function OptionButtons({ options, onSelect }: { options: Option[], onSelect: (ke
   if (options.length === 0) return null
 
   return (
-    <div className="mt-4 flex flex-wrap gap-2 max-w-2xl font-brutalist">
+    <div className="mt-3 flex max-w-2xl flex-wrap gap-2">
       {options.map((option) => (
         <button
           key={option.key}
           onClick={() => onSelect(option.label)}
-          className="inline-flex items-center gap-1.5 border-[2px] border-[#383832] border-r-[3px] border-b-[3px] bg-[#fffff0] px-4 py-2 text-[11px] font-bold uppercase tracking-[0.05em] text-[#383832]
-                     hover:-translate-x-[1px] hover:-translate-y-[1px] hover:shadow-[3px_3px_0px_0px_#383832]
-                     active:translate-x-0 active:translate-y-0 active:shadow-none transition-all cursor-pointer"
+          className="inline-flex cursor-pointer items-center gap-1.5 rounded-[999px] border border-[var(--border)] bg-[var(--surface)] px-3.5 py-1.5 text-[length:var(--text-sm)] text-[var(--text-secondary)] transition-colors hover:border-[var(--border-strong)] hover:bg-[var(--bg-secondary)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]"
         >
           {option.label}
         </button>
@@ -381,8 +384,8 @@ const AgentMessage = ({ message }: MessageProps) => {
   let messageContent
   if (message.streamingError) {
     messageContent = (
-      <p className="text-destructive">
-        Oops! Something went wrong while streaming.{' '}
+      <p className="text-[length:var(--text-sm)] text-[var(--danger-strong)]">
+        Something went wrong while streaming.{' '}
         {streamingErrorMessage ? (
           <>{streamingErrorMessage}</>
         ) : (
@@ -393,7 +396,11 @@ const AgentMessage = ({ message }: MessageProps) => {
   } else if (displayContent) {
     messageContent = (
       <div className="flex w-full flex-col gap-4">
-        <MarkdownRenderer>{displayContent}</MarkdownRenderer>
+        {/* ~65ch keeps prose at a comfortable reading measure; cards and
+            attachments below are free to use the full column width. */}
+        <div className="max-w-[65ch]">
+          <MarkdownRenderer>{displayContent}</MarkdownRenderer>
+        </div>
         {showEmailForm ? (
           <InlineEmailComposer defaultTo={emailTo} defaultAttachment={emailAttachment} onSent={() => {}} />
         ) : missingFields.length > 0 ? (
@@ -422,9 +429,11 @@ const AgentMessage = ({ message }: MessageProps) => {
     } else {
       messageContent = (
         <div className="flex w-full flex-col gap-4">
-          <MarkdownRenderer>
-            {message.response_audio.transcript}
-          </MarkdownRenderer>
+          <div className="max-w-[65ch]">
+            <MarkdownRenderer>
+              {message.response_audio.transcript}
+            </MarkdownRenderer>
+          </div>
           {message.response_audio.content && message.response_audio && (
             <Audios audio={[message.response_audio]} />
           )}
@@ -438,7 +447,7 @@ const AgentMessage = ({ message }: MessageProps) => {
   }
 
   return (
-    <div className="font-brutalist text-[#383832]">
+    <div className="font-[family-name:var(--font-body)] text-[length:var(--text-base)] leading-relaxed text-[var(--text)]">
       {messageContent}
     </div>
   )
@@ -446,16 +455,13 @@ const AgentMessage = ({ message }: MessageProps) => {
 
 const UserMessage = memo(({ message }: MessageProps) => {
   return (
-    <div className="flex items-start justify-end gap-3 pt-4 font-brutalist max-md:break-words">
-      <div className="bg-[#262622] text-[#feffd6] px-5 py-3 max-w-[80%] border-[2px] border-[#383832] border-r-[4px] border-b-[4px]">
-        <p className="text-sm leading-relaxed">{message.content}</p>
-      </div>
-      <div className="flex-shrink-0 mt-1">
-        <div className="w-6 h-6 bg-[#262622] border border-[#e8e8d8]/20 flex items-center justify-center">
-          <svg className="w-3.5 h-3.5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
-          </svg>
-        </div>
+    <div className="flex justify-end max-md:break-words">
+      {/* The user turn is the one inverted surface in the thread — it reads as
+          an utterance, while agent output reads as a document. */}
+      <div className="max-w-[80%] rounded-[var(--radius-xl)] bg-[var(--surface-inverse)] px-4 py-2.5 text-[var(--text-inverse)]">
+        <p className="whitespace-pre-wrap font-[family-name:var(--font-body)] text-[length:var(--text-sm)] leading-relaxed">
+          {message.content}
+        </p>
       </div>
     </div>
   )
