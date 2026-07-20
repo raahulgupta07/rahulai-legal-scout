@@ -1,15 +1,25 @@
+/*
+  rounded-[999px] rather than rounded-full: globals.css carries a
+  `body .rounded-full { border-radius: var(--radius-none) !important }` sweep
+  that squares off standard Tailwind rounding. These dots were rendering as
+  hard squares because of it.
+
+  cliBlink is declared in globals.css; motion-reduce:animate-none holds the
+  dots at a steady state for users who ask for reduced motion, and the text
+  label carries the meaning either way.
+*/
 const AgentThinkingLoader = () => (
-  <div className="flex flex-col gap-1 font-brutalist">
-    <div className="flex items-center gap-1.5">
-      <span className="text-[#00fc40] text-xs font-bold">&gt;</span>
-      <span className="text-[#e8e8d8]/50 text-xs font-bold">connecting</span>
-      <span className="inline-flex gap-[3px]">
-        <span className="inline-block size-[5px] bg-[#00fc40] animate-[cliBlink_1.2s_infinite_0s]" />
-        <span className="inline-block size-[5px] bg-[#ff9d00] animate-[cliBlink_1.2s_infinite_0.2s]" />
-        <span className="inline-block size-[5px] bg-[#be2d06] animate-[cliBlink_1.2s_infinite_0.4s]" />
-      </span>
-    </div>
-    <span className="inline-block w-[8px] h-[14px] bg-[#00fc40] animate-[cursorBlink_1s_step-end_infinite]" />
+  <div
+    role="status"
+    aria-label="Legal Scout is working"
+    className="flex items-center gap-2 font-[family-name:var(--font-body)]"
+  >
+    <span className="inline-flex gap-1" aria-hidden="true">
+      <span className="inline-block size-1.5 rounded-[999px] bg-[var(--text-muted)] animate-[cliBlink_1.2s_infinite_0s] motion-reduce:animate-none" />
+      <span className="inline-block size-1.5 rounded-[999px] bg-[var(--text-muted)] animate-[cliBlink_1.2s_infinite_0.2s] motion-reduce:animate-none" />
+      <span className="inline-block size-1.5 rounded-[999px] bg-[var(--text-muted)] animate-[cliBlink_1.2s_infinite_0.4s] motion-reduce:animate-none" />
+    </span>
+    <span className="text-[length:var(--text-xs)] text-[var(--text-muted)]">Working…</span>
   </div>
 )
 

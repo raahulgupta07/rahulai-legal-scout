@@ -2,12 +2,13 @@
 import { useState, useEffect } from 'react'
 import { toast } from 'sonner'
 import { TextArea } from '@/components/ui/textarea'
-import { Button } from '@/components/ui/button'
 import { useStore } from '@/store'
 import useAIChatStreamHandler from '@/hooks/useAIStreamHandler'
 import { useQueryState } from 'nuqs'
-import Icon from '@/components/ui/icon'
-import { Mail } from 'lucide-react'
+import { Mail, ArrowUp, Square } from 'lucide-react'
+
+const MAX_CHARS = 5000
+const COUNTER_VISIBLE_FROM = 4500
 
 const ChatInput = () => {
   const { chatInputRef, pendingMessage, setPendingMessage } = useStore()
@@ -16,6 +17,10 @@ const ChatInput = () => {
   const [teamId] = useQueryState('team')
   const [inputMessage, setInputMessage] = useState('')
   const isStreaming = useStore((state) => state.isStreaming)
+
+  // No agent picked yet means the backend has nowhere to send the turn.
+  const hasTarget = Boolean(selectedAgent || teamId)
+  const canSend = hasTarget && !isStreaming && inputMessage.trim().length > 0
 
   const submitMessage = async (message: string) => {
     if (!message.trim()) return
@@ -36,62 +41,130 @@ const ChatInput = () => {
   }, [pendingMessage, setPendingMessage])
 
   const handleSubmit = async () => {
-    if (!inputMessage.trim()) return
-    const currentMessage = inputMessage
-    await submitMessage(currentMessage)
+    if (!canSend) return
+    await submitMessage(inputMessage)
   }
 
   const handleCancel = () => {
     cancelStream()
   }
 
-  return (
-    <div className="brutalist relative mx-auto flex w-full max-w-full items-center gap-3 px-4 pb-4 md:max-w-3xl lg:max-w-5xl">
-      {/* Email Button */}
-      <Button
-        onClick={() => {
-          setPendingMessage("I want to send an email with a document attachment")
-        }}
-        size="icon"
-        className="p-5 shrink-0 bg-[#383832] text-[#feffd6] hover:bg-[#2a2a25] ink-border stamp-press cursor-pointer"
-        title="Send Email"
-        disabled={!(selectedAgent || teamId) || isStreaming}
-      >
-        <Mail className="w-4 h-4" />
-      </Button>
+  const remaining = MAX_CHARS - inputMessage.length
+  const showCounter = inputMessage.length >= COUNTER_VISIBLE_FROM
 
-      <TextArea
-        placeholder="ENTER COMMAND..."
-        value={inputMessage}
-        maxLength={5000}
-        onChange={(e) => setInputMessage(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' && !e.nativeEvent.isComposing && !e.shiftKey && !isStreaming) {
-            e.preventDefault()
-            handleSubmit()
+  return (
+    <div className="mx-auto w-full max-w-full px-4 pb-4 md:max-w-3xl lg:max-w-5xl">
+      {/*
+        The whole composer reads as one control: the container owns the frame and
+        the focus ring (focus-within), the textarea inside is chrome-less. Actions
+        sit on an inner toolbar so the writing area keeps its full width.
+
+        rounded-[var(--radius-xl)] rather than rounded-xl: globals.css carries a
+        `body .rounded-xl { border-radius: var(--radius-none) !important }` sweep
+        that squares off the standard Tailwind rounding classes. The arbitrary
+        value generates a different class name and slips past it.
+      */}
+      <div
+        className="rounded-[var(--radius-xl)] border border-[var(--border)] bg-[var(--surface)]
+                   shadow-sm transition-colors duration-150 motion-reduce:transition-none
+                   focus-within:border-[var(--brand)]
+                   focus-within:ring-2 focus-within:ring-[var(--brand)]/25"
+      >
+        <TextArea
+          placeholder={
+            hasTarget
+              ? 'Describe the document you need — e.g. "AGM minutes for City Holdings"'
+              : 'Select an agent to start'
           }
-        }}
-        className="w-full bg-[#feffd6] px-4 text-sm text-[#383832] font-brutalist
-                   border-[2px] border-[#383832] border-r-[3px] border-b-[3px]
-                   focus:border-[#00fc40] focus:ring-1 focus:ring-[#00fc40] placeholder:text-[#383832]/30
-                   placeholder:uppercase placeholder:tracking-widest placeholder:text-xs placeholder:font-bold"
-        disabled={!(selectedAgent || teamId)}
-        ref={chatInputRef}
-      />
-      {isStreaming ? (
-        <Button onClick={handleCancel} size="icon" className="bg-[#be2d06] p-5 text-white hover:bg-[#a02505] ink-border stamp-press cursor-pointer">
-          <Icon type="x" color="white" />
-        </Button>
-      ) : (
-        <Button
-          onClick={handleSubmit}
-          disabled={!(selectedAgent || teamId) || !inputMessage.trim() || isStreaming}
-          size="icon"
-          className="bg-[#00fc40] p-5 text-[#383832] hover:bg-[#00e639] border-[2px] border-[#383832] cursor-pointer hover:-translate-x-[1px] hover:-translate-y-[1px] hover:shadow-[3px_3px_0px_0px_#383832] active:translate-x-0 active:translate-y-0 active:shadow-none transition-all"
-        >
-          <Icon type="send" color="secondary" />
-        </Button>
-      )}
+          aria-label="Message Legal Scout"
+          value={inputMessage}
+          maxLength={MAX_CHARS}
+          onChange={(e) => setInputMessage(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.nativeEvent.isComposing && !e.shiftKey && !isStreaming) {
+              e.preventDefault()
+              handleSubmit()
+            }
+            if (e.key === 'Escape' && isStreaming) {
+              e.preventDefault()
+              handleCancel()
+            }
+          }}
+          className="rounded-[var(--radius-xl)] border-0 bg-transparent px-4 pt-3 shadow-none
+                     font-[family-name:var(--font-body)] text-[length:var(--text-sm)] text-[var(--text)]
+                     placeholder:text-[var(--text-muted)]
+                     focus-visible:border-0 focus-visible:ring-0"
+          disabled={!hasTarget}
+          ref={chatInputRef}
+        />
+
+        <div className="flex items-center gap-2 px-3 pb-2.5 pt-1">
+          <button
+            type="button"
+            onClick={() => setPendingMessage('I want to send an email with a document attachment')}
+            disabled={!hasTarget || isStreaming}
+            title="Email a document"
+            className="inline-flex items-center gap-1.5 rounded-[var(--radius-xl)] px-2.5 py-1.5
+                       font-[family-name:var(--font-body)] text-[length:var(--text-xs)] text-[var(--text-muted)]
+                       transition-colors duration-150 motion-reduce:transition-none
+                       hover:bg-[var(--accent)] hover:text-[var(--text)]
+                       focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]
+                       disabled:pointer-events-none disabled:opacity-40"
+          >
+            <Mail className="h-3.5 w-3.5" aria-hidden="true" />
+            Email
+          </button>
+
+          <div className="ml-auto flex items-center gap-3">
+            {showCounter && (
+              <span
+                className={`font-[family-name:var(--font-mono)] text-[length:var(--text-2xs)] tabular-nums ${
+                  remaining <= 100 ? 'text-[var(--danger)]' : 'text-[var(--text-muted)]'
+                }`}
+              >
+                {remaining}
+              </span>
+            )}
+
+            <span className="hidden font-[family-name:var(--font-body)] text-[length:var(--text-2xs)] text-[var(--text-muted)] sm:inline">
+              {isStreaming ? 'Esc to stop' : 'Enter to send · Shift+Enter for a new line'}
+            </span>
+
+            {isStreaming ? (
+              <button
+                type="button"
+                onClick={handleCancel}
+                aria-label="Stop generating"
+                title="Stop generating"
+                className="inline-flex h-8 w-8 items-center justify-center rounded-[var(--radius-xl)]
+                           border border-[var(--border)] bg-[var(--surface)] text-[var(--danger)]
+                           transition-colors duration-150 motion-reduce:transition-none
+                           hover:bg-[var(--accent)]
+                           focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]"
+              >
+                <Square className="h-3 w-3 fill-current" aria-hidden="true" />
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={handleSubmit}
+                disabled={!canSend}
+                aria-label="Send message"
+                title="Send message"
+                className="inline-flex h-8 w-8 items-center justify-center rounded-[var(--radius-xl)]
+                           bg-[var(--brand)] text-[var(--brand-fg)]
+                           transition-opacity duration-150 motion-reduce:transition-none
+                           hover:opacity-90
+                           focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]
+                           focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--surface)]
+                           disabled:cursor-not-allowed disabled:bg-[var(--accent)] disabled:text-[var(--text-muted)]"
+              >
+                <ArrowUp className="h-4 w-4" aria-hidden="true" />
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
     </div>
   )
 }
