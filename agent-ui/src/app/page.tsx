@@ -1,50 +1,78 @@
 'use client'
 import Sidebar from '@/components/chat/Sidebar/Sidebar'
 import { ChatArea } from '@/components/chat/ChatArea'
+import SplitShell from '@/components/shell/SplitShell'
+import ArtifactPanel from '@/components/shell/ArtifactPanel'
+import { useArtifact } from '@/components/shell/useArtifact'
 import { Suspense, useState } from 'react'
-import { Menu, X } from 'lucide-react'
+import { Menu } from 'lucide-react'
 
-export default function Home() {
+function Workspace() {
   const hasEnvToken = !!process.env.NEXT_PUBLIC_OS_SECURITY_KEY
   const envToken = process.env.NEXT_PUBLIC_OS_SECURITY_KEY || ''
   const [mobileOpen, setMobileOpen] = useState(false)
+  const artifact = useArtifact()
+
+  const mobileHeader = (
+    <div className="flex shrink-0 items-center gap-3 border-b-[3px] border-ink bg-background px-3 py-2 md:hidden">
+      <button
+        onClick={() => setMobileOpen(true)}
+        aria-label="Open sessions"
+        className="p-1.5 text-ink hover:bg-ink/10"
+      >
+        <Menu className="h-5 w-5" />
+      </button>
+      <div className="flex items-center gap-2">
+        <div className="flex h-6 w-6 items-center justify-center bg-ink">
+          <span className="font-display text-[9px] font-black text-[var(--text-inverse)]">
+            LS
+          </span>
+        </div>
+        <span className="font-display text-sm font-black uppercase tracking-brutal text-ink">
+          Legal Scout
+        </span>
+      </div>
+    </div>
+  )
 
   return (
-    <Suspense fallback={<div>Loading...</div>}>
-      <div className="flex h-screen bg-[#feffd6]">
-        {/* Desktop Sidebar — always visible */}
-        <div className="hidden md:block">
-          <Sidebar hasEnvToken={hasEnvToken} envToken={envToken} />
-        </div>
-
-        {/* Mobile Sidebar — overlay */}
-        {mobileOpen && (
-          <div className="fixed inset-0 z-50 md:hidden">
-            <div className="absolute inset-0 bg-black/30" onClick={() => setMobileOpen(false)} />
-            <div className="relative w-64 h-full bg-white">
-              <Sidebar hasEnvToken={hasEnvToken} envToken={envToken} />
-            </div>
-          </div>
-        )}
-
-        {/* Chat Area */}
-        <div className="flex-1 flex flex-col min-w-0">
-          {/* Mobile Header with menu toggle */}
-          <div className="md:hidden flex items-center gap-3 px-3 py-2 border-b-[3px] border-[#383832] bg-[#feffd6] shrink-0">
-            <button onClick={() => setMobileOpen(true)} className="p-1.5 hover:bg-[#383832]/10 text-[#383832]">
-              <Menu className="w-5 h-5" />
-            </button>
-            <div className="flex items-center gap-2">
-              <div className="w-6 h-6 bg-[#383832] flex items-center justify-center">
-                <span className="text-[#feffd6] font-black text-[9px]">LS</span>
-              </div>
-              <span className="text-sm font-black text-[#383832] uppercase tracking-wider font-brutalist">Legal Scout</span>
-            </div>
-          </div>
-
-          <ChatArea />
-        </div>
+    <div className="flex h-screen bg-background">
+      {/* Desktop sessions rail — always visible */}
+      <div className="hidden md:block">
+        <Sidebar hasEnvToken={hasEnvToken} envToken={envToken} />
       </div>
+
+      {/* Mobile sessions rail — overlay */}
+      {mobileOpen && (
+        <div className="fixed inset-0 z-50 md:hidden">
+          <div
+            className="absolute inset-0 bg-black/30"
+            onClick={() => setMobileOpen(false)}
+          />
+          <div className="relative h-full w-64 bg-surface">
+            <Sidebar hasEnvToken={hasEnvToken} envToken={envToken} />
+          </div>
+        </div>
+      )}
+
+      <div className="min-w-0 flex-1">
+        <SplitShell
+          mobileHeader={mobileHeader}
+          artifactBadge={
+            artifact ? `${artifact.filled}/${artifact.total}` : null
+          }
+          chat={<ChatArea />}
+          artifact={<ArtifactPanel artifact={artifact} />}
+        />
+      </div>
+    </div>
+  )
+}
+
+export default function Home() {
+  return (
+    <Suspense fallback={<div className="h-screen bg-background" />}>
+      <Workspace />
     </Suspense>
   )
 }
