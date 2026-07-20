@@ -18,7 +18,7 @@ const Icon: FC<IconProps> = ({
     <IconElement
       className={cn(
         color && !disabled ? `text-${color}` : 'text-primary',
-        disabled && 'cursor-default text-muted/50',
+        disabled && 'cursor-default text-[color-mix(in_srgb,var(--text-muted)_50%,transparent)]',
         className,
         size === 'xxs' && 'size-3',
         size === 'xs' && 'size-4',

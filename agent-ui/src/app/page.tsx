@@ -18,7 +18,7 @@ function Workspace() {
       <button
         onClick={() => setMobileOpen(true)}
         aria-label="Open sessions"
-        className="p-1.5 text-ink hover:bg-ink/10"
+        className="p-1.5 text-ink hover:bg-[color-mix(in_srgb,var(--ink)_10%,transparent)]"
       >
         <Menu className="h-5 w-5" />
       </button>
