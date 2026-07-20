@@ -9,46 +9,58 @@
    never hardcode a hex; tailwind.config.ts maps its theme
    keys onto these same variables.
 
-   Phase 1 note: the VALUES below are the existing brutalist
-   values, so the app renders identically. The point here is
-   indirection, not a new look.
+   The ground is deliberately quiet: near-neutral warm greys so
+   the DATA and DOCUMENTS carry the page. Neutrals keep a slight
+   warm bias (blue channel lowest) rather than being pure grey.
    ============================================ */
 
 @layer base {
   :root {
     /* --- grounds --------------------------------------- */
-    /* Warm parchment; a yellow-biased neutral, not pure grey. */
-    --bg: #feffd6;
-    --bg-secondary: #f0f1c8;
+    color-scheme: light;
+    /* Warm off-white. Barely tinted, but not clinical #fff. */
+    --bg: #fbfbfa;
+    --bg-secondary: #f2f2f0;
     --surface: #ffffff;
-    --surface-raised: #fffff0;
-    --surface-inverse: #262622;
+    /* Light theme tops out at white, so --surface-raised matches
+       --surface; every consumer pairs it with an --ink border or a
+       shadow, which is what actually carries elevation here. The
+       two diverge in dark, where there is headroom above. */
+    --surface-raised: #ffffff;
+    --surface-inverse: #262624;
 
     /* --- ink ------------------------------------------- */
-    /* #383832 is a warm olive-charcoal — the letterpress ink. */
-    --ink: #383832;
-    --border: rgba(0, 0, 0, 0.25);
-    --border-strong: var(--ink);
+    /* Warm near-black. Used as heavy border, ring, fill AND text,
+       so it sits a step softer than --text to stop 2px letterpress
+       edges from shouting on the quiet ground. */
+    --ink: #2a2a27;
+    --border: #e4e4e1;
+    /* Was var(--ink). Ink is now near-black, which reads as a
+       deliberate stamp edge rather than a structural divider, so
+       --border-strong gets its own mid-grey. */
+    --border-strong: #c9c9c4;
 
     /* --- text ------------------------------------------ */
-    --text: #111113;
-    --text-secondary: #18181b;
-    --text-muted: #52525b;
-    --text-inverse: var(--bg);
+    --text: #1f1f1d;
+    --text-secondary: #3d3d39;
+    --text-muted: #6b6b66;
+    --text-inverse: #fbfbfa;
 
     /* --- accent / brand -------------------------------- */
-    --accent: #ececed;
-    --accent-fg: #383832;
-    --brand: #ff4017;
+    --accent: #ededea;
+    --accent-fg: #1f1f1d;
+    --brand: #c2410c;
     --brand-fg: #ffffff;
 
     /* --- semantic -------------------------------------- */
-    --ok: #22c55e;
-    --ok-strong: #007518;
-    --ok-neon: #00fc40;
-    --warn: #ff9d00;
-    --danger: #e53935;
-    --danger-strong: #be2d06;
+    /* Retuned for a white-ish ground: the old values were picked
+       against parchment and read as candy here. */
+    --ok: #15803d;
+    --ok-strong: #166534;
+    --ok-neon: #22c55e;
+    --warn: #a16207;
+    --danger: #d92d20;
+    --danger-strong: #b42318;
 
     /* --- typefaces ------------------------------------- */
     /* Both self-hosted at build time by next/font (layout.tsx).
@@ -87,109 +99,120 @@
     --radius-xl: 10px;
     --radius-full: 9999px;
 
-    /* legacy alias — consumed by tailwind `border` colour */
-    --color-border-default: 0, 0, 0, 0.25;
+    /* legacy alias — tailwind wraps this in rgba(), so it is the
+       R, G, B, A of --border and must be kept in step with it */
+    --color-border-default: 228, 228, 225, 1;
     --scrollbar-width: 0.1rem;
   }
 
-  /* Dark ground. Not reachable today (no toggle is wired and
-     `dark:` appears in 5 files), so this shifts nothing yet —
-     it exists so phases 2-4 have somewhere to land. */
+  /* Dark ground. Built from its own ramp rather than inverted:
+     the greys are layered by lightness (bg → surface → raised) so
+     elevation reads without borders, --ink flips role to become
+     the LIGHT stamp colour, and --brand is lifted because #c2410c
+     is only ~1.9:1 against a dark ground and would be unreadable
+     at its light-theme value. */
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg: #14150e;
-      --bg-secondary: #1c1d14;
-      --surface: #1c1d14;
-      --surface-raised: #24251a;
-      --surface-inverse: #f0f1c8;
+      color-scheme: dark;
+      --bg: #1a1a18;
+      --bg-secondary: #212120;
+      --surface: #232322;
+      --surface-raised: #2c2c2a;
+      --surface-inverse: #fbfbfa;
 
-      --ink: #e8e9cf;
-      --border: rgba(255, 255, 255, 0.22);
-      --border-strong: var(--ink);
+      --ink: #e8e8e4;
+      --border: #343431;
+      --border-strong: #4a4a46;
 
-      --text: #f2f3dd;
-      --text-secondary: #e2e3c9;
-      --text-muted: #a3a48c;
-      --text-inverse: #14150e;
+      --text: #f2f2ef;
+      --text-secondary: #d6d6d1;
+      --text-muted: #9a9a93;
+      --text-inverse: #1a1a18;
 
-      --accent: #262718;
-      --accent-fg: #f2f3dd;
-      --brand: #ff6a47;
-      --brand-fg: #14150e;
+      --accent: #2c2c2a;
+      --accent-fg: #f2f2ef;
+      --brand: #e8703a;
+      --brand-fg: #1a1a18;
 
-      --ok: #34d399;
-      --ok-strong: #16a34a;
-      --ok-neon: #00fc40;
-      --warn: #ffb340;
-      --danger: #ff6b5e;
-      --danger-strong: #ff8a7a;
+      --ok: #4ade80;
+      --ok-strong: #22c55e;
+      /* --ok-neon is only ever paired with --ink (as text on an ink
+         header, and as a fill carrying an ink-coloured label), so it
+         has to flip with it. A light green here would sit at 1.3:1
+         against the now-light ink and vanish. */
+      --ok-neon: #166534;
+      --warn: #e0a82e;
+      --danger: #f87171;
+      --danger-strong: #f98b80;
 
-      --color-border-default: 255, 255, 255, 0.22;
+      --color-border-default: 52, 52, 49, 1;
     }
   }
 
   /* An explicit toggle must beat the media query in BOTH
      directions, so each theme is restated under data-theme. */
   :root[data-theme='light'] {
-    --bg: #feffd6;
-    --bg-secondary: #f0f1c8;
+    color-scheme: light;
+    --bg: #fbfbfa;
+    --bg-secondary: #f2f2f0;
     --surface: #ffffff;
-    --surface-raised: #fffff0;
-    --surface-inverse: #262622;
+    --surface-raised: #ffffff;
+    --surface-inverse: #262624;
 
-    --ink: #383832;
-    --border: rgba(0, 0, 0, 0.25);
-    --border-strong: var(--ink);
+    --ink: #2a2a27;
+    --border: #e4e4e1;
+    --border-strong: #c9c9c4;
 
-    --text: #111113;
-    --text-secondary: #18181b;
-    --text-muted: #52525b;
-    --text-inverse: var(--bg);
+    --text: #1f1f1d;
+    --text-secondary: #3d3d39;
+    --text-muted: #6b6b66;
+    --text-inverse: #fbfbfa;
 
-    --accent: #ececed;
-    --accent-fg: #383832;
-    --brand: #ff4017;
+    --accent: #ededea;
+    --accent-fg: #1f1f1d;
+    --brand: #c2410c;
     --brand-fg: #ffffff;
 
-    --ok: #22c55e;
-    --ok-strong: #007518;
-    --ok-neon: #00fc40;
-    --warn: #ff9d00;
-    --danger: #e53935;
-    --danger-strong: #be2d06;
+    --ok: #15803d;
+    --ok-strong: #166534;
+    --ok-neon: #22c55e;
+    --warn: #a16207;
+    --danger: #d92d20;
+    --danger-strong: #b42318;
 
-    --color-border-default: 0, 0, 0, 0.25;
+    --color-border-default: 228, 228, 225, 1;
   }
 
   :root[data-theme='dark'] {
-    --bg: #14150e;
-    --bg-secondary: #1c1d14;
-    --surface: #1c1d14;
-    --surface-raised: #24251a;
-    --surface-inverse: #f0f1c8;
+    color-scheme: dark;
+    --bg: #1a1a18;
+    --bg-secondary: #212120;
+    --surface: #232322;
+    --surface-raised: #2c2c2a;
+    --surface-inverse: #fbfbfa;
 
-    --ink: #e8e9cf;
-    --border: rgba(255, 255, 255, 0.22);
-    --border-strong: var(--ink);
+    --ink: #e8e8e4;
+    --border: #343431;
+    --border-strong: #4a4a46;
 
-    --text: #f2f3dd;
-    --text-secondary: #e2e3c9;
-    --text-muted: #a3a48c;
-    --text-inverse: #14150e;
+    --text: #f2f2ef;
+    --text-secondary: #d6d6d1;
+    --text-muted: #9a9a93;
+    --text-inverse: #1a1a18;
 
-    --accent: #262718;
-    --accent-fg: #f2f3dd;
-    --brand: #ff6a47;
-    --brand-fg: #14150e;
+    --accent: #2c2c2a;
+    --accent-fg: #f2f2ef;
+    --brand: #e8703a;
+    --brand-fg: #1a1a18;
 
-    --ok: #34d399;
-    --ok-strong: #16a34a;
-    --ok-neon: #00fc40;
-    --warn: #ffb340;
-    --danger: #ff6b5e;
-    --danger-strong: #ff8a7a;
+    --ok: #4ade80;
+    --ok-strong: #22c55e;
+    --ok-neon: #166534;
+    --warn: #e0a82e;
+    --danger: #f87171;
+    --danger-strong: #f98b80;
 
-    --color-border-default: 255, 255, 255, 0.22;
+    --color-border-default: 52, 52, 49, 1;
   }
 
   body {
@@ -202,10 +225,11 @@
   width: var(--scrollbar-width);
 }
 
+/* Was a hardcoded rgba(0,0,0) border, which is invisible on the
+   dark ground now that dark is reachable. Tracks --border instead. */
 ::-webkit-scrollbar-thumb {
-  --tw-border-opacity: 1;
-  @apply bg-border;
-  border-color: rgba(0, 0, 0, var(--tw-border-opacity));
+  background: var(--border-strong);
+  border-color: var(--border);
   border-radius: 9999px;
   border-width: 1px;
 }
