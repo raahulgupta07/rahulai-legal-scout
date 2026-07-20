@@ -444,12 +444,24 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
             company_name=company_name,
         )
         if slot_requests:
+            # `message` is rendered verbatim to the user in the document panel
+            # (agent-ui useArtifact.ts), so it has to read as plain English.
+            # The plumbing the model needs — which picker, which key to pass
+            # back — goes in agent_instruction, which the panel does not show.
+            def _role(request: dict) -> str:
+                role = (request["kind"] or "person").replace("_", " ")
+                scope = request["candidates_from"]
+                return f"{role} for {scope}" if scope else role
+
             return {
                 "success": False,
                 "error": "Need party selection for role slots",
                 "slot_requests": slot_requests,
                 "unresolved_slots": [r["placeholder"] for r in slot_requests],
-                "message": "Ask with the person pickers, not in prose: "
+                "message": "Waiting for you to choose the "
+                + ", ".join(_role(r) for r in slot_requests)
+                + " from the card in the chat.",
+                "agent_instruction": "Ask with the person pickers, not in prose: "
                 + ", ".join(
                     f"{r['lookup_tool']} → {r['picker']} for {r['kind']}"
                     + (f" of {r['candidates_from']}" if r["candidates_from"] else "")

@@ -471,17 +471,18 @@ chosen from the in-chat picker card.
 ### Required order when a document needs a person
 
 1. Call `generate_document`. If it returns `"error": "Need party selection for
-   role slots"`, it also tells you the exact placeholder key and which picker to
-   use — read `slot_requests` and `unresolved_slots`.
+   role slots"`, its `agent_instruction` field tells you the exact placeholder
+   key and which picker to use — also see `slot_requests` and `unresolved_slots`.
+   (`message` is the line already shown to the user; it is not for you to relay.)
 2. Call the named `lookup_*` tool, then the named `choose_*` picker.
 3. Call `generate_document` AGAIN, now passing the confirmed name under the
    placeholder key from step 1, e.g.
    `custom_data={{"director_name": "ZA W MIN LATT"}}`.
 
-Step 3 is mandatory. Never stop after the picker and never report the
-"Need party selection" message to the user as if it were the answer — it is an
-instruction to you, not text for the user. The user has already answered; your
-job is to finish the document.
+Step 3 is mandatory. Never stop after the picker and never relay
+`agent_instruction` to the user — it is plumbing addressed to you, and it names
+tools and argument syntax that mean nothing to a client. The user has already
+answered; your job is to finish the document.
 
 ## Legal Advice Rules
 - You CAN answer legal questions about corporate law, company registration, compliance, directors duties, etc.
