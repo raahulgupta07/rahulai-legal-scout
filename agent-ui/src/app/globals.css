@@ -2,14 +2,198 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ============================================
+   TOKEN LAYER — single source of truth
+   Every colour, type step, space step and radius in the app
+   resolves through these custom properties. Components must
+   never hardcode a hex; tailwind.config.ts maps its theme
+   keys onto these same variables.
+
+   Phase 1 note: the VALUES below are the existing brutalist
+   values, so the app renders identically. The point here is
+   indirection, not a new look.
+   ============================================ */
+
 @layer base {
   :root {
+    /* --- grounds --------------------------------------- */
+    /* Warm parchment; a yellow-biased neutral, not pure grey. */
+    --bg: #feffd6;
+    --bg-secondary: #f0f1c8;
+    --surface: #ffffff;
+    --surface-raised: #fffff0;
+    --surface-inverse: #262622;
+
+    /* --- ink ------------------------------------------- */
+    /* #383832 is a warm olive-charcoal — the letterpress ink. */
+    --ink: #383832;
+    --border: rgba(0, 0, 0, 0.25);
+    --border-strong: var(--ink);
+
+    /* --- text ------------------------------------------ */
+    --text: #111113;
+    --text-secondary: #18181b;
+    --text-muted: #52525b;
+    --text-inverse: var(--bg);
+
+    /* --- accent / brand -------------------------------- */
+    --accent: #ececed;
+    --accent-fg: #383832;
+    --brand: #ff4017;
+    --brand-fg: #ffffff;
+
+    /* --- semantic -------------------------------------- */
+    --ok: #22c55e;
+    --ok-strong: #007518;
+    --ok-neon: #00fc40;
+    --warn: #ff9d00;
+    --danger: #e53935;
+    --danger-strong: #be2d06;
+
+    /* --- typefaces ------------------------------------- */
+    /* Both self-hosted at build time by next/font (layout.tsx).
+       No CDN request is made at runtime. */
+    --font-display: var(--font-space-grotesk), 'Space Grotesk', system-ui, sans-serif;
+    --font-body: var(--font-geist-sans), var(--font-space-grotesk), system-ui, sans-serif;
+    --font-mono: var(--font-dm-mono), ui-monospace, SFMono-Regular, monospace;
+
+    /* --- type scale ------------------------------------ */
+    --text-2xs: 0.625rem;
+    --text-xs: 0.75rem;
+    --text-sm: 0.875rem;
+    --text-base: 1rem;
+    --text-lg: 1.125rem;
+    --text-xl: 1.375rem;
+    --text-2xl: 1.75rem;
+    --text-3xl: 2.25rem;
+    --tracking-tag: 0.05em;
+    --tracking-wide: 0.15em;
+
+    /* --- space ----------------------------------------- */
+    --space-1: 0.25rem;
+    --space-2: 0.5rem;
+    --space-3: 0.75rem;
+    --space-4: 1rem;
+    --space-5: 1.5rem;
+    --space-6: 2rem;
+    --space-7: 3rem;
+
+    /* --- radius ---------------------------------------- */
+    /* Brutalist today: everything square. Phase 2+ softens. */
+    --radius-none: 0px;
+    --radius-sm: 0px;
+    --radius-md: 0px;
+    --radius-lg: 0px;
+    --radius-xl: 10px;
+    --radius-full: 9999px;
+
+    /* legacy alias — consumed by tailwind `border` colour */
     --color-border-default: 0, 0, 0, 0.25;
     --scrollbar-width: 0.1rem;
   }
 
+  /* Dark ground. Not reachable today (no toggle is wired and
+     `dark:` appears in 5 files), so this shifts nothing yet —
+     it exists so phases 2-4 have somewhere to land. */
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14150e;
+      --bg-secondary: #1c1d14;
+      --surface: #1c1d14;
+      --surface-raised: #24251a;
+      --surface-inverse: #f0f1c8;
+
+      --ink: #e8e9cf;
+      --border: rgba(255, 255, 255, 0.22);
+      --border-strong: var(--ink);
+
+      --text: #f2f3dd;
+      --text-secondary: #e2e3c9;
+      --text-muted: #a3a48c;
+      --text-inverse: #14150e;
+
+      --accent: #262718;
+      --accent-fg: #f2f3dd;
+      --brand: #ff6a47;
+      --brand-fg: #14150e;
+
+      --ok: #34d399;
+      --ok-strong: #16a34a;
+      --ok-neon: #00fc40;
+      --warn: #ffb340;
+      --danger: #ff6b5e;
+      --danger-strong: #ff8a7a;
+
+      --color-border-default: 255, 255, 255, 0.22;
+    }
+  }
+
+  /* An explicit toggle must beat the media query in BOTH
+     directions, so each theme is restated under data-theme. */
+  :root[data-theme='light'] {
+    --bg: #feffd6;
+    --bg-secondary: #f0f1c8;
+    --surface: #ffffff;
+    --surface-raised: #fffff0;
+    --surface-inverse: #262622;
+
+    --ink: #383832;
+    --border: rgba(0, 0, 0, 0.25);
+    --border-strong: var(--ink);
+
+    --text: #111113;
+    --text-secondary: #18181b;
+    --text-muted: #52525b;
+    --text-inverse: var(--bg);
+
+    --accent: #ececed;
+    --accent-fg: #383832;
+    --brand: #ff4017;
+    --brand-fg: #ffffff;
+
+    --ok: #22c55e;
+    --ok-strong: #007518;
+    --ok-neon: #00fc40;
+    --warn: #ff9d00;
+    --danger: #e53935;
+    --danger-strong: #be2d06;
+
+    --color-border-default: 0, 0, 0, 0.25;
+  }
+
+  :root[data-theme='dark'] {
+    --bg: #14150e;
+    --bg-secondary: #1c1d14;
+    --surface: #1c1d14;
+    --surface-raised: #24251a;
+    --surface-inverse: #f0f1c8;
+
+    --ink: #e8e9cf;
+    --border: rgba(255, 255, 255, 0.22);
+    --border-strong: var(--ink);
+
+    --text: #f2f3dd;
+    --text-secondary: #e2e3c9;
+    --text-muted: #a3a48c;
+    --text-inverse: #14150e;
+
+    --accent: #262718;
+    --accent-fg: #f2f3dd;
+    --brand: #ff6a47;
+    --brand-fg: #14150e;
+
+    --ok: #34d399;
+    --ok-strong: #16a34a;
+    --ok-neon: #00fc40;
+    --warn: #ffb340;
+    --danger: #ff6b5e;
+    --danger-strong: #ff8a7a;
+
+    --color-border-default: 255, 255, 255, 0.22;
+  }
+
   body {
-    background-color: #feffd6 !important;
+    background-color: var(--bg) !important;
     @apply text-secondary;
   }
 }
@@ -83,13 +267,13 @@
    ============================================ */
 
 .font-brutalist {
-  font-family: var(--font-space-grotesk), 'Space Grotesk', sans-serif;
+  font-family: var(--font-display);
 }
 
 /* Asymmetric ink border (heavier bottom-right like letterpress) */
 .ink-border {
   border-style: solid;
-  border-color: #383832;
+  border-color: var(--ink);
   border-top-width: 2px;
   border-left-width: 2px;
   border-bottom-width: 3px;
@@ -98,30 +282,30 @@
 
 /* Hard stamp shadow (no blur, like rubber stamp) */
 .stamp-shadow {
-  box-shadow: 4px 4px 0px 0px #383832;
+  box-shadow: 4px 4px 0px 0px var(--ink);
 }
 
 /* Zero radius override for brutalist pages */
 .brutalist * {
-  border-radius: 0px !important;
+  border-radius: var(--radius-none) !important;
 }
 
 /* Dark tag label (used for form labels, section tags) */
 .tag-label {
   display: inline-block;
   padding: 2px 8px;
-  font-size: 10px;
+  font-size: var(--text-2xs);
   font-weight: 900;
   text-transform: uppercase;
-  background: #383832;
-  color: #feffd6;
-  letter-spacing: 0.05em;
+  background: var(--ink);
+  color: var(--bg);
+  letter-spacing: var(--tracking-tag);
 }
 
 /* Green selection highlight */
 .brutalist ::selection {
-  background: #007518;
-  color: white;
+  background: var(--ok-strong);
+  color: var(--brand-fg);
 }
 
 /* CLI cursor blink (DASH-style green block cursor) */
@@ -139,7 +323,7 @@
 /* Button press effect (stamp pressed down) */
 .stamp-press:active {
   transform: translate(2px, 2px);
-  box-shadow: 2px 2px 0px 0px #383832;
+  box-shadow: 2px 2px 0px 0px var(--ink);
 }
 
 /* ============================================
@@ -150,97 +334,97 @@
 /* Kill all border-radius in admin */
 [class*="admin"] *,
 .admin-brutalist * {
-  border-radius: 0px !important;
+  border-radius: var(--radius-none) !important;
 }
 
 /* Admin content background */
 .admin-content {
-  background: #f5f5e8;
+  background: var(--bg-secondary);
 }
 
 /* Cards in admin only: override bg-card */
 [class*="admin"] .bg-card,
 .admin-content .bg-card {
-  background: #feffd6 !important;
+  background: var(--bg) !important;
 }
 
 /* Admin buttons: override gradient buttons */
 body .bg-gradient-to-r.from-orange-500,
 body .bg-gradient-to-r.from-orange-600 {
-  background: #007518 !important;
-  border: 2px solid #383832 !important;
+  background: var(--ok-strong) !important;
+  border: 2px solid var(--ink) !important;
 }
 
 body .bg-gradient-to-r.from-orange-500:hover,
 body .bg-gradient-to-r.from-orange-600:hover {
-  background: #005c13 !important;
+  background: color-mix(in srgb, var(--ok-strong) 80%, black) !important;
 }
 
 /* Orange/red accent buttons → green brutalist */
 body button.bg-orange-500,
 body button.bg-red-500,
 body a.bg-orange-500 {
-  background: #007518 !important;
-  border: 2px solid #383832 !important;
-  border-radius: 0 !important;
+  background: var(--ok-strong) !important;
+  border: 2px solid var(--ink) !important;
+  border-radius: var(--radius-none) !important;
 }
 
 /* Override rounded-xl on cards */
 body .rounded-xl {
-  border-radius: 0 !important;
+  border-radius: var(--radius-none) !important;
 }
 
 body .rounded-lg {
-  border-radius: 0 !important;
+  border-radius: var(--radius-none) !important;
 }
 
 body .rounded-full {
-  border-radius: 0 !important;
+  border-radius: var(--radius-none) !important;
 }
 
 body .rounded-md {
-  border-radius: 0 !important;
+  border-radius: var(--radius-none) !important;
 }
 
 /* Override thin borders with ink borders */
 body .border-primary\/10 {
-  border-color: #383832 !important;
+  border-color: var(--ink) !important;
   border-width: 2px !important;
 }
 
 /* Override bg-background — scoped to avoid breaking chat page */
 body .bg-background {
-  background: #feffd6 !important;
+  background: var(--bg) !important;
 }
 
 /* Override primary text color */
 body .text-primary {
-  color: #383832 !important;
+  color: var(--ink) !important;
 }
 
 /* Override muted text */
 body .text-muted {
-  color: rgba(56, 56, 50, 0.55) !important;
+  color: var(--text-muted) !important;
 }
 
 /* Override accent backgrounds */
 body .bg-accent {
-  background: rgba(56, 56, 50, 0.06) !important;
+  background: var(--accent) !important;
 }
 
 /* Override gradient icon circles in any admin page */
 body .bg-gradient-to-br.from-orange-500 {
-  background: #383832 !important;
+  background: var(--ink) !important;
 }
 
 /* Status badge override */
 body .bg-green-500\/10 {
-  background: rgba(0, 117, 24, 0.12) !important;
+  background: color-mix(in srgb, var(--ok-strong) 12%, transparent) !important;
 }
 
 /* Ensure font-brutalist loads everywhere */
 body {
-  font-family: var(--font-space-grotesk), 'Space Grotesk', system-ui, sans-serif;
+  font-family: var(--font-display);
 }
 
 @media (max-width: 480px) {

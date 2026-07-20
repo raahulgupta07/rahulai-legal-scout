@@ -34,8 +34,12 @@ export default function RootLayout({
 }: Readonly<{
   children: React.ReactNode
 }>) {
+  // data-theme is pinned to light for now: the token layer defines a dark
+  // ground behind a prefers-color-scheme rule, and this attribute is what
+  // keeps a dark-OS machine looking exactly like it does today. Phase 2+
+  // replaces the literal with a real toggle.
   return (
-    <html lang="en">
+    <html lang="en" data-theme="light">
       <body className={`${geistSans.variable} ${dmMono.variable} ${spaceGrotesk.variable} antialiased`}>
         <AuthGuard>
           <NuqsAdapter>{children}</NuqsAdapter>
