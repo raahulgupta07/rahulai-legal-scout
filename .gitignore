@@ -83,3 +83,8 @@ documents/legal/knowledge/*.xlsx
 documents/legal/data/*.xlsx
 # Client feedback trackers (not source)
 LegalScout_*.xlsx
+
+# Env backups (may contain live API keys)
+.env.bak*
+*.env.local.bak*
+**/.env*.bak*
