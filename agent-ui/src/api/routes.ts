@@ -1,6 +1,8 @@
 export const APIRoutes = {
   GetAgents: (agentOSUrl: string) => `${agentOSUrl}/agents`,
   AgentRun: (agentOSUrl: string) => `${agentOSUrl}/agents/{agent_id}/runs`,
+  ContinueAgentRun: (agentOSUrl: string, agentId: string, runId: string) =>
+    `${agentOSUrl}/agents/${agentId}/runs/${runId}/continue`,
   Status: (agentOSUrl: string) => `${agentOSUrl}/health`,
   GetSessions: (agentOSUrl: string) => `${agentOSUrl}/sessions`,
   GetSession: (agentOSUrl: string, sessionId: string) =>

@@ -53,6 +53,22 @@ export const apiClient = {
   fieldRegistry: () => `${API_BASE_URL}/api/dashboard/field-registry`,
   refreshFieldRegistry: () => `${API_BASE_URL}/api/dashboard/field-registry/refresh`,
 
+  // People Register endpoints
+  getPeople: (search?: string) =>
+    `${API_BASE_URL}/api/people${search ? `?search=${encodeURIComponent(search)}` : ''}`,
+  addPerson: () => `${API_BASE_URL}/api/people`,
+  getPerson: (id: number) => `${API_BASE_URL}/api/people/${id}`,
+  updatePerson: (id: number) => `${API_BASE_URL}/api/people/${id}`,
+  deletePerson: (id: number) => `${API_BASE_URL}/api/people/${id}`,
+  getPersonCompanies: (id: number) => `${API_BASE_URL}/api/people/${id}/companies`,
+
+  // Company ↔ person link endpoints
+  linkCompanyPerson: (companyId: number) => `${API_BASE_URL}/api/companies/${companyId}/people`,
+  unlinkCompanyPerson: (companyId: number, personId: number) =>
+    `${API_BASE_URL}/api/companies/${companyId}/people/${personId}`,
+  getCompanyPeople: (companyId: number, role?: string) =>
+    `${API_BASE_URL}/api/companies/${companyId}/people${role ? `?role=${encodeURIComponent(role)}` : ''}`,
+
   // Document generation
   downloadDocument: (filename: string) => `${API_BASE_URL}/documents/legal/output/${encodeURIComponent(filename)}`,
 

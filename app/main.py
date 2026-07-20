@@ -27,6 +27,7 @@ from app.model_config import (get_model, get_all_models, save_models, clear_cach
     get_timezone, save_timezone, get_current_datetime, get_current_date, OPENROUTER_BASE_URL)
 from db.connection import get_db_conn
 from app.s3_storage import s3_upload_async, s3_delete_async, s3_download, s3_test, s3_sync_all, s3_list, is_s3_enabled, save_s3_config, _get_s3_config, _local_to_s3_key
+from app.slot_contract import normalise_mapping, sanitise_mapping
 
 # ---------------------------------------------------------------------------
 # Production-safe host configuration
@@ -1128,6 +1129,500 @@ async def admin_activity_logs(request: Request):
 
 
 # ---------------------------------------------------------------------------
+# People Register (migration 011: people, company_people)
+# ---------------------------------------------------------------------------
+PEOPLE_ROLES = ("director", "individual_shareholder", "both")
+PEOPLE_PAGE_LIMIT = 100
+
+# Column list shared by every people SELECT so row unpacking stays in sync.
+_PEOPLE_COLS = (
+    "id, full_name, nationality, nrc_passport_no, gender, date_of_birth, "
+    "phone, email, residential_address, created_by_email, created_at, updated_at"
+)
+
+
+def _nullable_date(value):
+    """DATE columns reject ''. Treat empty/whitespace as SQL NULL."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        value = value.strip()
+        if not value:
+            return None
+    return value
+
+
+def _nullable_text(value, max_length: int = 500):
+    """Sanitize an optional text field; '' becomes NULL so the partial
+    unique index on nrc_passport_no behaves predictably."""
+    if value is None:
+        return None
+    cleaned = sanitize_string(value, max_length)
+    return cleaned or None
+
+
+def _person_row(r):
+    return {
+        "id": r[0],
+        "full_name": r[1],
+        "nationality": r[2],
+        "nrc_passport_no": r[3],
+        "gender": r[4],
+        "date_of_birth": r[5].isoformat() if r[5] else None,
+        "phone": r[6],
+        "email": r[7],
+        "residential_address": r[8],
+        "created_by_email": r[9],
+        "created_at": r[10].isoformat() if r[10] else None,
+        "updated_at": r[11].isoformat() if r[11] else None,
+    }
+
+
+def _link_row(r):
+    """company_people row joined with the company's English name."""
+    return {
+        "id": r[0],
+        "company_id": r[1],
+        "person_id": r[2],
+        "role": r[3],
+        "number_of_shares": r[4],
+        "capital_amount": r[5],
+        "share_class": r[6],
+        "appointed_date": r[7].isoformat() if r[7] else None,
+        "resigned_date": r[8].isoformat() if r[8] else None,
+        "company_name": r[9] if len(r) > 9 else None,
+    }
+
+
+_LINK_COLS = (
+    "cp.id, cp.company_id, cp.person_id, cp.role, cp.number_of_shares, "
+    "cp.capital_amount, cp.share_class, cp.appointed_date, cp.resigned_date"
+)
+
+
+def _is_duplicate_nrc(exc: Exception) -> bool:
+    """migration 011 partial unique index idx_people_nrc."""
+    msg = str(exc).lower()
+    return "idx_people_nrc" in msg or ("duplicate key" in msg and "nrc" in msg)
+
+
+@app.get("/api/people")
+async def list_people(request: Request, search: str = "", limit: int = 50, offset: int = 0):
+    """List people, optionally filtered by name or NRC/passport number."""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    limit = max(1, min(int(limit or 50), PEOPLE_PAGE_LIMIT))
+    offset = max(0, int(offset or 0))
+    search = sanitize_string(search or "", 200)
+
+    conn = None
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        if search:
+            pattern = f"%{search}%"
+            cur.execute(
+                f"SELECT {_PEOPLE_COLS} FROM people "
+                "WHERE full_name ILIKE %s OR nrc_passport_no ILIKE %s "
+                "ORDER BY full_name ASC LIMIT %s OFFSET %s",
+                (pattern, pattern, limit, offset),
+            )
+        else:
+            cur.execute(
+                f"SELECT {_PEOPLE_COLS} FROM people "
+                "ORDER BY full_name ASC LIMIT %s OFFSET %s",
+                (limit, offset),
+            )
+        rows = cur.fetchall()
+
+        if search:
+            pattern = f"%{search}%"
+            cur.execute(
+                "SELECT COUNT(*) FROM people WHERE full_name ILIKE %s OR nrc_passport_no ILIKE %s",
+                (pattern, pattern),
+            )
+        else:
+            cur.execute("SELECT COUNT(*) FROM people")
+        total = cur.fetchone()[0]
+        cur.close()
+
+        people = [_person_row(r) for r in rows]
+        return {"success": True, "people": people, "count": len(people),
+                "total": total, "limit": limit, "offset": offset}
+    except Exception as e:
+        logger.warning(f"[PEOPLE] list failed: {e}")
+        return {"success": False, "error": str(e)}
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.post("/api/people")
+async def create_person(request: Request):
+    """Create a person. Admin only."""
+    admin = require_admin(request)
+    conn = None
+    try:
+        body = await request.json()
+        full_name = sanitize_string(body.get("full_name", ""), 500)
+        if not full_name:
+            return {"success": False, "error": "full_name is required"}
+
+        email = _nullable_text(body.get("email"), 255)
+        if email and not validate_email(email):
+            return {"success": False, "error": "Invalid email format"}
+
+        conn = get_db_conn()
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO people (full_name, nationality, nrc_passport_no, gender, "
+            "date_of_birth, phone, email, residential_address, created_by_email) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+            (
+                full_name,
+                _nullable_text(body.get("nationality"), 100),
+                _nullable_text(body.get("nrc_passport_no"), 100),
+                _nullable_text(body.get("gender"), 20),
+                _nullable_date(body.get("date_of_birth")),
+                _nullable_text(body.get("phone"), 50),
+                email,
+                _nullable_text(body.get("residential_address"), 2000),
+                admin.get("email"),
+            ),
+        )
+        new_id = cur.fetchone()[0]
+        conn.commit()
+        cur.close()
+
+        log_activity(admin.get("user_id"), admin.get("email"), "create_person",
+                     f"Created person: {full_name} (id={new_id})", "")
+        return {"success": True, "message": f"Person '{full_name}' created", "id": new_id}
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        if _is_duplicate_nrc(e):
+            logger.info(f"[PEOPLE] duplicate NRC rejected: {e}")
+            raise HTTPException(status_code=409, detail="A person with this NRC/passport number already exists")
+        logger.warning(f"[PEOPLE] create failed: {e}")
+        return {"success": False, "error": str(e)}
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.get("/api/people/{person_id}")
+async def get_person(person_id: int, request: Request):
+    """Single person record including its company links."""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    conn = None
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        cur.execute(f"SELECT {_PEOPLE_COLS} FROM people WHERE id = %s", (person_id,))
+        row = cur.fetchone()
+        if not row:
+            cur.close()
+            return {"success": False, "error": "Person not found"}
+
+        person = _person_row(row)
+        cur.execute(
+            f"SELECT {_LINK_COLS}, c.company_name_english "
+            "FROM company_people cp LEFT JOIN companies c ON c.id = cp.company_id "
+            "WHERE cp.person_id = %s ORDER BY cp.company_id ASC, cp.role ASC",
+            (person_id,),
+        )
+        person["companies"] = [_link_row(r) for r in cur.fetchall()]
+        cur.close()
+        return {"success": True, "person": person}
+    except Exception as e:
+        logger.warning(f"[PEOPLE] get id={person_id} failed: {e}")
+        return {"success": False, "error": str(e)}
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.put("/api/people/{person_id}")
+async def update_person(person_id: int, request: Request):
+    """Update a person. Admin only."""
+    admin = require_admin(request)
+    conn = None
+    try:
+        body = await request.json()
+
+        updates = []
+        params = []
+        if "full_name" in body:
+            full_name = sanitize_string(body.get("full_name", ""), 500)
+            if not full_name:
+                return {"success": False, "error": "full_name cannot be empty"}
+            updates.append("full_name = %s"); params.append(full_name)
+        if "email" in body:
+            email = _nullable_text(body.get("email"), 255)
+            if email and not validate_email(email):
+                return {"success": False, "error": "Invalid email format"}
+            updates.append("email = %s"); params.append(email)
+        for field, max_len in (("nationality", 100), ("nrc_passport_no", 100),
+                               ("gender", 20), ("phone", 50),
+                               ("residential_address", 2000)):
+            if field in body:
+                updates.append(f"{field} = %s")
+                params.append(_nullable_text(body.get(field), max_len))
+        if "date_of_birth" in body:
+            updates.append("date_of_birth = %s")
+            params.append(_nullable_date(body.get("date_of_birth")))
+
+        if not updates:
+            return {"success": False, "error": "No fields to update"}
+
+        conn = get_db_conn()
+        cur = conn.cursor()
+        updates.append("updated_at = NOW()")
+        params.append(person_id)
+        cur.execute(f"UPDATE people SET {', '.join(updates)} WHERE id = %s", tuple(params))
+        updated = cur.rowcount
+        conn.commit()
+        cur.close()
+
+        if not updated:
+            return {"success": False, "error": "Person not found"}
+        log_activity(admin.get("user_id"), admin.get("email"), "update_person",
+                     f"Updated person id={person_id}", "")
+        return {"success": True, "message": "Person updated"}
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        if _is_duplicate_nrc(e):
+            logger.info(f"[PEOPLE] duplicate NRC rejected on update: {e}")
+            raise HTTPException(status_code=409, detail="A person with this NRC/passport number already exists")
+        logger.warning(f"[PEOPLE] update id={person_id} failed: {e}")
+        return {"success": False, "error": str(e)}
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.delete("/api/people/{person_id}")
+async def delete_person(person_id: int, request: Request):
+    """Delete a person. Admin only. company_people rows cascade."""
+    admin = require_admin(request)
+    conn = None
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM people WHERE id = %s", (person_id,))
+        deleted = cur.rowcount
+        conn.commit()
+        cur.close()
+
+        if not deleted:
+            return {"success": False, "error": "Person not found"}
+        log_activity(admin.get("user_id"), admin.get("email"), "delete_person",
+                     f"Deleted person id={person_id}", "")
+        return {"success": True, "message": "Person deleted"}
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        logger.warning(f"[PEOPLE] delete id={person_id} failed: {e}")
+        return {"success": False, "error": str(e)}
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.get("/api/people/{person_id}/companies")
+async def list_person_companies(person_id: int, request: Request):
+    """Company links for one person."""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    conn = None
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        cur.execute(
+            f"SELECT {_LINK_COLS}, c.company_name_english "
+            "FROM company_people cp LEFT JOIN companies c ON c.id = cp.company_id "
+            "WHERE cp.person_id = %s ORDER BY cp.company_id ASC, cp.role ASC",
+            (person_id,),
+        )
+        links = [_link_row(r) for r in cur.fetchall()]
+        cur.close()
+        return {"success": True, "companies": links, "count": len(links)}
+    except Exception as e:
+        logger.warning(f"[PEOPLE] companies for id={person_id} failed: {e}")
+        return {"success": False, "error": str(e)}
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.post("/api/companies/{company_id}/people")
+async def link_company_person(company_id: int, request: Request):
+    """Link a person to a company with a role. Admin only."""
+    admin = require_admin(request)
+    conn = None
+    try:
+        body = await request.json()
+        person_id = body.get("person_id")
+        if person_id in (None, ""):
+            return {"success": False, "error": "person_id is required"}
+        try:
+            person_id = int(person_id)
+        except (TypeError, ValueError):
+            return {"success": False, "error": "person_id must be an integer"}
+
+        role = sanitize_string(body.get("role", "director"), 30) or "director"
+        if role not in PEOPLE_ROLES:
+            return {"success": False, "error": f"role must be one of: {', '.join(PEOPLE_ROLES)}"}
+
+        conn = get_db_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT 1 FROM companies WHERE id = %s", (company_id,))
+        if not cur.fetchone():
+            cur.close()
+            return {"success": False, "error": "Company not found"}
+        cur.execute("SELECT 1 FROM people WHERE id = %s", (person_id,))
+        if not cur.fetchone():
+            cur.close()
+            return {"success": False, "error": "Person not found"}
+
+        cur.execute(
+            "INSERT INTO company_people (company_id, person_id, role, number_of_shares, "
+            "capital_amount, share_class, appointed_date, resigned_date) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) "
+            "ON CONFLICT (company_id, person_id, role) DO UPDATE SET "
+            "number_of_shares = EXCLUDED.number_of_shares, "
+            "capital_amount = EXCLUDED.capital_amount, "
+            "share_class = EXCLUDED.share_class, "
+            "appointed_date = EXCLUDED.appointed_date, "
+            "resigned_date = EXCLUDED.resigned_date, "
+            "updated_at = NOW() RETURNING id",
+            (
+                company_id,
+                person_id,
+                role,
+                _nullable_text(body.get("number_of_shares"), 100),
+                _nullable_text(body.get("capital_amount"), 100),
+                _nullable_text(body.get("share_class"), 100),
+                _nullable_date(body.get("appointed_date")),
+                _nullable_date(body.get("resigned_date")),
+            ),
+        )
+        link_id = cur.fetchone()[0]
+        conn.commit()
+        cur.close()
+
+        log_activity(admin.get("user_id"), admin.get("email"), "link_company_person",
+                     f"Linked person id={person_id} to company id={company_id} as {role}", "")
+        return {"success": True, "message": "Person linked to company", "id": link_id}
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        logger.warning(f"[PEOPLE] link company={company_id} failed: {e}")
+        return {"success": False, "error": str(e)}
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.delete("/api/companies/{company_id}/people/{person_id}")
+async def unlink_company_person(company_id: int, person_id: int, request: Request, role: str = ""):
+    """Unlink a person from a company. Admin only.
+    Without ?role= every role link for that pair is removed."""
+    admin = require_admin(request)
+    conn = None
+    try:
+        role = sanitize_string(role or "", 30)
+        if role and role not in PEOPLE_ROLES:
+            return {"success": False, "error": f"role must be one of: {', '.join(PEOPLE_ROLES)}"}
+
+        conn = get_db_conn()
+        cur = conn.cursor()
+        if role:
+            cur.execute(
+                "DELETE FROM company_people WHERE company_id = %s AND person_id = %s AND role = %s",
+                (company_id, person_id, role),
+            )
+        else:
+            cur.execute(
+                "DELETE FROM company_people WHERE company_id = %s AND person_id = %s",
+                (company_id, person_id),
+            )
+        deleted = cur.rowcount
+        conn.commit()
+        cur.close()
+
+        if not deleted:
+            return {"success": False, "error": "Link not found"}
+        log_activity(admin.get("user_id"), admin.get("email"), "unlink_company_person",
+                     f"Unlinked person id={person_id} from company id={company_id}", "")
+        return {"success": True, "message": "Person unlinked from company", "deleted": deleted}
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        logger.warning(f"[PEOPLE] unlink company={company_id} person={person_id} failed: {e}")
+        return {"success": False, "error": str(e)}
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.get("/api/companies/{company_id}/people")
+async def list_company_people(company_id: int, request: Request, role: str = ""):
+    """People linked to a company, optionally filtered by role.
+    Role 'both' counts as director and as individual_shareholder."""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    conn = None
+    try:
+        role = sanitize_string(role or "", 30)
+        if role and role not in PEOPLE_ROLES:
+            return {"success": False, "error": f"role must be one of: {', '.join(PEOPLE_ROLES)}"}
+
+        conn = get_db_conn()
+        cur = conn.cursor()
+        sql = (
+            f"SELECT {_LINK_COLS}, p.full_name, p.nationality, p.nrc_passport_no "
+            "FROM company_people cp JOIN people p ON p.id = cp.person_id "
+            "WHERE cp.company_id = %s"
+        )
+        params = [company_id]
+        if role:
+            sql += " AND (cp.role = %s OR cp.role = 'both')" if role != "both" else " AND cp.role = %s"
+            params.append(role)
+        sql += " ORDER BY p.full_name ASC LIMIT %s"
+        params.append(PEOPLE_PAGE_LIMIT * 5)
+
+        cur.execute(sql, tuple(params))
+        rows = cur.fetchall()
+        cur.close()
+
+        people = []
+        for r in rows:
+            link = _link_row(r[:9])
+            link["full_name"] = r[9]
+            link["nationality"] = r[10]
+            link["nrc_passport_no"] = r[11]
+            people.append(link)
+        return {"success": True, "people": people, "count": len(people)}
+    except Exception as e:
+        logger.warning(f"[PEOPLE] company={company_id} people failed: {e}")
+        return {"success": False, "error": str(e)}
+    finally:
+        if conn:
+            conn.close()
+
+
+# ---------------------------------------------------------------------------
 # Static Files for Documents (with S3 fallback)
 # ---------------------------------------------------------------------------
 documents_dir = Path("/documents")
@@ -1236,6 +1731,27 @@ async def list_available_templates():
     return {"templates": list_analyzed_templates()}
 
 
+def load_field_mapping(template_name: str) -> dict:
+    """Load a stored field_mapping, upgraded to the slot contract."""
+    conn = None
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT field_mapping FROM templates WHERE name = %s", (template_name,))
+        row = cur.fetchone()
+        cur.close()
+        if not row or not row[0]:
+            return {}
+        raw = row[0] if isinstance(row[0], dict) else json.loads(row[0])
+        return normalise_mapping(raw)
+    except Exception as e:
+        logging.getLogger("legalscout").warning(f"Failed to load field mapping for '{template_name}': {e}")
+        return {}
+    finally:
+        if conn:
+            conn.close()
+
+
 @app.get("/api/dashboard/templates/{template_name}")
 async def get_template_info(template_name: str):
     """Get template details."""
@@ -1243,7 +1759,16 @@ async def get_template_info(template_name: str):
     safe_path = (base_dir / template_name).resolve()
     if not str(safe_path).startswith(str(base_dir)):
         return {"error": "Invalid filename"}
-    return analyze_template(template_name)
+    info = analyze_template(template_name)
+    if isinstance(info, dict):
+        info["field_mapping"] = load_field_mapping(template_name)
+    return info
+
+
+@app.get("/api/templates/field-mapping/{template_name}")
+async def get_template_field_mapping(template_name: str):
+    """Get a template's field_mapping in slot-contract form."""
+    return {"template": template_name, "field_mapping": load_field_mapping(template_name)}
 
 
 @app.get("/api/templates/categories")
@@ -2257,35 +2782,91 @@ Return ONLY a JSON object with: purpose, when_to_use, how_to_use (array), catego
             # Step 5.5: Generate field_mapping (learned placeholder → DB column mapping)
             yield _sse("mapping_start", "Generating field mapping...")
             try:
-                mapping_prompt = f"""You are a database mapping expert. Map each template placeholder to the correct data source.
+                mapping_prompt = f"""You are a database mapping expert for a Myanmar corporate law document system. Map each template placeholder to the correct data source.
 
 TEMPLATE: {template_name}
 PLACEHOLDERS: {', '.join(fields)}
 
-AVAILABLE DATABASE COLUMNS for companies table:
-- company_name_english (company's registered name)
+AVAILABLE DATABASE COLUMNS on the companies table (these describe the COMPANY, never a person):
+- company_name_english (registered English name)
+- company_name_myanmar (registered Myanmar name)
 - company_registration_number (DICA registration number)
-- registered_office_address (registered office address)
-- principal_place_of_business (business address)
+- registration_date (date of incorporation)
 - status (active/inactive)
 - company_type (private/public)
-- directors (JSONB array of objects with: name, position)
-- members (JSONB array of objects with: name, shares)
+- foreign_company (yes/no)
+- small_company (yes/no)
+- principal_activity (business activity)
+- registered_office_address (registered office address)
+- principal_place_of_business (business address)
+- date_of_last_annual_return (date)
+- previous_registration_number (prior DICA number)
 - total_shares_issued (total shares number)
 - currency_of_share_capital (currency code)
-- date_of_last_annual_return (date)
-- financial_year_end_date (date)
+- total_capital (total capital amount)
+- consideration_amount_paid (consideration paid)
+- under_corpsec_management (yes/no)
+- group_company (yes/no)
 - ultimate_holding_company_name (parent company)
+- ultimate_holding_company_jurisdiction (parent jurisdiction)
+- ultimate_holding_company_registration_number (parent registration number)
+- financial_year_end_date (financial year end, free text)
+- next_financial_year_end_date (next financial year end, free text)
+- auditor_name (appointed auditor)
+- auditor_fee (auditor remuneration)
+- custom_fields (JSONB of per-company extras; address a key as custom_fields.some_key)
 
-For EACH placeholder, return a JSON object with:
-- "source": "db" (from company database) or "user_input" (user must provide)
-- "db_column": exact column path if source=db. For arrays use: members[0].name, directors[1].position
-- "default": default value if source=user_input. Use "today" for dates, "TBD" for unknown
+HARD RULES:
+1. NEVER put an array index in db_column. "directors[0].name", "members[1].name" and any other
+   "[n]" path are FORBIDDEN — they freeze one person at training time and produce the wrong signatory.
+2. "directors", "members" and "shareholder_links" are person lists and are NEVER valid db_column values.
+3. NEVER use "today" (or "now"/"current_date") as a default. Dates are chosen by the user, never auto-filled.
+4. Any placeholder naming a PERSON or a SIGNING PARTY — signatory, chairperson, attendee, the director
+   resigning, the director being appointed, a shareholder, a corporate representative, the auditor as a
+   signing party — is a SLOT, not a db column and not plain user_input.
+
+A SLOT means "a person or party the USER must choose when the document is generated". It is resolved
+at generation time against the people register, so it must never be frozen to a position.
+
+"slot": {{"kind": <kind>, "of": <of>, "multi": true|false}}
+
+slot.kind is EXACTLY one of:
+  signatory           — the person who signs the document
+  attendee            — a person present at the meeting
+  chairperson         — the person chairing the meeting
+  resigning_director  — the director who is resigning
+  new_director        — the director being appointed
+  representative      — the individual signing on behalf of a corporate entity
+  shareholder_list    — the list of shareholders
+  auditor             — the auditor as a named party
+
+slot.of is EXACTLY one of:
+  document_company      — candidates are the people linked to the company the document is for
+  corporate_shareholder — candidates are the directors of a CORPORATE SHAREHOLDER of the document company
+                          (use with kind "representative" when a company signs through its own director)
+  people_register       — candidates are any person in the people register
+
+slot.multi is true when the placeholder holds several people (a list of attendees or shareholders),
+false when it holds exactly one.
+
+For EACH placeholder return a JSON object with:
+- "source": "db" | "user_input" | "slot"
+- "db_column": exact column name when source is "db", otherwise null. No array indexes, ever.
+- "slot": the slot object when source is "slot", otherwise null
+- "default": a literal fallback string for source "user_input", otherwise null. Never "today".
 - "description": short description of what this field is
 
-Return ONLY a JSON object where keys are placeholder names. Example:
-{{"company_name": {{"source":"db","db_column":"company_name_english","default":null,"description":"Company registered name"}},
-"date": {{"source":"user_input","db_column":null,"default":"today","description":"Date of the document"}}}}"""
+WORKED EXAMPLES:
+db field:
+  "company_name": {{"source":"db","db_column":"company_name_english","slot":null,"default":null,"description":"Company registered name"}}
+user_input field:
+  "meeting_date": {{"source":"user_input","db_column":null,"slot":null,"default":null,"description":"Date the meeting is held, supplied by the user"}}
+single signatory slot:
+  "director_name": {{"source":"slot","db_column":null,"slot":{{"kind":"signatory","of":"document_company","multi":false}},"default":null,"description":"Director who signs this document, chosen by the user"}}
+multi attendee slot:
+  "attendees": {{"source":"slot","db_column":null,"slot":{{"kind":"attendee","of":"document_company","multi":true}},"default":null,"description":"People present at the meeting, chosen by the user"}}
+
+Return ONLY a JSON object where keys are placeholder names."""
 
                 import httpx as _mhx
                 _m_res = _mhx.post(
@@ -2300,7 +2881,19 @@ Return ONLY a JSON object where keys are placeholder names. Example:
                     _m_text = _m_text.split("```")[1]
                     if _m_text.startswith("json"): _m_text = _m_text[4:]
                     _m_text = _m_text.strip()
-                field_mapping = _sj.loads(_m_text)
+                field_mapping, _m_rejected, _m_repaired = sanitise_mapping(_sj.loads(_m_text))
+                if _m_repaired:
+                    logging.getLogger("legalscout").warning(
+                        f"Field mapping for '{template_name}' repaired {len(_m_repaired)} entries: "
+                        + "; ".join(_m_repaired))
+                    yield _sse("mapping_repair", f"Repaired {len(_m_repaired)} off-contract mapping entries",
+                              repaired=_m_repaired[:10])
+                if _m_rejected:
+                    logging.getLogger("legalscout").warning(
+                        f"Field mapping for '{template_name}' dropped {len(_m_rejected)} invalid entries: "
+                        + "; ".join(_m_rejected))
+                    yield _sse("mapping_reject", f"Rejected {len(_m_rejected)} invalid mapping entries",
+                              rejected=_m_rejected[:10])
 
                 # Save to DB
                 _mc = get_db_connection()
@@ -2311,8 +2904,9 @@ Return ONLY a JSON object where keys are placeholder names. Example:
 
                 db_mapped = sum(1 for v in field_mapping.values() if v.get("source") == "db")
                 user_mapped = sum(1 for v in field_mapping.values() if v.get("source") == "user_input")
-                yield _sse("mapping", f"Mapped {db_mapped} fields to DB, {user_mapped} need user input",
-                          db_mapped=db_mapped, user_mapped=user_mapped)
+                slot_mapped = sum(1 for v in field_mapping.values() if v.get("source") == "slot")
+                yield _sse("mapping", f"Mapped {db_mapped} fields to DB, {slot_mapped} slots, {user_mapped} need user input",
+                          db_mapped=db_mapped, user_mapped=user_mapped, slot_mapped=slot_mapped)
             except Exception as _me:
                 yield _sse("mapping_warn", f"Field mapping warning: {_me}")
 

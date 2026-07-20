@@ -7,6 +7,7 @@ import {
   LayoutDashboard,
   FileText,
   Users,
+  Contact,
   FolderOpen,
   Brain,
   MessageCircle,
@@ -31,6 +32,7 @@ const navItems: NavItem[] = [
   { name: 'Emails', href: '/admin/emails', icon: <Mail className="w-5 h-5" /> },
   { name: 'Templates', href: '/admin/templates', icon: <FolderOpen className="w-5 h-5" /> },
   { name: 'Companies', href: '/admin/companies', icon: <Users className="w-5 h-5" /> },
+  { name: 'People', href: '/admin/people', icon: <Contact className="w-5 h-5" /> },
   { name: 'Knowledge', href: '/admin/knowledge', icon: <Brain className="w-5 h-5" /> },
   { name: 'Users', href: '/admin/users', icon: <Shield className="w-5 h-5" /> },
   { name: 'Settings', href: '/admin/settings', icon: <Settings className="w-5 h-5" /> },
@@ -59,6 +61,7 @@ export default function DashboardSidebar() {
     else if (path.startsWith('/admin/emails')) setActiveTab('emails')
     else if (path.startsWith('/admin/templates')) setActiveTab('templates')
     else if (path.startsWith('/admin/companies')) setActiveTab('companies')
+    else if (path.startsWith('/admin/people')) setActiveTab('people')
     else if (path.startsWith('/admin/knowledge')) setActiveTab('knowledge')
     else if (path.startsWith('/admin/users')) setActiveTab('users')
     else if (path.startsWith('/admin/settings')) setActiveTab('settings')
@@ -110,7 +113,7 @@ export default function DashboardSidebar() {
         )}
         {navItems.filter(item => {
           if (item.name === 'Users' || item.name === 'Settings') return userRole === 'admin'
-          if (['Templates', 'Companies', 'Knowledge'].includes(item.name)) return userRole !== 'user'
+          if (['Templates', 'Companies', 'People', 'Knowledge'].includes(item.name)) return userRole !== 'user'
           return true
         }).map((item) => {
           const isItemActive = isActive(item.href)

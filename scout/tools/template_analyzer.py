@@ -18,6 +18,7 @@ import httpx
 from docx import Document
 from psycopg import connect
 from db.connection import get_db_conn
+from scout.tools.placeholders import PLACEHOLDER_PATTERN, new_empty_counter, placeholder_name
 
 
 def get_db_connection():
@@ -35,13 +36,13 @@ def extract_placeholders(template_path: Path) -> dict[str, Any]:
     doc = Document(str(template_path))
 
     placeholders = {}
-    placeholder_pattern = re.compile(r"\{\{([^}]+)\}\}|\{([^}]+)\}|\[([^\]]+)\]")
+    empty_counter = new_empty_counter()
 
     for idx, paragraph in enumerate(doc.paragraphs):
         text = paragraph.text
-        matches = placeholder_pattern.findall(text)
+        matches = PLACEHOLDER_PATTERN.findall(text)
         for match in matches:
-            placeholder = (match[0] or match[1] or match[2]).strip()
+            placeholder = placeholder_name(match, empty_counter)
             if placeholder and placeholder.lower() not in placeholders:
                 placeholders[placeholder.lower()] = {
                     "field": placeholder,
@@ -53,9 +54,9 @@ def extract_placeholders(template_path: Path) -> dict[str, Any]:
         for row_idx, row in enumerate(table.rows):
             for cell_idx, cell in enumerate(row.cells):
                 text = cell.text
-                matches = placeholder_pattern.findall(text)
+                matches = PLACEHOLDER_PATTERN.findall(text)
                 for match in matches:
-                    placeholder = (match[0] or match[1] or match[2]).strip()
+                    placeholder = placeholder_name(match, empty_counter)
                     if placeholder and placeholder.lower() not in placeholders:
                         placeholders[placeholder.lower()] = {
                             "field": placeholder,
