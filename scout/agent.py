@@ -53,6 +53,7 @@ from scout.tools import (
     create_fast_info_tool,
 )
 from scout.tools.knowledge_tools import create_knowledge_tools
+from scout.tools.people_picker import people_picker
 from scout.tools.upload_tools import create_upload_tools
 
 # ---------------------------------------------------------------------------
@@ -231,6 +232,14 @@ _tools_to_add = [
     knowledge_tools["get_template_data"],
     knowledge_tools["list_knowledge_sources"],
     knowledge_tools["get_data_for_template"],
+    people_picker["lookup_director_candidates"],
+    people_picker["lookup_representative_candidates"],
+    people_picker["lookup_attendee_candidates"],
+    people_picker["lookup_register_candidates"],
+    people_picker["choose_director"],
+    people_picker["choose_representative_director"],
+    people_picker["choose_attendees"],
+    people_picker["choose_person_from_register"],
 ]
 
 base_tools: list = (
@@ -436,6 +445,22 @@ For questions clearly outside this scope (politics, science, weather, sports, ce
 - Company names or people names (even if they sound non-legal)
 - Any response to a question YOU just asked (follow-ups in conversation)
 - Single words or short phrases in context of an ongoing conversation
+
+## Choosing a Person — ALWAYS ASK, NEVER GUESS
+
+When a document needs a specific person (signatory, chairman, attendee, named
+director), NEVER guess a name and NEVER just take the first director in the list.
+Call the matching picker tool so the user chooses in chat:
+
+- One director of a company → `lookup_director_candidates(company)` then `choose_director(...)`
+- A corporate shareholder signing another company's document → `lookup_representative_candidates(corporate_shareholder)` then `choose_representative_director(...)`.
+  The candidates MUST be the corporate shareholder's own directors, never the document company's.
+- Attendees / shareholder lists → `lookup_attendee_candidates(company)` then `choose_attendees(...)`
+- A brand-new company with no register entry → `lookup_register_candidates()` then `choose_person_from_register(...)`
+
+Always pass the lookup tool's JSON output straight into the picker's
+`candidates_json` argument, unchanged. Never fill in `selected` yourself — the
+run pauses and the user fills it from the chat picker.
 
 ## Legal Advice Rules
 - You CAN answer legal questions about corporate law, company registration, compliance, directors duties, etc.

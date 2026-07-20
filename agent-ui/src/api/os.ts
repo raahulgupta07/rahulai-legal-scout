@@ -2,7 +2,14 @@ import { toast } from 'sonner'
 
 import { APIRoutes } from './routes'
 
-import { AgentDetails, Sessions, TeamDetails } from '@/types/os'
+import {
+  AgentDetails,
+  PickerRequest,
+  PickerSelectionEntry,
+  Sessions,
+  TeamDetails,
+  UserInputField
+} from '@/types/os'
 
 // Helper function to create headers with optional auth token
 const createHeaders = (authToken?: string): HeadersInit => {
@@ -15,6 +22,67 @@ const createHeaders = (authToken?: string): HeadersInit => {
   }
 
   return headers
+}
+
+// Auth-only headers — FormData bodies must NOT carry an explicit Content-Type,
+// the browser has to set the multipart boundary itself.
+const createAuthHeaders = (authToken?: string): Record<string, string> => {
+  const headers: Record<string, string> = {}
+  if (authToken) {
+    headers['Authorization'] = `Bearer ${authToken}`
+  }
+  return headers
+}
+
+/**
+ * Builds the resume request for a paused (HITL) agent run.
+ *
+ * Agno's `POST /agents/{agent_id}/runs/{run_id}/continue` takes multipart form
+ * fields: `tools` (JSON array of full ToolExecution dicts), `session_id`,
+ * `user_id`, `stream`. The ToolExecution is echoed back verbatim with ONLY the
+ * `selected` entry of `user_input_schema` filled in — its value is a JSON
+ * string: an object for single-select, an ordered array for multi-select.
+ */
+export const buildContinueRunRequest = (
+  base: string,
+  request: PickerRequest,
+  selection: PickerSelectionEntry | PickerSelectionEntry[],
+  options: {
+    authToken?: string
+    sessionId?: string | null
+    userId?: string | null
+  } = {}
+): { url: string; headers: Record<string, string>; formData: FormData } => {
+  const schema: UserInputField[] = (request.user_input_schema ?? []).map(
+    (field) =>
+      field.name === 'selected'
+        ? { ...field, value: JSON.stringify(selection) }
+        : field
+  )
+
+  const toolPayload = {
+    ...request.raw_tool,
+    tool_call_id: request.tool_call_id,
+    tool_name: request.tool_name,
+    requires_user_input: true,
+    user_input_schema: schema
+  }
+
+  const formData = new FormData()
+  formData.append('tools', JSON.stringify([toolPayload]))
+  formData.append('session_id', options.sessionId ?? request.session_id ?? '')
+  if (options.userId) formData.append('user_id', String(options.userId))
+  formData.append('stream', 'true')
+
+  return {
+    url: APIRoutes.ContinueAgentRun(
+      base,
+      request.agent_id ?? '',
+      request.run_id
+    ),
+    headers: createAuthHeaders(options.authToken),
+    formData
+  }
 }
 
 export const getAgentsAPI = async (

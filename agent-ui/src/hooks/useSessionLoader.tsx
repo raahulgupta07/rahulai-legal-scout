@@ -2,8 +2,63 @@ import { useCallback } from 'react'
 import { getSessionAPI, getAllSessionsAPI } from '@/api/os'
 import { useStore } from '../store'
 import { toast } from 'sonner'
-import { ChatMessage, ToolCall, ReasoningMessage, ChatEntry } from '@/types/os'
+import {
+  ChatMessage,
+  ToolCall,
+  ReasoningMessage,
+  ChatEntry,
+  PickerRequest
+} from '@/types/os'
 import { getJsonMarkdown } from '@/lib/utils'
+import {
+  buildPickerRequest,
+  isPickerTool
+} from '@/components/chat/pickerPayload'
+
+/**
+ * Rebuilds picker cards from a past run.
+ *
+ * These are ALWAYS read-only. A run rehydrated from history is either already
+ * answered, or still paused but owned by a stream this tab no longer holds —
+ * in both cases resuming from here would be wrong, so the card renders in a
+ * closed state and the user is told to ask again in chat.
+ */
+const historicalPickerRequests = (
+  toolCalls: ToolCall[],
+  context: { runId: string; agentId?: string; sessionId?: string }
+): PickerRequest[] =>
+  toolCalls
+    .filter(
+      (toolCall) =>
+        toolCall.requires_user_input === true && isPickerTool(toolCall.tool_name)
+    )
+    .map((toolCall) => {
+      const request = buildPickerRequest(toolCall, {
+        ...context,
+        priorToolCalls: toolCalls
+      })
+
+      let answerSummary: string | undefined
+      if (toolCall.result) {
+        try {
+          const parsed = JSON.parse(toolCall.result)
+          if (Array.isArray(parsed?.selected)) {
+            answerSummary = parsed.selected
+              .map((entry: { name?: string }) => entry?.name ?? '')
+              .filter(Boolean)
+              .join(', ')
+          }
+        } catch (error) {
+          console.warn('Could not parse picker tool result', error)
+        }
+      }
+
+      return {
+        ...request,
+        status: 'historical' as const,
+        answer_summary: answerSummary
+      }
+    })
 
 interface SessionResponse {
   session_id: string
@@ -126,10 +181,18 @@ const useSessionLoader = () => {
                   )
                 ]
 
+                const pickerRequests = historicalPickerRequests(toolCalls, {
+                  runId: run.run_id ?? '',
+                  agentId: run.agent_id,
+                  sessionId
+                })
+
                 filteredMessages.push({
                   role: 'agent',
                   content: (run.content as string) ?? '',
                   tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
+                  picker_requests:
+                    pickerRequests.length > 0 ? pickerRequests : undefined,
                   extra_data: run.extra_data,
                   images: run.images,
                   videos: run.videos,

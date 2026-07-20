@@ -9,6 +9,102 @@ export interface ToolCall {
     time: number
   }
   created_at: number
+  /** ToolExecution.result — present on ToolCallCompleted and in session history. */
+  result?: string | null
+  requires_user_input?: boolean | null
+  user_input_schema?: UserInputField[] | null
+  answered?: boolean | null
+}
+
+/* ------------------------------------------------------------------ *
+ * Interactive people picker (Agno native HITL pause/resume)
+ * ------------------------------------------------------------------ */
+
+export interface PickerRepresentative {
+  id: string
+  name: string
+  identifier?: string
+  subtitle?: string
+  party_type?: 'individual' | 'corporate'
+  source?: string
+}
+
+export interface PickerCandidate {
+  id: string
+  name: string
+  identifier?: string
+  subtitle?: string
+  party_type: 'individual' | 'corporate'
+  source?: string
+  representatives?: PickerRepresentative[]
+}
+
+export interface PickerNewPersonField {
+  name: string
+  label: string
+  required?: boolean
+}
+
+export interface PickerCompany {
+  id?: number | string
+  name?: string
+  registration_number?: string
+}
+
+export interface PickerPayload {
+  picker: string
+  purpose?: string
+  company?: PickerCompany
+  multi_select: boolean
+  candidates: PickerCandidate[]
+  allow_new: boolean
+  new_person_fields?: PickerNewPersonField[]
+  note?: string
+  error?: string
+}
+
+/** Mirrors agno.tools.function.UserInputField.to_dict() */
+export interface UserInputField {
+  name: string
+  field_type: string
+  description: string | null
+  value: unknown
+}
+
+/**
+ * `pending`    — live, clickable, this browser tab owns the paused run.
+ * `answered`   — answered in this tab; resolved, read-only.
+ * `historical` — rehydrated from session history; always read-only.
+ */
+export type PickerStatus = 'pending' | 'answered' | 'historical'
+
+export interface PickerSelectionEntry {
+  id?: string
+  name: string
+  identifier?: string
+  party_type?: 'individual' | 'corporate'
+  is_new?: boolean
+  representative?: PickerRepresentative | null
+  [key: string]: unknown
+}
+
+export interface PickerRequest {
+  tool_call_id: string
+  tool_name: string
+  run_id: string
+  agent_id?: string
+  session_id?: string
+  payload: PickerPayload
+  user_input_schema: UserInputField[]
+  /** Full ToolExecution dict as received, echoed back verbatim on resume. */
+  raw_tool: Record<string, unknown>
+  status: PickerStatus
+  /** Human-readable summary of what was chosen, for the resolved state. */
+  answer_summary?: string
+  /** Payload could not be recovered from either the picker or the lookup tool. */
+  parse_error?: string
+  /** Which fallback tier the candidate payload came from (diagnostics). */
+  payload_source?: string
 }
 
 export interface ReasoningSteps {
@@ -210,6 +306,8 @@ export interface ChatMessage {
   audio?: AudioData[]
   response_audio?: ResponseAudio
   attachments?: AttachmentData[]
+  /** Interactive picker cards rendered inline in this message. */
+  picker_requests?: PickerRequest[]
 }
 
 export interface AttachmentData {

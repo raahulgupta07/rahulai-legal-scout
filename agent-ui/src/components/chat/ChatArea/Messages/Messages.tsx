@@ -14,6 +14,7 @@ import React, { type FC } from 'react'
 
 import Icon from '@/components/ui/icon'
 import ChatBlankState from './ChatBlankState'
+import PickerCardList from '@/components/chat/PickerCardList'
 import AgentThinkingLoader from './AgentThinkingLoader'
 import { useStore } from '@/store'
 import { Copy, Check } from 'lucide-react'
@@ -269,6 +270,9 @@ const AgentMessageWrapper = ({ message, isLastMessage }: MessageWrapperProps) =>
             </div>
           )}
         </div>
+
+        {/* Interactive people pickers (paused HITL run) */}
+        <PickerCardList requests={message.picker_requests} />
 
         {/* Trace toggle */}
         <TraceToggle message={message} />
