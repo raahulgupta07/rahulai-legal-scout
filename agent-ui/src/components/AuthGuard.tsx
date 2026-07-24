@@ -18,6 +18,48 @@ function getUser(): UserInfo | null {
   } catch { return null }
 }
 
+const RANK: Record<string, number> = { user: 0, editor: 1, admin: 2 }
+
+/**
+ * Minimum role required to LOAD each admin path. Longest-prefix match wins, so
+ * `/admin/templates/upload` inherits `/admin/templates`. These mirror the
+ * sidebar's per-item minRole. Query params (e.g. ?tab=people) cannot be
+ * path-guarded, so the tabbed pages additionally gate each tab's render by role.
+ *
+ * New consolidated routes carry the LOWEST minRole among their tabs; the pages
+ * hide the higher-role tabs from lower roles:
+ *   - /admin/overview  → all tabs are "user"
+ *   - /admin/registers → all tabs are "editor"
+ *   - /admin/settings  → Knowledge is editor-visible; AI models / Email / System
+ *     / Activity / Users are admin-only and never render for a non-admin.
+ */
+const ROUTE_MIN_ROLE: [string, keyof typeof RANK][] = [
+  ["/admin/overview", "user"],
+  ["/admin/registers", "editor"],
+  ["/admin/settings", "editor"],
+  // Legacy routes still redirect through the guard — keep them gated.
+  ["/admin/dashboard", "user"],
+  ["/admin/documents", "user"],
+  ["/admin/emails", "user"],
+  ["/admin/templates", "editor"],
+  ["/admin/companies", "editor"],
+  ["/admin/people", "editor"], // previously UNGUARDED — a "user" could reach it by URL; now closed
+  ["/admin/knowledge", "editor"],
+  ["/admin/users", "admin"],
+]
+
+/** The most specific matching rule, or null when the path is unrestricted. */
+function requiredRole(pathname: string): keyof typeof RANK | null {
+  const path = pathname.replace(/\/$/, "")
+  let best: { key: string; role: keyof typeof RANK } | null = null
+  for (const [key, role] of ROUTE_MIN_ROLE) {
+    if ((path === key || path.startsWith(`${key}/`)) && (!best || key.length > best.key.length)) {
+      best = { key, role }
+    }
+  }
+  return best?.role ?? null
+}
+
 function AccessDenied({ message }: { message: string }) {
   return (
     <div className="flex flex-col items-center justify-center h-screen gap-3 bg-[var(--bg-secondary)] px-6">
@@ -55,32 +97,20 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
     const user = getUser()
     const role = user?.role || "user"
 
-    // Role-based access control
-    // user: chat only (/ and /?agent=... pages)
-    // editor: chat + admin dashboard (but NOT /admin/users)
-    // admin: everything
-
-    // Role access:
-    // admin: everything
-    // editor: everything except /admin/users
-    // user: chat + dashboard + documents (NOT templates, companies, knowledge, users)
-    const adminOnlyPages = ["/admin/users", "/admin/settings"]
-    const editorPages = ["/admin/templates", "/admin/companies", "/admin/knowledge"]
-
-    if (adminOnlyPages.some(p => pathname?.startsWith(p))) {
-      if (role !== "admin") {
-        setDenied("Only administrators can manage users.")
-        setChecking(false)
-        return
-      }
-    } else if (editorPages.some(p => pathname?.startsWith(p))) {
-      if (role === "user") {
-        setDenied("You need editor or admin access for this page. Contact your admin.")
-        setChecking(false)
-        return
-      }
+    // Role-based access control. The minimum role per admin path lives in
+    // ROUTE_MIN_ROLE; chat pages (/ and anything not under /admin) are open to
+    // all authenticated roles. Tab-level gating inside the consolidated pages
+    // covers the query-param cases a path guard cannot reach.
+    const needed = requiredRole(pathname || "")
+    if (needed && (RANK[role] ?? 0) < RANK[needed]) {
+      setDenied(
+        needed === "admin"
+          ? "Only administrators can access this area."
+          : "You need editor or admin access for this page. Contact your admin."
+      )
+      setChecking(false)
+      return
     }
-    // Chat pages (/ and anything not /admin) — all roles allowed
 
     setIsAuth(true)
     setDenied("")

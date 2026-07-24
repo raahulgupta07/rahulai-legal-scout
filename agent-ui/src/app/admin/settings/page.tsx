@@ -1,6 +1,7 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { Suspense, useEffect, useState } from "react"
+import { useRouter, useSearchParams } from "next/navigation"
 import {
   Activity,
   AlertTriangle,
@@ -16,6 +17,7 @@ import {
   Save,
   Send,
   Settings as SettingsIcon,
+  Shield,
   Trash2,
   Upload,
   User,
@@ -23,6 +25,9 @@ import {
 import { authFetch } from "@/lib/api-client"
 import { toast } from "sonner"
 import { cn } from "@/lib/utils"
+import UsersView from "../users/UsersView"
+import KnowledgeView from "../knowledge/KnowledgeView"
+import { RANK, getRole, useUserRole } from "../roleClient"
 import {
   Badge,
   Button,
@@ -108,7 +113,21 @@ const TIMEZONES = [
   ] },
 ]
 
-type Tab = "models" | "email" | "system" | "activity"
+type Tab = "models" | "email" | "system" | "activity" | "users" | "knowledge"
+
+/**
+ * Tabs with the minimum role that may see each. The four configuration tabs
+ * plus Users are admin-only; Knowledge is editor-visible (it absorbed the old
+ * editor-accessible /admin/knowledge page). Non-admins only ever see Knowledge.
+ */
+const SETTINGS_TABS: { id: Tab; label: string; icon: React.ReactNode; minRole: string }[] = [
+  { id: "models", label: "AI models", icon: <Brain className="w-3.5 h-3.5" />, minRole: "admin" },
+  { id: "email", label: "Email", icon: <Mail className="w-3.5 h-3.5" />, minRole: "admin" },
+  { id: "system", label: "System", icon: <HardDrive className="w-3.5 h-3.5" />, minRole: "admin" },
+  { id: "activity", label: "Activity", icon: <BarChart3 className="w-3.5 h-3.5" />, minRole: "admin" },
+  { id: "users", label: "Users", icon: <Shield className="w-3.5 h-3.5" />, minRole: "admin" },
+  { id: "knowledge", label: "Knowledge", icon: <Brain className="w-3.5 h-3.5" />, minRole: "editor" },
+]
 
 /** Each destructive reset, with the phrase that unlocks it. */
 const RESETS: { id: string; endpoint: string; label: string; blurb: string; phrase: string }[] = [
@@ -142,9 +161,27 @@ const RESETS: { id: string; endpoint: string; label: string; blurb: string; phra
   },
 ]
 
-export default function SettingsPage() {
+function SettingsInner() {
+  const router = useRouter()
+  const params = useSearchParams()
+  const role = useUserRole()
   const [loading, setLoading] = useState(true)
-  const [activeTab, setActiveTab] = useState<Tab>("models")
+  const paramTab = params.get("tab") as Tab | null
+  const [activeTab, setActiveTab] = useState<Tab>(
+    paramTab && SETTINGS_TABS.some((t) => t.id === paramTab) ? paramTab : "models"
+  )
+
+  // Tabs the current role may see; a non-admin only ever sees Knowledge.
+  const visibleTabs = SETTINGS_TABS.filter((t) => (RANK[role] ?? 0) >= RANK[t.minRole])
+  // Clamp the active tab to something this role is allowed to render.
+  const active: Tab = visibleTabs.some((t) => t.id === activeTab)
+    ? activeTab
+    : visibleTabs[0]?.id ?? "knowledge"
+
+  const select = (id: Tab) => {
+    setActiveTab(id)
+    router.replace(`/admin/settings/?tab=${id}`, { scroll: false })
+  }
 
   // Email
   const [saving, setSaving] = useState(false)
@@ -197,10 +234,16 @@ export default function SettingsPage() {
   const [activityLoading, setActivityLoading] = useState(false)
 
   useEffect(() => {
-    loadSettings()
-    loadModels()
-    loadTimezone()
-    loadS3()
+    // Only admins reach the configuration tabs; a non-admin lands on Knowledge,
+    // so skip the admin-only loads (they would 403) and render immediately.
+    if (getRole() === "admin") {
+      loadSettings()
+      loadModels()
+      loadTimezone()
+      loadS3()
+    } else {
+      setLoading(false)
+    }
   }, [])
 
   const loadS3 = async () => {
@@ -440,13 +483,6 @@ export default function SettingsPage() {
 
   if (loading) return <LoadingScreen label="Loading settings" />
 
-  const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
-    { id: "models", label: "AI models", icon: <Brain className="w-3.5 h-3.5" /> },
-    { id: "email", label: "Email", icon: <Mail className="w-3.5 h-3.5" /> },
-    { id: "system", label: "System", icon: <HardDrive className="w-3.5 h-3.5" /> },
-    { id: "activity", label: "Activity", icon: <BarChart3 className="w-3.5 h-3.5" /> },
-  ]
-
   const activePreset = SMTP_PRESETS.find((p) => p.host === smtpHost)
 
   return (
@@ -457,14 +493,14 @@ export default function SettingsPage() {
       />
 
       <Toolbar className="gap-0 px-5 py-0">
-        {TABS.map((tab) => (
+        {visibleTabs.map((tab) => (
           <button
             key={tab.id}
-            onClick={() => setActiveTab(tab.id)}
-            aria-current={activeTab === tab.id ? "page" : undefined}
+            onClick={() => select(tab.id)}
+            aria-current={active === tab.id ? "page" : undefined}
             className={cn(
               "flex items-center gap-1.5 px-3 py-2.5 text-[length:var(--text-sm)] border-b-2 -mb-px transition-colors",
-              activeTab === tab.id
+              active === tab.id
                 ? "border-[var(--brand)] text-[var(--text)] font-medium"
                 : "border-transparent text-[var(--text-muted)] hover:text-[var(--text)]",
               focusRing
@@ -475,9 +511,18 @@ export default function SettingsPage() {
         ))}
       </Toolbar>
 
+      {active === "users" ? (
+        <div className="flex-1 min-h-0 overflow-hidden">
+          <UsersView />
+        </div>
+      ) : active === "knowledge" ? (
+        <div className="flex-1 min-h-0 overflow-hidden">
+          <KnowledgeView />
+        </div>
+      ) : (
       <PageBody className="space-y-4">
         {/* ── AI models ── */}
-        {activeTab === "models" && (
+        {active === "models" && (
           <>
             <Card
               title="AI models"
@@ -630,7 +675,7 @@ export default function SettingsPage() {
         )}
 
         {/* ── Email ── */}
-        {activeTab === "email" && (
+        {active === "email" && (
           <Card
             title="SMTP"
             meta={
@@ -756,7 +801,7 @@ export default function SettingsPage() {
         )}
 
         {/* ── System ── */}
-        {activeTab === "system" && (
+        {active === "system" && (
           <>
             <Card title="Health">
               <div className="flex items-center gap-3 flex-wrap">
@@ -1033,7 +1078,7 @@ export default function SettingsPage() {
         )}
 
         {/* ── Activity ── */}
-        {activeTab === "activity" && (
+        {active === "activity" && (
           <>
             {!activityData ? (
               <div className="py-12 text-center">
@@ -1246,6 +1291,7 @@ export default function SettingsPage() {
           </>
         )}
       </PageBody>
+      )}
 
       {/* Typed confirmation for every destructive reset. */}
       <Modal
@@ -1295,5 +1341,13 @@ export default function SettingsPage() {
         />
       </Modal>
     </Page>
+  )
+}
+
+export default function SettingsPage() {
+  return (
+    <Suspense fallback={<LoadingScreen label="Loading settings" />}>
+      <SettingsInner />
+    </Suspense>
   )
 }

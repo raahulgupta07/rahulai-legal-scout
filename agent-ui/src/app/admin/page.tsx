@@ -4,13 +4,11 @@ import { useEffect } from "react"
 import { useRouter } from "next/navigation"
 import { LoadingScreen } from "@/components/ui/kit"
 
-/** /admin has no content of its own — the dashboard is the landing screen. */
-export default function AdminPage() {
+/** Consolidated route — redirects to the new tabbed page. */
+export default function AdminIndexRedirect() {
   const router = useRouter()
   useEffect(() => {
-    router.replace("/admin/dashboard")
+    router.replace("/admin/overview/")
   }, [router])
-
-  // Shown for the frame before the redirect lands, instead of a white flash.
-  return <LoadingScreen label="Opening the dashboard" />
+  return <LoadingScreen label="Opening Overview" />
 }
