@@ -55,8 +55,16 @@ const ChatArea = () => {
           </div>
         )}
 
-        {/* The composer — stable tree position in both states. */}
-        <div className={isEmpty ? 'relative z-10 w-full max-w-2xl' : 'w-full'}>
+        {/* The composer — stable tree position in both states. In the thread
+            state it shares the messages' column width so the whole surface
+            reads as one column. */}
+        <div
+          className={
+            isEmpty
+              ? 'relative z-10 w-full max-w-2xl'
+              : 'mx-auto w-full max-w-3xl'
+          }
+        >
           <ChatInput />
         </div>
 

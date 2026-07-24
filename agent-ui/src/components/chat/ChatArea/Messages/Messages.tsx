@@ -306,14 +306,14 @@ const ToolTrace = ({
   )
 }
 
-/** Blinking caret shown while tokens are still arriving. */
+/** Shimmering label + caret shown while tokens are still arriving. */
 const StreamingCaret = () => (
   <span className="inline-flex items-center gap-2">
     <span
       aria-hidden
       className="inline-block h-3.5 w-[2px] animate-pulse bg-[var(--brand)]"
     />
-    <span className="text-[length:var(--text-xs)] text-[var(--text-muted)]">Responding…</span>
+    <span className="ls-shimmer text-[length:var(--text-xs)]">Responding…</span>
   </span>
 )
 
@@ -419,31 +419,32 @@ const Messages = ({ messages }: MessageListProps) => {
           const prevUserMsg = index > 0 && messages[index - 1]?.role === 'user' ? messages[index - 1].content : ''
           const msgWithContext = { ...message, _userQuestion: prevUserMsg }
           return (
-            <div key={key} className="flex flex-col gap-1.5">
+            <div
+              key={key}
+              className="flex flex-col gap-1.5"
+              title={msgTime ?? undefined}
+            >
               <AgentMessageWrapper
                 message={msgWithContext}
                 isLastMessage={isLastMessage}
               />
-              <div className="ml-9 flex items-center gap-2 text-[length:var(--text-2xs)] text-[var(--text-muted)]">
-                {msgTime && <span>{msgTime}</span>}
-                {timings[index] && (
-                  <>
-                    <span aria-hidden>·</span>
-                    <ResponseTime ms={timings[index]} />
-                  </>
-                )}
-              </div>
+              {/* Clock time lives in the hover title; only the response
+                  duration earns a visible line. */}
+              {timings[index] && (
+                <div className="ml-9 flex items-center text-[length:var(--text-2xs)] text-[var(--text-muted)]">
+                  <ResponseTime ms={timings[index]} />
+                </div>
+              )}
             </div>
           )
         }
         return (
-          <div key={key} className="flex flex-col gap-1.5">
+          <div
+            key={key}
+            className="flex flex-col gap-1.5"
+            title={msgTime ?? undefined}
+          >
             <UserMessage message={message} />
-            {msgTime && (
-              <div className="text-right text-[length:var(--text-2xs)] text-[var(--text-muted)]">
-                {msgTime}
-              </div>
-            )}
             {isLastMessage && isWaitingForResponse && (
               <div className="mt-3 flex items-start gap-3">
                 <div

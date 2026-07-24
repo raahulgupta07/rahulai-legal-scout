@@ -346,3 +346,31 @@ body {
 
   .text-xs { font-size: 0.65rem; }
 }
+
+/* Streaming "Responding…" label — a light sweep across the text so the wait
+   reads as activity, not a stalled string. */
+.ls-shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--text-muted) 25%,
+    var(--text) 50%,
+    var(--text-muted) 75%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: ls-shimmer-sweep 1.6s linear infinite;
+}
+@keyframes ls-shimmer-sweep {
+  to {
+    background-position: -200% 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ls-shimmer {
+    animation: none;
+    color: var(--text-muted);
+    background: none;
+  }
+}
