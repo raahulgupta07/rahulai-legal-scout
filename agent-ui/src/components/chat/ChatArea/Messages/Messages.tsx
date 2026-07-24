@@ -342,16 +342,6 @@ const ToolTrace = ({
   )
 }
 
-/** Shimmering label + caret shown while tokens are still arriving. */
-const StreamingCaret = () => (
-  <span className="inline-flex items-center gap-2">
-    <span
-      aria-hidden
-      className="inline-block h-3.5 w-[2px] animate-pulse bg-[var(--brand)]"
-    />
-    <span className="ls-shimmer text-[length:var(--text-xs)]">Responding…</span>
-  </span>
-)
 
 const AgentMessageWrapper = ({ message, isLastMessage }: MessageWrapperProps) => {
   const isStreaming = useStore((state) => state.isStreaming)
@@ -393,9 +383,13 @@ const AgentMessageWrapper = ({ message, isLastMessage }: MessageWrapperProps) =>
           <AgentMessage message={message} isStreaming={isStillStreaming} />
         )}
 
-        {/* The label only fills the silent gap before tokens arrive — once
-            text is flowing the inline cursor in AgentMessage carries it. */}
-        {isStillStreaming && !hasContent && <StreamingCaret />}
+        {/* Pre-tool, pre-content gap: the Analyzing pill carries the wait.
+            Once tools stream, ToolTrace shows the pill + timeline instead;
+            once text flows, the inline cursor takes over. */}
+        {isStillStreaming &&
+          !hasContent &&
+          toolCalls.length === 0 &&
+          reasoningTitles.length === 0 && <AnalyzingPill />}
 
         {/* Interactive people pickers (paused HITL run) */}
         <PickerCardList requests={message.picker_requests} />
