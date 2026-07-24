@@ -146,7 +146,7 @@ export default function SplitShell({
         <div
           role="tablist"
           aria-label="View"
-          className="flex shrink-0 border-b-[3px] border-ink bg-background"
+          className="flex shrink-0 items-center gap-1 border-b border-[var(--border)] bg-[var(--surface)] px-3 py-1.5"
         >
           <PaneTab
             active={pane === 'chat'}
@@ -164,13 +164,13 @@ export default function SplitShell({
           {/* Both panes stay mounted: switching tabs must not reset chat
               scroll position or tear down an in-flight stream. */}
           <div
-            className={pane === 'chat' ? 'flex h-full flex-col' : 'hidden'}
+            className={pane === 'chat' ? 'flex h-full flex-col bg-[var(--surface)]' : 'hidden'}
             role="tabpanel"
           >
             {chat}
           </div>
           <div
-            className={pane === 'artifact' ? 'flex h-full flex-col' : 'hidden'}
+            className={pane === 'artifact' ? 'flex h-full flex-col bg-[var(--surface)]' : 'hidden'}
             role="tabpanel"
           >
             {artifact}
@@ -183,7 +183,7 @@ export default function SplitShell({
   return (
     <div ref={containerRef} className="flex h-full min-w-0">
       <div
-        className="flex min-w-0 flex-col"
+        className="flex min-w-0 flex-col bg-[var(--surface)]"
         style={{ width: `${effective * 100}%` }}
       >
         {chat}
@@ -203,26 +203,21 @@ export default function SplitShell({
         onPointerCancel={endDrag}
         onDoubleClick={() => commit(clampRatio(DEFAULT_RATIO, width))}
         onKeyDown={onKeyDown}
-        className={`group relative w-[3px] shrink-0 cursor-col-resize bg-ink outline-none ${
-          dragging ? 'bg-brand' : 'hover:bg-brand focus-visible:bg-brand'
-        }`}
+        className="group relative w-[8px] shrink-0 cursor-col-resize outline-none"
       >
-        {/* Generous invisible hit area — 3px is right visually, wrong to grab. */}
-        <span className="absolute inset-y-0 -left-2 -right-2 block" />
-        {/* Grip: three ticks, visible enough to read as draggable. */}
+        {/* Invisible until reached: the 8px band is the grab target; a thin
+            blue bar reveals on hover, keyboard focus, or while dragging. */}
         <span
           aria-hidden
-          className={`absolute left-1/2 top-1/2 flex h-9 w-[9px] -translate-x-1/2 -translate-y-1/2 flex-col items-center justify-center gap-[3px] border-[2px] border-ink bg-background transition-colors ${
-            dragging ? 'bg-brand' : 'group-hover:bg-background'
+          className={`absolute inset-y-0 left-1/2 w-[3px] -translate-x-1/2 rounded-full bg-blue-400 transition-opacity ${
+            dragging
+              ? 'opacity-100'
+              : 'opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100'
           }`}
-        >
-          <i className="h-[2px] w-[3px] bg-ink" />
-          <i className="h-[2px] w-[3px] bg-ink" />
-          <i className="h-[2px] w-[3px] bg-ink" />
-        </span>
+        />
       </div>
 
-      <div className="flex min-w-0 flex-1 flex-col">{artifact}</div>
+      <div className="flex min-w-0 flex-1 flex-col bg-[var(--surface)]">{artifact}</div>
 
       {/* While dragging, swallow pointer events over iframes/canvases so the
           drag doesn't die when the cursor crosses the PDF preview. */}
@@ -248,21 +243,15 @@ function PaneTab({
       role="tab"
       aria-selected={active}
       onClick={onClick}
-      className={`flex flex-1 items-center justify-center gap-2 px-4 py-2.5 font-display text-xs font-black uppercase tracking-brutal transition-colors ${
+      className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
         active
-          ? 'bg-ink text-[var(--text-inverse)]'
-          : 'bg-background text-ink hover:bg-[var(--bg-secondary)]'
+          ? 'bg-[var(--accent)] text-[var(--text)]'
+          : 'text-[var(--faint,#9CA3AF)] hover:text-[var(--text-muted)]'
       }`}
     >
       {label}
       {badge && (
-        <span
-          className={`border-[2px] px-1.5 py-px font-mono text-2xs tabular-nums ${
-            active
-              ? 'border-[var(--text-inverse)] text-[var(--text-inverse)]'
-              : 'border-ink text-ink'
-          }`}
-        >
+        <span className="text-[10px] tabular-nums text-[var(--text-muted)]">
           {badge}
         </span>
       )}
