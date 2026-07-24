@@ -2,6 +2,7 @@ import type { Metadata } from 'next'
 import { NuqsAdapter } from 'nuqs/adapters/next/app'
 import { Toaster } from '@/components/ui/sonner'
 import AuthGuard from '@/components/AuthGuard'
+import AppShell from '@/components/shell/AppShell'
 import './globals.css'
 
 export const metadata: Metadata = {
@@ -23,7 +24,9 @@ export default function RootLayout({
     <html lang="en">
       <body className="antialiased">
         <AuthGuard>
-          <NuqsAdapter>{children}</NuqsAdapter>
+          <NuqsAdapter>
+            <AppShell>{children}</AppShell>
+          </NuqsAdapter>
         </AuthGuard>
         <Toaster position="top-right" duration={3000} visibleToasts={2} />
       </body>

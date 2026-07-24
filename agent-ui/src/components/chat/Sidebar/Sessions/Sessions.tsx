@@ -9,7 +9,6 @@ import useSessionLoader from '@/hooks/useSessionLoader'
 import SessionItem from './SessionItem'
 import SessionBlankState from './SessionBlankState'
 import { Skeleton } from '@/components/ui/skeleton'
-import { Label, Badge } from '@/components/ui/kit'
 
 interface SkeletonListProps {
   skeletonCount: number
@@ -32,25 +31,9 @@ const SkeletonList: FC<SkeletonListProps> = ({ skeletonCount }) => {
   ))
 }
 
-/** One band: a sticky caption with a count, then the scrolling list. */
-const SessionsShell = ({
-  count,
-  children
-}: {
-  count?: number
-  children: React.ReactNode
-}) => (
-  <div className="flex h-full min-h-0 w-full flex-col">
-    <div className="mb-1.5 flex shrink-0 items-center justify-between gap-2 px-1">
-      <Label>History</Label>
-      {count !== undefined && count > 0 && (
-        <Badge tone="neutral" className="tabular-nums">
-          {count}
-        </Badge>
-      )}
-    </div>
-    {children}
-  </div>
+/** The scrolling list, no caption — the rail already reads as history here. */
+const SessionsShell = ({ children }: { children: React.ReactNode }) => (
+  <div className="flex h-full min-h-0 w-full flex-col">{children}</div>
 )
 
 const Sessions = () => {
@@ -134,7 +117,7 @@ const Sessions = () => {
     !isEndpointActive || !sessionsData || sessionsData.length === 0
 
   return (
-    <SessionsShell count={sessionsData?.length}>
+    <SessionsShell>
       {/*
         The list owns its own scroll and is sized by the flex parent. The old
         h-[calc(100vh-345px)] guessed at the height of everything above it and
