@@ -52,8 +52,7 @@ const VideoItem = memo(({ video }: { video: VideoData }) => {
       <button
         type="button"
         onClick={handleDownload}
-        className="stamp-press absolute right-3 top-3 flex items-center justify-center border-[2px] border-b-[3px] border-r-[3px] border-[var(--ink)] bg-[var(--surface-raised)] p-1.5 text-[var(--ink)] opacity-0 outline-none transition-opacity duration-150 focus-visible:opacity-100 focus-visible:ring-[3px] focus-visible:ring-[var(--ok-neon)] group-hover:opacity-100"
-        style={{ borderRadius: 0 }}
+        className="absolute right-3 top-3 flex items-center justify-center rounded-md border border-[var(--border)] bg-[var(--surface-raised)] p-1.5 text-[var(--text-muted)] opacity-0 outline-none transition-opacity duration-150 hover:text-[var(--text)] focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-[var(--brand)] group-hover:opacity-100"
         aria-label="Download video"
       >
         <Icon type="download" size="xs" />
