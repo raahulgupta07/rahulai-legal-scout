@@ -34,6 +34,10 @@ interface SplitShellProps {
   mobileHeader?: ReactNode
   /** Badge shown on the artifact tab in stacked mode — e.g. "7/12". */
   artifactBadge?: string | null
+  /** When true the document pane (and its divider/tab) is not rendered at
+      all and the conversation takes the full width. The chat node keeps its
+      position as the first child, so hiding never remounts it. */
+  artifactHidden?: boolean
 }
 
 function clampRatio(ratio: number, width: number) {
@@ -48,7 +52,8 @@ export default function SplitShell({
   chat,
   artifact,
   mobileHeader,
-  artifactBadge
+  artifactBadge,
+  artifactHidden = false
 }: SplitShellProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [ratio, setRatio] = useState(DEFAULT_RATIO)
@@ -153,12 +158,14 @@ export default function SplitShell({
             onClick={() => setPane('chat')}
             label="Conversation"
           />
-          <PaneTab
-            active={pane === 'artifact'}
-            onClick={() => setPane('artifact')}
-            label="Document"
-            badge={artifactBadge}
-          />
+          {!artifactHidden && (
+            <PaneTab
+              active={pane === 'artifact'}
+              onClick={() => setPane('artifact')}
+              label="Document"
+              badge={artifactBadge}
+            />
+          )}
         </div>
         <div className="relative min-h-0 flex-1">
           {/* Both panes stay mounted: switching tabs must not reset chat
@@ -184,11 +191,12 @@ export default function SplitShell({
     <div ref={containerRef} className="flex h-full min-w-0">
       <div
         className="flex min-w-0 flex-col bg-[var(--surface)]"
-        style={{ width: `${effective * 100}%` }}
+        style={{ width: artifactHidden ? '100%' : `${effective * 100}%` }}
       >
         {chat}
       </div>
 
+      {!artifactHidden && (
       <div
         role="separator"
         aria-orientation="vertical"
@@ -216,8 +224,13 @@ export default function SplitShell({
           }`}
         />
       </div>
+      )}
 
-      <div className="flex min-w-0 flex-1 flex-col bg-[var(--surface)]">{artifact}</div>
+      {!artifactHidden && (
+        <div className="flex min-w-0 flex-1 flex-col bg-[var(--surface)]">
+          {artifact}
+        </div>
+      )}
 
       {/* While dragging, swallow pointer events over iframes/canvases so the
           drag doesn't die when the cursor crosses the PDF preview. */}

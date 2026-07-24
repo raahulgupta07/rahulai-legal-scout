@@ -26,7 +26,8 @@ function getInstantSuggestions(content: string): string[] {
 
 /** Tool names are snake_case identifiers; show them as readable labels. */
 function formatToolName(name: string): string {
-  return name.replace(/_/g, ' ')
+  const label = name.replace(/_/g, ' ')
+  return label.charAt(0).toUpperCase() + label.slice(1)
 }
 
 function formatSeconds(ms?: number): string | null {
@@ -264,11 +265,15 @@ const ToolTrace = ({
 
   const totalMs = toolCalls.reduce((sum, tc) => sum + (tc.metrics?.time ?? 0), 0)
   const summaryState: EventState = failedCount > 0 ? 'failed' : runningCount > 0 ? 'running' : 'done'
+  // While running the header narrates the CURRENT activity (Claude/bow
+  // pattern) rather than counting steps; the count belongs to the summary of
+  // a finished run.
+  const runningLabel = [...events].reverse().find((e) => e.state === 'running')?.label
   const summary =
     failedCount > 0
       ? `${failedCount} of ${events.length} steps failed`
       : runningCount > 0
-        ? `${events.length} ${events.length === 1 ? 'step' : 'steps'} · running`
+        ? `${runningLabel ?? 'Working'}…`
         : `${events.length} ${events.length === 1 ? 'step' : 'steps'}${totalMs ? ` · ${formatSeconds(totalMs)}` : ''}`
 
   return (
@@ -280,17 +285,33 @@ const ToolTrace = ({
       <button
         onClick={() => setOpen(!open)}
         aria-expanded={open}
-        className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left transition-colors hover:bg-[var(--accent)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]"
+        className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left transition-colors hover:bg-[var(--accent)] focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--border-strong)]"
       >
         <ChevronRight
           aria-hidden
           className={`h-3.5 w-3.5 shrink-0 text-[var(--text-muted)] transition-transform ${open ? 'rotate-90' : ''}`}
         />
+        {summaryState === 'running' ? (
+          <span
+            aria-hidden
+            className="h-3 w-3 shrink-0 animate-spin rounded-full border-[1.5px] border-[var(--border-strong)] border-t-transparent"
+          />
+        ) : (
+          <span aria-hidden className="flex h-3.5 w-3.5 shrink-0 items-center justify-center">
+            {summaryState === 'done' ? (
+              <Check className="h-3 w-3 text-[var(--ok)]" />
+            ) : (
+              <AlertTriangle className="h-3 w-3 text-[var(--danger-strong)]" />
+            )}
+          </span>
+        )}
         <span
-          aria-hidden
-          className={`h-1.5 w-1.5 shrink-0 rounded-[999px] ${STATE_STYLE[summaryState].dot}`}
-        />
-        <span className="text-[length:var(--text-xs)] text-[var(--text-muted)]">
+          className={
+            summaryState === 'running'
+              ? 'ls-shimmer text-[length:var(--text-xs)]'
+              : 'text-[length:var(--text-xs)] text-[var(--text-muted)]'
+          }
+        >
           {summary}
         </span>
       </button>
@@ -408,9 +429,15 @@ const Messages = ({ messages }: MessageListProps) => {
         const key = `${message.role}-${message.created_at}-${index}`
         const isLastMessage = index === messages.length - 1
 
-        const msgTime = message.created_at
-          ? new Date(message.created_at * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true })
+        const msgDate = message.created_at
+          ? new Date(message.created_at * 1000)
           : null
+        // Old sessions carry malformed stamps — a tooltip reading "Invalid
+        // Date" is worse than none.
+        const msgTime =
+          msgDate && !Number.isNaN(msgDate.getTime())
+            ? msgDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true })
+            : null
 
         if (message.role === 'agent') {
           // Find the previous user message for suggestion context
