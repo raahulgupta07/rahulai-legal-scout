@@ -18,6 +18,10 @@ import {
   useState,
   type ReactNode
 } from 'react'
+import { Columns2 } from 'lucide-react'
+
+/** bow's slide curve — panel width, and the toggle riding its edge. */
+const SLIDE = '[transition:width_.25s_cubic-bezier(0.4,0,0.2,1),opacity_.2s_ease]'
 
 const STORAGE_KEY = 'ls_split_ratio'
 const MIN_CHAT_PX = 420
@@ -34,10 +38,12 @@ interface SplitShellProps {
   mobileHeader?: ReactNode
   /** Badge shown on the artifact tab in stacked mode — e.g. "7/12". */
   artifactBadge?: string | null
-  /** When true the document pane (and its divider/tab) is not rendered at
-      all and the conversation takes the full width. The chat node keeps its
-      position as the first child, so hiding never remounts it. */
+  /** When true the document pane collapses (animated) and the conversation
+      takes the full width. The chat node keeps its position as the first
+      child, so hiding never remounts it. */
   artifactHidden?: boolean
+  /** Renders the columns toggle that rides the panel edge. */
+  onToggleArtifact?: () => void
 }
 
 function clampRatio(ratio: number, width: number) {
@@ -53,7 +59,8 @@ export default function SplitShell({
   artifact,
   mobileHeader,
   artifactBadge,
-  artifactHidden = false
+  artifactHidden = false,
+  onToggleArtifact
 }: SplitShellProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [ratio, setRatio] = useState(DEFAULT_RATIO)
@@ -187,16 +194,47 @@ export default function SplitShell({
     )
   }
 
+  const panelPct = (1 - effective) * 100
+
   return (
-    <div ref={containerRef} className="flex h-full min-w-0">
+    <div ref={containerRef} className="relative flex h-full min-w-0">
+      {/* Columns toggle — rides the panel's left edge: sits beside the open
+          panel, glides to the far corner when it closes (bow behaviour). */}
+      {onToggleArtifact && (
+        <button
+          type="button"
+          onClick={onToggleArtifact}
+          aria-pressed={!artifactHidden}
+          title={artifactHidden ? 'Show document panel' : 'Hide document panel'}
+          className={`absolute top-3 z-30 grid h-7 w-7 place-items-center rounded-md [transition:right_.25s_cubic-bezier(0.4,0,0.2,1),background-color_.2s,color_.2s] ${
+            artifactHidden
+              ? 'text-[var(--faint)] hover:bg-[var(--accent)] hover:text-[var(--text-muted)]'
+              : 'bg-[color-mix(in_srgb,var(--border)_70%,transparent)] text-[var(--text)]'
+          }`}
+          style={{
+            right: artifactHidden ? 12 : `calc(${panelPct}% + 14px)`
+          }}
+        >
+          <Columns2 className="h-[18px] w-[18px]" aria-hidden />
+        </button>
+      )}
+
       <div
-        className="flex min-w-0 flex-col bg-[var(--surface)]"
+        className={`flex min-w-0 flex-col bg-[var(--surface)] ${dragging ? '' : SLIDE}`}
         style={{ width: artifactHidden ? '100%' : `${effective * 100}%` }}
       >
         {chat}
       </div>
 
-      {!artifactHidden && (
+      {/* Panel side stays MOUNTED and animates shut — width to zero with the
+          content clipped, so opening/closing slides instead of popping. */}
+      <div
+        aria-hidden={artifactHidden || undefined}
+        className={`flex min-w-0 overflow-hidden ${dragging ? '' : SLIDE} ${
+          artifactHidden ? 'pointer-events-none opacity-0' : 'opacity-100'
+        }`}
+        style={{ width: artifactHidden ? 0 : `${panelPct}%` }}
+      >
       <div
         role="separator"
         aria-orientation="vertical"
@@ -224,13 +262,11 @@ export default function SplitShell({
           }`}
         />
       </div>
-      )}
 
-      {!artifactHidden && (
         <div className="flex min-w-0 flex-1 flex-col bg-[var(--surface)]">
           {artifact}
         </div>
-      )}
+      </div>
 
       {/* While dragging, swallow pointer events over iframes/canvases so the
           drag doesn't die when the cursor crosses the PDF preview. */}

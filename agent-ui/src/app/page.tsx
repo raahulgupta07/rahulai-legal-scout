@@ -4,7 +4,6 @@ import SplitShell from '@/components/shell/SplitShell'
 import ArtifactPanel from '@/components/shell/ArtifactPanel'
 import { useArtifact } from '@/components/shell/useArtifact'
 import { useStore } from '@/store'
-import { Columns2 } from 'lucide-react'
 import { Suspense, useEffect, useRef, useState } from 'react'
 
 function Workspace() {
@@ -45,25 +44,13 @@ function Workspace() {
 
   return (
     <div className="relative flex h-full bg-background">
-      <button
-        type="button"
-        onClick={togglePanel}
-        aria-pressed={panelOpen}
-        title={panelOpen ? 'Hide document panel' : 'Show document panel'}
-        className={`absolute right-3 top-3 z-30 grid h-7 w-7 place-items-center rounded-md transition-colors ${
-          panelOpen
-            ? 'bg-[color-mix(in_srgb,var(--border)_70%,transparent)] text-[var(--text)]'
-            : 'text-[var(--faint)] hover:bg-[var(--accent)] hover:text-[var(--text-muted)]'
-        }`}
-      >
-        <Columns2 className="h-[18px] w-[18px]" aria-hidden />
-      </button>
       <div className="min-w-0 flex-1">
         <SplitShell
           artifactBadge={
             artifact ? `${artifact.filled}/${artifact.total}` : null
           }
           artifactHidden={!panelOpen}
+          onToggleArtifact={togglePanel}
           chat={<ChatArea />}
           artifact={<ArtifactPanel artifact={artifact} />}
         />
