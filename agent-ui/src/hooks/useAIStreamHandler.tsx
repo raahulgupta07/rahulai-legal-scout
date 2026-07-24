@@ -163,8 +163,10 @@ const useAIChatStreamHandler = () => {
           return prevMessages
         }
         const backlog = target.length - current.length
-        // Geometric catch-up: minimum ~200 chars/s, drains a burst in ~0.4s.
-        const step = Math.max(3, Math.ceil(backlog / 12))
+        // Typing pace, not instant catch-up: ~1-2 chars/frame for small
+        // backlogs so a burst keeps typing across the gap until the next one,
+        // ramping up (capped) so long answers never fall minutes behind.
+        const step = Math.min(24, Math.max(1, Math.ceil(backlog / 40)))
         newMessages[newMessages.length - 1] = {
           ...lastMessage,
           content: target.slice(0, current.length + step)
