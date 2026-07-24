@@ -7,7 +7,6 @@ import React, { type FC } from 'react'
 
 import ChatBlankState from './ChatBlankState'
 import PickerCardList from '@/components/chat/PickerCardList'
-import AgentThinkingLoader from './AgentThinkingLoader'
 import { useStore } from '@/store'
 import { Copy, Check, ChevronRight, AlertTriangle } from 'lucide-react'
 
@@ -357,11 +356,9 @@ const AgentMessageWrapper = ({ message, isLastMessage }: MessageWrapperProps) =>
           <AgentMessage message={message} isStreaming={isStillStreaming} />
         )}
 
-        {isStillStreaming && (
-          <div className={hasContent ? 'mt-2' : ''}>
-            <StreamingCaret />
-          </div>
-        )}
+        {/* The label only fills the silent gap before tokens arrive — once
+            text is flowing the inline cursor in AgentMessage carries it. */}
+        {isStillStreaming && !hasContent && <StreamingCaret />}
 
         {/* Interactive people pickers (paused HITL run) */}
         <PickerCardList requests={message.picker_requests} />
@@ -372,7 +369,8 @@ const AgentMessageWrapper = ({ message, isLastMessage }: MessageWrapperProps) =>
           </div>
         )}
 
-        {hasContent && (
+        {/* Follow-ups only after the answer settles — never mid-stream. */}
+        {hasContent && !isStillStreaming && (
           <SuggestionButtons
             content={message.content || ''}
             isLast={isLastMessage}
@@ -445,20 +443,15 @@ const Messages = ({ messages }: MessageListProps) => {
             title={msgTime ?? undefined}
           >
             <UserMessage message={message} />
+            {/* bow-style working row: quiet, unboxed, spinner + elapsed. */}
             {isLastMessage && isWaitingForResponse && (
-              <div className="mt-3 flex items-start gap-3">
-                <div
+              <div className="mt-3 flex items-center gap-2 text-[13px] text-[var(--text-muted)]">
+                <span
                   aria-hidden
-                  className="flex h-6 w-6 shrink-0 items-center justify-center rounded-[var(--radius-sm)] bg-[var(--surface-inverse)]"
-                >
-                  <span className="font-[family-name:var(--font-display)] text-[length:var(--text-2xs)] font-bold tracking-[var(--tracking-tag)] text-[var(--text-inverse)]">
-                    LS
-                  </span>
-                </div>
-                <div className="flex flex-1 items-center gap-3 rounded-[var(--radius-xl)] border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2">
-                  <AgentThinkingLoader />
-                  <LiveTimer />
-                </div>
+                  className="h-3.5 w-3.5 animate-spin rounded-full border-[1.5px] border-[var(--border-strong)] border-t-transparent"
+                />
+                <span className="ls-shimmer">Working</span>
+                <LiveTimer />
               </div>
             )}
           </div>

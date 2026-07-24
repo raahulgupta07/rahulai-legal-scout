@@ -48,7 +48,7 @@ const UnorderedList = ({ className, ...props }: UnorderedListProps) => (
     className={cn(
       className,
       PARAGRAPH_SIZES.body,
-      'flex list-disc flex-col pl-10'
+      'my-1 flex list-disc flex-col gap-1 pl-5'
     )}
     {...filterProps(props)}
   />
@@ -59,7 +59,7 @@ const OrderedList = ({ className, ...props }: OrderedListProps) => (
     className={cn(
       className,
       PARAGRAPH_SIZES.body,
-      'flex list-decimal flex-col pl-10'
+      'my-1 flex list-decimal flex-col gap-1 pl-5'
     )}
     {...filterProps(props)}
   />
@@ -123,7 +123,7 @@ const HorizontalRule = ({ className, ...props }: HorizontalRuleProps) => (
 
 const InlineCode: FC<PreparedTextProps> = ({ children }) => {
   return (
-    <code className="relative whitespace-pre-wrap rounded-none bg-[color-mix(in_srgb,var(--bg-secondary)_50%,transparent)] px-2 py-1 text-[0.9em]">
+    <code className="relative whitespace-pre-wrap rounded bg-[var(--accent)] px-1.5 py-0.5 font-[family-name:var(--font-mono)] text-[0.8125em] text-[var(--text)]">
       {children}
     </code>
   )
@@ -229,7 +229,7 @@ const Img = ({ src, alt }: ImgProps) => {
 }
 
 const Table = ({ className, ...props }: TableProps) => (
-  <div className="w-full max-w-[560px] overflow-hidden rounded-none border border-border">
+  <div className="my-2 w-full max-w-[640px] overflow-hidden rounded-lg border border-border">
     <div className="w-full overflow-x-auto">
       <table className={cn(className, 'w-full')} {...filterProps(props)} />
     </div>
@@ -240,7 +240,7 @@ const TableHead = ({ className, ...props }: TableHeaderProps) => (
   <thead
     className={cn(
       className,
-      'rounded-none border-b border-border bg-transparent p-2 text-left text-sm font-[600]'
+      'border-b border-border bg-[var(--bg-secondary)] text-left'
     )}
     {...filterProps(props)}
   />
@@ -248,13 +248,13 @@ const TableHead = ({ className, ...props }: TableHeaderProps) => (
 
 const TableHeadCell = ({ className, ...props }: TableHeaderCellProps) => (
   <th
-    className={cn(className, 'p-2 text-sm font-[600]')}
+    className={cn(className, 'p-2.5 text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]')}
     {...filterProps(props)}
   />
 )
 
 const TableBody = ({ className, ...props }: TableBodyProps) => (
-  <tbody className={cn(className, 'text-xs')} {...filterProps(props)} />
+  <tbody className={cn(className, 'text-[13px]')} {...filterProps(props)} />
 )
 
 const TableRow = ({ className, ...props }: TableRowProps) => (
@@ -266,7 +266,7 @@ const TableRow = ({ className, ...props }: TableRowProps) => (
 
 const TableCell = ({ className, ...props }: TableCellProps) => (
   <td
-    className={cn(className, 'whitespace-nowrap p-2 font-[400]')}
+    className={cn(className, 'whitespace-nowrap p-2.5 font-[400] tabular-nums')}
     {...filterProps(props)}
   />
 )
