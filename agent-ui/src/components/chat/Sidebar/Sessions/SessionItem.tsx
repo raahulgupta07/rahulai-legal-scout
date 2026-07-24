@@ -1,4 +1,5 @@
 import { useQueryState } from 'nuqs'
+import { usePathname, useRouter } from 'next/navigation'
 import { SessionEntry } from '@/types/os'
 import useSessionLoader from '@/hooks/useSessionLoader'
 import { deleteSessionAPI } from '@/api/os'
@@ -59,6 +60,8 @@ const SessionItem = ({
   const [teamId] = useQueryState('team')
   const [dbId] = useQueryState('db_id')
   const [, setSessionId] = useQueryState('session')
+  const pathname = usePathname()
+  const router = useRouter()
   const authToken = useStore((state) => state.authToken)
   const { getSession } = useSessionLoader()
   const { selectedEndpoint, sessionsData, setSessionsData, mode } = useStore()
@@ -72,6 +75,17 @@ const SessionItem = ({
     if (!(agentId || teamId || dbId)) return
 
     onSessionClick()
+    // The rail is global now: from an admin route the chat page isn't
+    // mounted, so selecting a session must first navigate home with the
+    // entity + session in the URL, then hydrate the store.
+    if (pathname !== '/') {
+      const params = new URLSearchParams()
+      if (agentId) params.set('agent', agentId)
+      if (teamId) params.set('team', teamId)
+      if (dbId) params.set('db_id', dbId)
+      params.set('session', session_id)
+      router.push(`/?${params.toString()}`)
+    }
     await getSession(
       {
         entityType: mode,
@@ -81,7 +95,9 @@ const SessionItem = ({
       },
       session_id
     )
-    setSessionId(session_id)
+    // On the chat page nuqs owns the param; after a cross-route push the
+    // session is already in the URL and this would edit the wrong route.
+    if (pathname === '/') setSessionId(session_id)
   }
 
   const handleDeleteSession = async () => {
