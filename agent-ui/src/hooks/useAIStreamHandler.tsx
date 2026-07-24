@@ -130,6 +130,71 @@ const useAIChatStreamHandler = () => {
   const newSessionIdRef = useRef<string | null>(null)
   const sessionLabelRef = useRef('')
 
+  // Typewriter smoothing: OpenRouter delivers tokens in multi-KB bursts with
+  // second-long gaps, which reads as "not streaming". Received text goes into
+  // streamTargetRef; a rAF loop reveals it into the store at a rate
+  // proportional to the backlog, so bursts render as continuous typing.
+  const streamTargetRef = useRef('')
+  const revealRafRef = useRef<number | null>(null)
+
+  const cancelReveal = useCallback(() => {
+    if (revealRafRef.current != null) {
+      cancelAnimationFrame(revealRafRef.current)
+      revealRafRef.current = null
+    }
+  }, [])
+
+  const startReveal = useCallback(() => {
+    if (revealRafRef.current != null) return
+    const tick = () => {
+      revealRafRef.current = null
+      let caughtUp = false
+      setMessages((prevMessages) => {
+        const newMessages = [...prevMessages]
+        const lastMessage = newMessages[newMessages.length - 1]
+        if (!lastMessage || lastMessage.role !== 'agent') {
+          caughtUp = true
+          return prevMessages
+        }
+        const target = streamTargetRef.current
+        const current = lastMessage.content ?? ''
+        if (current.length >= target.length) {
+          caughtUp = true
+          return prevMessages
+        }
+        const backlog = target.length - current.length
+        // Geometric catch-up: minimum ~200 chars/s, drains a burst in ~0.4s.
+        const step = Math.max(3, Math.ceil(backlog / 12))
+        newMessages[newMessages.length - 1] = {
+          ...lastMessage,
+          content: target.slice(0, current.length + step)
+        }
+        return newMessages
+      })
+      if (!caughtUp) revealRafRef.current = requestAnimationFrame(tick)
+    }
+    revealRafRef.current = requestAnimationFrame(tick)
+  }, [setMessages])
+
+  /** Flush everything received so far straight into the message (end/error). */
+  const flushReveal = useCallback(() => {
+    cancelReveal()
+    const target = streamTargetRef.current
+    if (!target) return
+    setMessages((prevMessages) => {
+      const newMessages = [...prevMessages]
+      const lastMessage = newMessages[newMessages.length - 1]
+      if (!lastMessage || lastMessage.role !== 'agent') return prevMessages
+      if ((lastMessage.content ?? '').length >= target.length)
+        return prevMessages
+      newMessages[newMessages.length - 1] = {
+        ...lastMessage,
+        content: target
+      }
+      return newMessages
+    })
+  }, [cancelReveal, setMessages])
+
   /**
    * RunPaused — the agent hit a `choose_*` tool declared with
    * requires_user_input=True. Attach one picker request per paused tool to the
@@ -237,7 +302,8 @@ const useAIChatStreamHandler = () => {
               lastContentRef.current,
               ''
             )
-            lastMessage.content += uniqueContent
+            // Buffered, not appended: the rAF reveal loop types it out.
+            streamTargetRef.current += uniqueContent
             lastContentRef.current = chunk.content
 
             // Handle tool calls streaming
@@ -277,7 +343,7 @@ const useAIChatStreamHandler = () => {
           ) {
             const jsonBlock = getJsonMarkdown(chunk?.content)
 
-            lastMessage.content += jsonBlock
+            streamTargetRef.current += jsonBlock
             lastContentRef.current = jsonBlock
           } else if (
             chunk.response_audio?.transcript &&
@@ -292,6 +358,7 @@ const useAIChatStreamHandler = () => {
           }
           return newMessages
         })
+        startReveal()
       } else if (
         chunk.event === RunEvent.ReasoningStep ||
         chunk.event === RunEvent.TeamReasoningStep
@@ -331,6 +398,7 @@ const useAIChatStreamHandler = () => {
         chunk.event === RunEvent.TeamRunError ||
         chunk.event === RunEvent.TeamRunCancelled
       ) {
+        flushReveal()
         updateMessagesWithErrorState()
         const errorContent =
           (chunk.content as string) ||
@@ -357,6 +425,11 @@ const useAIChatStreamHandler = () => {
         chunk.event === RunEvent.RunCompleted ||
         chunk.event === RunEvent.TeamRunCompleted
       ) {
+        // Final event carries the authoritative full content — stop the
+        // typewriter and let the replace below win.
+        cancelReveal()
+        if (typeof chunk.content === 'string')
+          streamTargetRef.current = chunk.content
         setMessages((prevMessages) => {
           const newMessages = prevMessages.map((message, index) => {
             if (index === prevMessages.length - 1 && message.role === 'agent') {
@@ -401,7 +474,10 @@ const useAIChatStreamHandler = () => {
       setSessionId,
       setSessionsData,
       setStreamingErrorMessage,
-      updateMessagesWithErrorState
+      updateMessagesWithErrorState,
+      startReveal,
+      cancelReveal,
+      flushReveal
     ]
   )
 
@@ -490,6 +566,8 @@ const useAIChatStreamHandler = () => {
       })
 
       lastContentRef.current = ''
+      streamTargetRef.current = ''
+      cancelReveal()
       const controller = new AbortController()
       setAbortController(controller)
 
@@ -582,6 +660,8 @@ const useAIChatStreamHandler = () => {
       })
 
       lastContentRef.current = ''
+      streamTargetRef.current = ''
+      cancelReveal()
       newSessionIdRef.current = sessionId
       sessionLabelRef.current = (formData.get('message') as string) ?? ''
       try {

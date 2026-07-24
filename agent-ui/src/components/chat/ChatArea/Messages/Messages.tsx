@@ -353,7 +353,9 @@ const AgentMessageWrapper = ({ message, isLastMessage }: MessageWrapperProps) =>
           </div>
         )}
 
-        {hasContent && <AgentMessage message={message} />}
+        {hasContent && (
+          <AgentMessage message={message} isStreaming={isStillStreaming} />
+        )}
 
         {isStillStreaming && (
           <div className={hasContent ? 'mt-2' : ''}>

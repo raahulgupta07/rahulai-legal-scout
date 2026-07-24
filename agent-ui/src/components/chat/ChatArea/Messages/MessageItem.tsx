@@ -265,12 +265,43 @@ function InlineEmailComposer({ defaultTo, defaultAttachment, onSent }: { default
   )
 }
 
-const AgentMessage = ({ message }: MessageProps) => {
+/**
+ * While tokens stream, unclosed markdown delimiters would render literally
+ * (`**8. Notice of` …). Close any open code fence / bold / italic pair so the
+ * partial document always parses; the final content replaces this wholesale.
+ */
+function stabilizeStreamingMarkdown(src: string): string {
+  let out = src
+  if (((out.match(/```/g) || []).length) % 2 === 1) out += '\n```'
+  else {
+    // Only balance inline marks when not inside an open fence.
+    if (((out.match(/\*\*/g) || []).length) % 2 === 1) out += '**'
+  }
+  return out
+}
+
+const StreamingCursor = () => (
+  <span
+    aria-hidden
+    className="ml-0.5 inline-block h-[1.1em] w-[2px] translate-y-[0.2em] animate-pulse rounded-full bg-[var(--text-muted)]"
+  />
+)
+
+const AgentMessage = ({
+  message,
+  isStreaming = false
+}: MessageProps & { isStreaming?: boolean }) => {
   const { streamingErrorMessage, setPendingMessage } = useStore()
 
-  const documents = message.content ? extractDocuments(message.content) : []
-  const missingFields = message.content ? extractMissingFields(message.content) : []
-  const showEmailForm = message.content ? isEmailRelated(message.content) : false
+  // Skip the per-render extraction passes while tokens are still arriving —
+  // they scan the whole content with several regexes and only matter once the
+  // answer has settled.
+  const documents =
+    !isStreaming && message.content ? extractDocuments(message.content) : []
+  const missingFields =
+    !isStreaming && message.content ? extractMissingFields(message.content) : []
+  const showEmailForm =
+    !isStreaming && message.content ? isEmailRelated(message.content) : false
   const emailTo = message.content ? extractEmailAddress(message.content) : ""
   const emailAttachment = message.content ? extractDocFilename(message.content) : ""
 
@@ -283,7 +314,10 @@ const AgentMessage = ({ message }: MessageProps) => {
     }
   }
 
-  const displayContent = message.content
+  const displayContent =
+    isStreaming && message.content
+      ? stabilizeStreamingMarkdown(message.content)
+      : message.content
 
   let messageContent
   if (message.streamingError) {
@@ -304,6 +338,7 @@ const AgentMessage = ({ message }: MessageProps) => {
             attachments below are free to use the full column width. */}
         <div className="max-w-[65ch]">
           <MarkdownRenderer>{displayContent}</MarkdownRenderer>
+          {isStreaming && <StreamingCursor />}
         </div>
         {showEmailForm ? (
           <InlineEmailComposer defaultTo={emailTo} defaultAttachment={emailAttachment} onSent={() => {}} />

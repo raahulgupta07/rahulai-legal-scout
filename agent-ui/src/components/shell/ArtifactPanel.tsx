@@ -90,6 +90,19 @@ export default function ArtifactPanel({
   artifact: Artifact | null
 }) {
   const isStreaming = useStore((s) => s.isStreaming)
+  // "Working…" only when the run is actually assembling a document — a chat
+  // turn that merely lists templates or answers a question must not spin the
+  // document pane (client-visible confusion).
+  const docWorkLive = useStore((s) => {
+    if (!s.isStreaming) return false
+    const last = s.messages[s.messages.length - 1]
+    if (!last || last.role !== 'agent') return false
+    return (last.tool_calls ?? []).some((tc) =>
+      /^(prepare_document|generate_document|preview_document|create_document)/.test(
+        tc.tool_name ?? ''
+      )
+    )
+  })
   const [tab, setTab] = useState<Tab>('fields')
   const [previewNonce, setPreviewNonce] = useState(0)
 
@@ -118,7 +131,7 @@ export default function ArtifactPanel({
       >
         <div className="min-h-0 flex-1 p-2 pt-1.5">
           <div className={`relative ${CARD_FRAME}`}>
-            <StateMessage working={isStreaming} />
+            <StateMessage working={docWorkLive} />
           </div>
         </div>
       </section>
