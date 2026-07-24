@@ -348,7 +348,7 @@ const AgentMessage = ({ message }: MessageProps) => {
   }
 
   return (
-    <div className="font-[family-name:var(--font-body)] text-[length:var(--text-base)] leading-relaxed text-[var(--text)]">
+    <div className="font-[family-name:var(--font-body)] text-[length:var(--text-sm)] leading-[1.6] text-[var(--text)]">
       {messageContent}
     </div>
   )
@@ -357,9 +357,9 @@ const AgentMessage = ({ message }: MessageProps) => {
 const UserMessage = memo(({ message }: MessageProps) => {
   return (
     <div className="flex justify-end max-md:break-words">
-      {/* The user turn is the one inverted surface in the thread — it reads as
-          an utterance, while agent output reads as a document. */}
-      <div className="max-w-[80%] rounded-[var(--radius-xl)] bg-[var(--surface-inverse)] px-4 py-2.5 text-[var(--text-inverse)]">
+      {/* The user turn reads as an utterance — a soft grey bubble — while agent
+          output reads as a document laid plainly on the ground. */}
+      <div className="max-w-[80%] rounded-[var(--radius-lg)] bg-[var(--accent)] px-3.5 py-2.5 text-[var(--text)]">
         <p className="whitespace-pre-wrap font-[family-name:var(--font-body)] text-[length:var(--text-sm)] leading-relaxed">
           {message.content}
         </p>

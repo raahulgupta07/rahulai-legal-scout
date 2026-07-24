@@ -1,6 +1,7 @@
 'use client'
 
 import { useMemo, useState } from 'react'
+import { Users, Check, AlertTriangle } from 'lucide-react'
 
 import type {
   PickerCandidate,
@@ -13,17 +14,6 @@ const PICKER_TITLES: Record<string, string> = {
   choose_representative_director: 'Choose representative director',
   choose_attendees: 'Choose attendees',
   choose_person_from_register: 'Choose person from register'
-}
-
-interface PickerCardProps {
-  request: PickerRequest
-  /** Only called while the card is live. */
-  onSubmit?: (
-    request: PickerRequest,
-    selection: PickerSelectionEntry | PickerSelectionEntry[]
-  ) => Promise<void> | void
-  /** Force read-only regardless of status (e.g. another card is submitting). */
-  disabled?: boolean
 }
 
 const NEW_ID = '__new__'
@@ -140,13 +130,12 @@ const PickerCard = ({ request, onSubmit, disabled }: PickerCardProps) => {
   if (request.parse_error) {
     return (
       <div
-        className="mt-2 border-[2px] border-r-[3px] border-b-[3px] border-[var(--danger-strong)] bg-[var(--bg)] p-3 font-brutalist"
+        className="mt-2 flex items-start gap-2 rounded-[var(--radius-lg)] border border-[var(--danger)] bg-[color-mix(in_srgb,var(--danger)_8%,transparent)] p-3"
         role="alert"
       >
-        <span className="tag-label" style={{ background: 'var(--danger-strong)' }}>
-          Picker unavailable
-        </span>
-        <p className="mt-2 text-[12px] font-bold text-[var(--ink)]">
+        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--danger-strong)]" aria-hidden />
+        <p className="text-[13px] text-[var(--text)]">
+          <span className="font-semibold">Picker unavailable.</span>{' '}
           {request.parse_error} Please answer in chat instead.
         </p>
       </div>
@@ -156,21 +145,21 @@ const PickerCard = ({ request, onSubmit, disabled }: PickerCardProps) => {
   return (
     <section
       aria-label={`${title}${companyName ? ` for ${companyName}` : ''}`}
-      className="mt-2 border-[2px] border-l-[2px] border-r-[3px] border-b-[3px] border-[var(--ink)] bg-[var(--bg)] font-brutalist"
-      style={{ boxShadow: '4px 4px 0px 0px var(--ink)', borderRadius: 0 }}
+      className="mt-2 overflow-hidden rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--surface)] font-[family-name:var(--font-body)]"
     >
       {/* Header */}
-      <header className="flex flex-wrap items-center justify-between gap-2 border-b-[2px] border-[var(--ink)] bg-[var(--ink)] px-3 py-2">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="text-[10px] font-black uppercase tracking-[0.15em] text-[var(--ok-neon)]">
-            {multi ? 'Select all that apply' : 'Select one'}
-          </span>
-          <span className="text-[11px] font-black uppercase tracking-[0.1em] text-[var(--bg)]">
+      <header className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--border)] bg-[var(--bg-secondary)] px-3.5 py-2.5">
+        <div className="flex min-w-0 items-center gap-2">
+          <Users className="h-4 w-4 shrink-0 text-[var(--text-muted)]" aria-hidden />
+          <span className="truncate text-[13px] font-semibold text-[var(--text)]">
             {title}
+          </span>
+          <span className="shrink-0 rounded-full border border-[var(--border)] bg-[var(--surface)] px-2 py-0.5 text-[10px] font-medium text-[var(--text-muted)]">
+            {multi ? 'Select all that apply' : 'Select one'}
           </span>
         </div>
         {companyName && (
-          <span className="text-[10px] font-bold uppercase tracking-[0.1em] text-[color-mix(in_srgb,var(--bg)_60%,transparent)]">
+          <span className="truncate text-[12px] text-[var(--text-muted)]">
             {companyName}
           </span>
         )}
@@ -178,25 +167,23 @@ const PickerCard = ({ request, onSubmit, disabled }: PickerCardProps) => {
 
       {/* Context */}
       {(payload.purpose || payload.note) && (
-        <div className="border-b-[2px] border-[color-mix(in_srgb,var(--ink)_20%,transparent)] px-3 py-2">
+        <div className="border-b border-[var(--border)] px-3.5 py-2.5">
           {payload.purpose && (
-            <p className="text-[12px] font-bold text-[var(--ink)]">
-              {payload.purpose}
-            </p>
+            <p className="text-[13px] text-[var(--text)]">{payload.purpose}</p>
           )}
           {payload.note && (
-            <p className="mt-1 text-[11px] text-[color-mix(in_srgb,var(--ink)_70%,transparent)]">{payload.note}</p>
+            <p className="mt-1 text-[12px] text-[var(--text-muted)]">{payload.note}</p>
           )}
         </div>
       )}
 
       {/* Resolved banner */}
       {status !== 'pending' && (
-        <div className="border-b-[2px] border-[color-mix(in_srgb,var(--ink)_20%,transparent)] bg-[color-mix(in_srgb,var(--ok-neon)_15%,transparent)] px-3 py-2">
-          <span className="tag-label">
+        <div className="border-b border-[var(--border)] bg-[color-mix(in_srgb,var(--ok)_10%,transparent)] px-3.5 py-2.5">
+          <span className="text-[11px] font-medium uppercase tracking-[var(--tracking-tag)] text-[var(--ok-strong)]">
             {status === 'answered' ? 'Answered' : 'Closed'}
           </span>
-          <p className="mt-1 text-[12px] font-bold text-[var(--ink)]">
+          <p className="mt-1 text-[13px] text-[var(--text)]">
             {request.answer_summary
               ? request.answer_summary
               : status === 'historical'
@@ -214,7 +201,7 @@ const PickerCard = ({ request, onSubmit, disabled }: PickerCardProps) => {
         className="flex flex-col"
       >
         {payload.candidates.length === 0 && (
-          <p className="px-3 py-3 text-[12px] font-bold text-[color-mix(in_srgb,var(--ink)_60%,transparent)]">
+          <p className="px-3.5 py-3 text-[13px] text-[var(--text-muted)]">
             No candidates on record.
             {payload.allow_new ? ' Enter someone new below.' : ''}
           </p>
@@ -230,7 +217,7 @@ const PickerCard = ({ request, onSubmit, disabled }: PickerCardProps) => {
           return (
             <div
               key={candidateKey(candidate, index)}
-              className="border-b-[1px] border-[color-mix(in_srgb,var(--ink)_15%,transparent)] last:border-b-0"
+              className="border-b border-[var(--border)] last:border-b-0"
             >
               <div
                 role={multi ? 'checkbox' : 'radio'}
@@ -244,46 +231,54 @@ const PickerCard = ({ request, onSubmit, disabled }: PickerCardProps) => {
                     toggle(id)
                   }
                 }}
-                className={`flex cursor-pointer items-start gap-3 px-3 py-2.5 outline-none transition-none focus-visible:bg-[color-mix(in_srgb,var(--ok-neon)_20%,transparent)] focus-visible:ring-[3px] focus-visible:ring-inset focus-visible:ring-[var(--ink)] ${
-                  checked ? 'bg-[color-mix(in_srgb,var(--ok-neon)_20%,transparent)]' : 'hover:bg-[color-mix(in_srgb,var(--ink)_5%,transparent)]'
+                className={`flex cursor-pointer items-start gap-3 px-3.5 py-2.5 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--brand)] ${
+                  checked
+                    ? 'bg-[color-mix(in_srgb,var(--brand)_8%,transparent)]'
+                    : 'hover:bg-[var(--bg-secondary)]'
                 } ${readOnly ? 'cursor-default opacity-70' : ''}`}
               >
-                {/* Marker: square = checkbox, square-with-dot = radio */}
+                {/* Marker: rounded box = checkbox, circle = radio, brand-filled
+                    when chosen. */}
                 <span
                   aria-hidden="true"
-                  className="mt-[2px] flex h-4 w-4 flex-shrink-0 items-center justify-center border-[2px] border-[var(--ink)] bg-[var(--surface-raised)]"
+                  className={`mt-[1px] flex h-4 w-4 shrink-0 items-center justify-center border ${
+                    multi ? 'rounded-[4px]' : 'rounded-full'
+                  } ${
+                    checked
+                      ? 'border-[var(--brand)] bg-[var(--brand)]'
+                      : 'border-[var(--border-strong)] bg-[var(--surface)]'
+                  }`}
                 >
-                  {checked && (
-                    <span className="block h-2 w-2 bg-[var(--ok-neon)] ring-1 ring-[var(--ink)]" />
-                  )}
+                  {checked &&
+                    (multi ? (
+                      <Check className="h-3 w-3 text-white" />
+                    ) : (
+                      <span className="h-1.5 w-1.5 rounded-full bg-white" />
+                    ))}
                 </span>
 
                 <span className="min-w-0 flex-1">
                   <span className="flex flex-wrap items-center gap-2">
-                    <span className="text-[13px] font-black uppercase tracking-[0.03em] text-[var(--ink)]">
+                    <span className="text-[13px] font-medium text-[var(--text)]">
                       {candidate.name}
                     </span>
                     <span
-                      className="tag-label"
-                      style={
+                      className={`rounded-full border px-2 py-0.5 text-[10px] font-medium ${
                         isCorporate
-                          ? { background: 'var(--danger-strong)', color: 'var(--bg)' }
-                          : undefined
-                      }
+                          ? 'border-[color-mix(in_srgb,var(--danger)_35%,transparent)] text-[var(--danger-strong)]'
+                          : 'border-[var(--border)] text-[var(--text-muted)]'
+                      }`}
                     >
                       {isCorporate ? 'Corporate' : 'Individual'}
                     </span>
                     {multi && order > 0 && (
-                      <span
-                        className="tag-label"
-                        style={{ background: 'var(--ok-strong)' }}
-                      >
+                      <span className="rounded-full bg-[var(--brand)] px-2 py-0.5 text-[10px] font-medium text-white">
                         #{order}
                       </span>
                     )}
                   </span>
                   {(candidate.identifier || candidate.subtitle) && (
-                    <span className="mt-0.5 block text-[11px] text-[color-mix(in_srgb,var(--ink)_70%,transparent)]">
+                    <span className="mt-0.5 block text-[12px] text-[var(--text-muted)]">
                       {[candidate.identifier, candidate.subtitle]
                         .filter(Boolean)
                         .join(' · ')}
@@ -294,12 +289,14 @@ const PickerCard = ({ request, onSubmit, disabled }: PickerCardProps) => {
 
               {/* Second-level: a corporate party signs THROUGH a representative */}
               {isCorporate && checked && (
-                <div className="ml-[26px] border-l-[3px] border-[var(--danger-strong)] bg-[color-mix(in_srgb,var(--ink)_4%,transparent)] px-3 py-2">
-                  <span className="tag-label">Signs through</span>
+                <div className="ml-[26px] mb-2 mr-3 rounded-[var(--radius-md)] border-l-2 border-[var(--brand)] bg-[var(--bg-secondary)] px-3 py-2">
+                  <span className="text-[11px] font-medium uppercase tracking-[var(--tracking-tag)] text-[var(--text-muted)]">
+                    Signs through
+                  </span>
                   {reps.length === 0 ? (
-                    <p className="mt-1 text-[11px] font-bold text-[var(--danger-strong)]">
-                      No representative directors on record for{' '}
-                      {candidate.name}. Ask the agent to look them up.
+                    <p className="mt-1 text-[12px] font-medium text-[var(--danger-strong)]">
+                      No representative directors on record for {candidate.name}.
+                      Ask the agent to look them up.
                     </p>
                   ) : (
                     <div
@@ -330,22 +327,28 @@ const PickerCard = ({ request, onSubmit, disabled }: PickerCardProps) => {
                                   }))
                               }
                             }}
-                            className={`flex cursor-pointer items-center gap-2 px-1 py-1.5 outline-none focus-visible:ring-[3px] focus-visible:ring-inset focus-visible:ring-[var(--ink)] ${
-                              repChecked ? 'bg-[color-mix(in_srgb,var(--ok-neon)_25%,transparent)]' : ''
+                            className={`flex cursor-pointer items-center gap-2 rounded-[var(--radius-sm)] px-1.5 py-1.5 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--brand)] ${
+                              repChecked
+                                ? 'bg-[color-mix(in_srgb,var(--brand)_10%,transparent)]'
+                                : ''
                             } ${readOnly ? 'cursor-default' : ''}`}
                           >
                             <span
                               aria-hidden="true"
-                              className="flex h-3.5 w-3.5 flex-shrink-0 items-center justify-center border-[2px] border-[var(--ink)] bg-[var(--surface-raised)]"
+                              className={`flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full border ${
+                                repChecked
+                                  ? 'border-[var(--brand)] bg-[var(--brand)]'
+                                  : 'border-[var(--border-strong)] bg-[var(--surface)]'
+                              }`}
                             >
                               {repChecked && (
-                                <span className="block h-1.5 w-1.5 bg-[var(--danger-strong)]" />
+                                <span className="h-1.5 w-1.5 rounded-full bg-white" />
                               )}
                             </span>
-                            <span className="text-[12px] font-bold text-[var(--ink)]">
+                            <span className="text-[12px] font-medium text-[var(--text)]">
                               {rep.name}
                               {rep.identifier || rep.subtitle ? (
-                                <span className="font-normal text-[color-mix(in_srgb,var(--ink)_60%,transparent)]">
+                                <span className="font-normal text-[var(--text-muted)]">
                                   {' '}
                                   ·{' '}
                                   {[rep.identifier, rep.subtitle]
@@ -366,27 +369,16 @@ const PickerCard = ({ request, onSubmit, disabled }: PickerCardProps) => {
         })}
       </div>
 
-      {/* Enter someone new */}
-      {payload.allow_new && newFields.length > 0 && status === 'pending' && (
-        <div className="border-t-[2px] border-[color-mix(in_srgb,var(--ink)_20%,transparent)] px-3 py-2">
-          <button
-            type="button"
-            disabled={readOnly}
-            aria-expanded={newOpen}
-            onClick={() => {
-              setNewOpen((open) => !open)
-              setSelectedIds([])
-            }}
-            className="stamp-press border-[2px] border-b-[3px] border-r-[3px] border-[var(--ink)] bg-[var(--surface-raised)] px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] text-[var(--ink)] outline-none focus-visible:ring-[3px] focus-visible:ring-[var(--ink)] disabled:opacity-40"
-          >
-            {newOpen ? '− Cancel new entry' : '+ Enter someone new'}
-          </button>
-
-          {newOpen && (
-            <div className="mt-2 flex flex-col gap-2">
+      {/* Enter someone new — expanded fields */}
+      {payload.allow_new &&
+        newFields.length > 0 &&
+        status === 'pending' &&
+        newOpen && (
+          <div className="border-t border-[var(--border)] px-3.5 py-2.5">
+            <div className="flex flex-col gap-2">
               {newFields.map((field) => (
                 <label key={field.name} className="flex flex-col gap-1">
-                  <span className="tag-label">
+                  <span className="text-[12px] font-medium text-[var(--text-secondary)]">
                     {field.label}
                     {field.required ? ' *' : ''}
                   </span>
@@ -401,37 +393,50 @@ const PickerCard = ({ request, onSubmit, disabled }: PickerCardProps) => {
                         [field.name]: event.target.value
                       }))
                     }
-                    className="border-[2px] border-b-[3px] border-r-[3px] border-[var(--ink)] bg-[var(--surface-raised)] px-2 py-1 text-[12px] font-bold text-[var(--ink)] outline-none focus-visible:ring-[3px] focus-visible:ring-[var(--ok-neon)]"
-                    style={{ borderRadius: 0 }}
+                    className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface)] px-2.5 py-1.5 text-[13px] text-[var(--text)] outline-none placeholder:text-[var(--text-muted)] focus:border-[var(--brand)] focus-visible:ring-2 focus-visible:ring-[color-mix(in_srgb,var(--brand)_25%,transparent)]"
                   />
                 </label>
               ))}
             </div>
-          )}
-        </div>
-      )}
+          </div>
+        )}
 
       {/* Footer */}
       {status === 'pending' && (
-        <footer className="flex flex-wrap items-center justify-between gap-2 border-t-[2px] border-[var(--ink)] px-3 py-2">
-          <span
-            className="text-[10px] font-bold uppercase tracking-[0.1em] text-[color-mix(in_srgb,var(--ink)_60%,transparent)]"
-            aria-live="polite"
-          >
-            {corporateNeedsRep
-              ? 'Pick a representative director'
-              : selectedIds.length > 0
-                ? `${selectedIds.length} selected`
-                : newOpen
-                  ? 'New entry'
-                  : 'Nothing selected'}
-          </span>
+        <footer className="flex flex-wrap items-center justify-between gap-2 border-t border-[var(--border)] px-3.5 py-2.5">
+          <div className="flex min-w-0 flex-col gap-0.5">
+            {payload.allow_new && newFields.length > 0 && (
+              <button
+                type="button"
+                disabled={readOnly}
+                aria-expanded={newOpen}
+                onClick={() => {
+                  setNewOpen((open) => !open)
+                  setSelectedIds([])
+                }}
+                className="w-fit text-[12px] font-medium text-[var(--brand)] outline-none transition-colors hover:text-[#1D4ED8] focus-visible:underline disabled:opacity-40"
+              >
+                {newOpen ? '− Cancel new entry' : '+ Enter someone new'}
+              </button>
+            )}
+            <span
+              className="text-[11px] text-[var(--text-muted)]"
+              aria-live="polite"
+            >
+              {corporateNeedsRep
+                ? 'Pick a representative director'
+                : selectedIds.length > 0
+                  ? `${selectedIds.length} selected`
+                  : newOpen
+                    ? 'New entry'
+                    : 'Nothing selected'}
+            </span>
+          </div>
           <button
             type="button"
             onClick={handleConfirm}
             disabled={!canConfirm}
-            className="stamp-press border-[2px] border-b-[3px] border-r-[3px] border-[var(--ink)] bg-[var(--ok-neon)] px-3 py-1.5 text-[11px] font-black uppercase tracking-[0.1em] text-[var(--ink)] outline-none focus-visible:ring-[3px] focus-visible:ring-[var(--ink)] disabled:cursor-not-allowed disabled:bg-[color-mix(in_srgb,var(--ink)_10%,transparent)] disabled:text-[color-mix(in_srgb,var(--ink)_40%,transparent)]"
-            style={{ borderRadius: 0 }}
+            className="rounded-[var(--radius-sm)] bg-[var(--brand)] px-3 py-1.5 text-[13px] font-medium text-white outline-none transition-colors hover:bg-[#1D4ED8] focus-visible:ring-2 focus-visible:ring-[var(--brand)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--surface)] disabled:cursor-not-allowed disabled:bg-[var(--accent)] disabled:text-[var(--text-muted)]"
           >
             {submitting ? 'Sending…' : 'Confirm'}
           </button>
@@ -439,6 +444,17 @@ const PickerCard = ({ request, onSubmit, disabled }: PickerCardProps) => {
       )}
     </section>
   )
+}
+
+interface PickerCardProps {
+  request: PickerRequest
+  /** Only called while the card is live. */
+  onSubmit?: (
+    request: PickerRequest,
+    selection: PickerSelectionEntry | PickerSelectionEntry[]
+  ) => Promise<void> | void
+  /** Force read-only regardless of status (e.g. another card is submitting). */
+  disabled?: boolean
 }
 
 export default PickerCard

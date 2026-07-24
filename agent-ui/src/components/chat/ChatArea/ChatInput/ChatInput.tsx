@@ -5,7 +5,7 @@ import { TextArea } from '@/components/ui/textarea'
 import { useStore } from '@/store'
 import useAIChatStreamHandler from '@/hooks/useAIStreamHandler'
 import { useQueryState } from 'nuqs'
-import { Mail, ArrowUp, Square } from 'lucide-react'
+import { Mail, ArrowRight, Square } from 'lucide-react'
 
 const MAX_CHARS = 5000
 const COUNTER_VISIBLE_FROM = 4500
@@ -55,23 +55,20 @@ const ChatInput = () => {
   return (
     <div className="mx-auto w-full max-w-full px-4 pb-4 md:max-w-3xl lg:max-w-5xl">
       {/*
-        The whole composer reads as one control: the container owns the frame and
-        the focus ring (focus-within), the textarea inside is chrome-less. Actions
-        sit on an inner toolbar so the writing area keeps its full width.
+        The whole composer reads as one control: the container owns the frame,
+        the textarea inside is chrome-less, and actions sit on an inner toolbar
+        so the writing area keeps its full width. No shadow — the frame carries
+        elevation with a border only; focus deepens the border rather than
+        painting a ring, matching the Insights composer.
 
         rounded-[var(--radius-xl)] rather than rounded-xl: the radius comes from
         the --radius-xl token so the composer tracks the token layer rather than
         Tailwind's own rounding scale.
-
-        The ring uses color-mix rather than a `/25` alpha modifier: Tailwind
-        cannot apply an alpha modifier to a var() holding a hex, and emits no
-        style at all — silently leaving the focus ring uncoloured.
       */}
       <div
         className="rounded-[var(--radius-xl)] border border-[var(--border)] bg-[var(--surface)]
-                   shadow-sm transition-colors duration-150 motion-reduce:transition-none
-                   focus-within:border-[var(--brand)]
-                   focus-within:ring-2 focus-within:ring-[color-mix(in_srgb,var(--brand)_25%,transparent)]"
+                   transition-colors duration-150 motion-reduce:transition-none
+                   focus-within:border-[var(--border-strong)]"
       >
         <TextArea
           placeholder={
@@ -107,7 +104,7 @@ const ChatInput = () => {
             onClick={() => setPendingMessage('I want to send an email with a document attachment')}
             disabled={!hasTarget || isStreaming}
             title="Email a document"
-            className="inline-flex items-center gap-1.5 rounded-[var(--radius-xl)] px-2.5 py-1.5
+            className="inline-flex items-center gap-1.5 rounded-[var(--radius-sm)] px-2 py-1.5
                        font-[family-name:var(--font-body)] text-[length:var(--text-xs)] text-[var(--text-muted)]
                        transition-colors duration-150 motion-reduce:transition-none
                        hover:bg-[var(--accent)] hover:text-[var(--text)]
@@ -139,7 +136,7 @@ const ChatInput = () => {
                 onClick={handleCancel}
                 aria-label="Stop generating"
                 title="Stop generating"
-                className="inline-flex h-8 w-8 items-center justify-center rounded-[var(--radius-xl)]
+                className="inline-flex h-7 w-7 items-center justify-center rounded-full
                            border border-[var(--border)] bg-[var(--surface)] text-[var(--danger)]
                            transition-colors duration-150 motion-reduce:transition-none
                            hover:bg-[var(--accent)]
@@ -148,21 +145,24 @@ const ChatInput = () => {
                 <Square className="h-3 w-3 fill-current" aria-hidden="true" />
               </button>
             ) : (
+              // A quiet graphite send control, not a blue accent: the composer
+              // leaves colour to the message, not the button. Hover deepens to
+              // black in light and lightens in dark.
               <button
                 type="button"
                 onClick={handleSubmit}
                 disabled={!canSend}
                 aria-label="Send message"
                 title="Send message"
-                className="inline-flex h-8 w-8 items-center justify-center rounded-[var(--radius-xl)]
-                           bg-[var(--brand)] text-[var(--brand-fg)]
-                           transition-opacity duration-150 motion-reduce:transition-none
-                           hover:opacity-90
+                className="inline-flex h-7 w-7 items-center justify-center rounded-full
+                           bg-[#374151] text-white
+                           transition-colors duration-150 motion-reduce:transition-none
+                           hover:bg-black dark:hover:bg-[#4B5563]
                            focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]
                            focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--surface)]
                            disabled:cursor-not-allowed disabled:bg-[var(--accent)] disabled:text-[var(--text-muted)]"
               >
-                <ArrowUp className="h-4 w-4" aria-hidden="true" />
+                <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
               </button>
             )}
           </div>

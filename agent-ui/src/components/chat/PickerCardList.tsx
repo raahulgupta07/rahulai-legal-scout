@@ -61,16 +61,16 @@ const PickerCardList = ({ requests }: { requests?: PickerRequest[] }) => {
   return (
     <section
       aria-label="Selections required"
-      className="mt-2 font-brutalist"
+      className="mt-2 font-[family-name:var(--font-body)]"
       data-picker-list=""
     >
       {/* Queue strip — only earns its space when more than one is outstanding */}
       {queued && (
-        <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 border-[2px] border-b-0 border-[var(--ink)] bg-[var(--surface-raised)] px-3 py-1.5">
-          <span className="text-[10px] font-black uppercase tracking-[0.15em] text-[var(--ink)]">
+        <div className="mb-2 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--bg-secondary)] px-3.5 py-2">
+          <span className="text-[12px] font-semibold text-[var(--text)]">
             {pending.length} selections required
           </span>
-          <span className="text-[10px] font-bold uppercase tracking-[0.1em] text-[color-mix(in_srgb,var(--ink)_60%,transparent)]">
+          <span className="text-[11px] text-[var(--text-muted)]">
             Answer one at a time
           </span>
         </div>
@@ -87,11 +87,11 @@ const PickerCardList = ({ requests }: { requests?: PickerRequest[] }) => {
             />
 
             {needsFallbackNewEntry(request) && (
-              <div className="border-[2px] border-t-0 border-r-[3px] border-b-[3px] border-[var(--ink)] bg-[var(--surface-raised)] px-3 py-2">
+              <div className="mt-1.5 rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--bg-secondary)] px-3.5 py-2.5">
                 <div className="flex flex-wrap items-end gap-2">
                   <div className="flex min-w-0 flex-1 flex-col gap-1">
                     <label
-                      className="tag-label w-fit"
+                      className="text-[12px] font-medium text-[var(--text-secondary)]"
                       htmlFor={`picker-new-${request.tool_call_id}`}
                     >
                       Not on the register? Enter someone new
@@ -114,8 +114,7 @@ const PickerCardList = ({ requests }: { requests?: PickerRequest[] }) => {
                           void submitFallbackNew(request)
                         }
                       }}
-                      className="w-full border-[2px] border-b-[3px] border-r-[3px] border-[var(--ink)] bg-[var(--bg)] px-2 py-1 text-[12px] font-bold text-[var(--ink)] outline-none placeholder:font-normal placeholder:text-[color-mix(in_srgb,var(--ink)_45%,transparent)] focus-visible:ring-[3px] focus-visible:ring-[var(--ok-neon)] disabled:opacity-40"
-                      style={{ borderRadius: 0 }}
+                      className="w-full rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface)] px-2.5 py-1.5 text-[13px] text-[var(--text)] outline-none placeholder:text-[var(--text-muted)] focus:border-[var(--brand)] focus-visible:ring-2 focus-visible:ring-[color-mix(in_srgb,var(--brand)_25%,transparent)] disabled:opacity-40"
                     />
                   </div>
                   <button
@@ -124,8 +123,7 @@ const PickerCardList = ({ requests }: { requests?: PickerRequest[] }) => {
                       busy || !(fallbackNames[request.tool_call_id] ?? '').trim()
                     }
                     onClick={() => void submitFallbackNew(request)}
-                    className="stamp-press border-[2px] border-b-[3px] border-r-[3px] border-[var(--ink)] bg-[var(--ok-neon)] px-3 py-1.5 text-[11px] font-black uppercase tracking-[0.1em] text-[var(--ink)] outline-none focus-visible:ring-[3px] focus-visible:ring-[var(--ink)] disabled:cursor-not-allowed disabled:bg-[color-mix(in_srgb,var(--ink)_10%,transparent)] disabled:text-[color-mix(in_srgb,var(--ink)_40%,transparent)]"
-                    style={{ borderRadius: 0 }}
+                    className="rounded-[var(--radius-sm)] bg-[var(--brand)] px-3 py-1.5 text-[13px] font-medium text-white outline-none transition-colors hover:bg-[#1D4ED8] focus-visible:ring-2 focus-visible:ring-[var(--brand)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg-secondary)] disabled:cursor-not-allowed disabled:bg-[var(--accent)] disabled:text-[var(--text-muted)]"
                   >
                     Use this person
                   </button>

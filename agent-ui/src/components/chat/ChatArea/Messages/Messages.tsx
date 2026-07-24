@@ -187,19 +187,23 @@ const STATE_STYLE: Record<EventState, { dot: string; text: string; label: string
 const ToolEventRow = ({ event }: { event: TraceEvent }) => {
   const style = STATE_STYLE[event.state]
   return (
-    <li className="flex items-center gap-2.5 py-1">
-      <span
-        aria-hidden
-        className={`h-1.5 w-1.5 shrink-0 rounded-[999px] ${style.dot}`}
-      />
+    <li className="flex items-center gap-2.5 border-t border-[var(--border)] py-1.5 first:border-t-0">
+      {/* Glyph carries state: a green check when a step lands, a pulsing dot
+          while it runs, a warning when it fails. */}
+      <span aria-hidden className="flex h-3.5 w-3.5 shrink-0 items-center justify-center">
+        {event.state === 'done' && <Check className="h-3 w-3 text-[var(--ok)]" />}
+        {event.state === 'running' && (
+          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--warn)]" />
+        )}
+        {event.state === 'failed' && (
+          <AlertTriangle className="h-3 w-3 text-[var(--danger-strong)]" />
+        )}
+      </span>
       <span
         className={`min-w-0 flex-1 truncate font-[family-name:var(--font-mono)] text-[length:var(--text-xs)] ${style.text}`}
       >
         {event.label}
       </span>
-      {event.state === 'failed' && (
-        <AlertTriangle className="h-3 w-3 shrink-0 text-[var(--danger-strong)]" />
-      )}
       <span className="shrink-0 font-[family-name:var(--font-mono)] text-[length:var(--text-2xs)] tabular-nums text-[var(--text-muted)]">
         {event.duration ?? '—'}
       </span>
@@ -270,7 +274,7 @@ const ToolTrace = ({
 
   return (
     <div
-      className={`mb-2 overflow-hidden rounded-[var(--radius-xl)] border bg-[var(--bg-secondary)] ${
+      className={`mb-2 overflow-hidden rounded-[var(--radius-lg)] border bg-[var(--bg-secondary)] ${
         summaryState === 'failed' ? 'border-[var(--danger)]' : 'border-[var(--border)]'
       }`}
     >
@@ -287,7 +291,7 @@ const ToolTrace = ({
           aria-hidden
           className={`h-1.5 w-1.5 shrink-0 rounded-[999px] ${STATE_STYLE[summaryState].dot}`}
         />
-        <span className="text-[length:var(--text-xs)] uppercase tracking-[var(--tracking-tag)] text-[var(--text-muted)]">
+        <span className="text-[length:var(--text-xs)] text-[var(--text-muted)]">
           {summary}
         </span>
       </button>
