@@ -66,7 +66,7 @@ const ChatInput = () => {
         Tailwind's own rounding scale.
       */}
       <div
-        className="rounded-[var(--radius-xl)] border border-[var(--border)] bg-[var(--surface)]
+        className="rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--surface)]
                    transition-colors duration-150 motion-reduce:transition-none
                    focus-within:border-[var(--border-strong)]"
       >

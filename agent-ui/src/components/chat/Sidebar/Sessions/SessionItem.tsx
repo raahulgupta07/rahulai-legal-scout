@@ -134,32 +134,29 @@ const SessionItem = ({
           aria-current={isSelected ? 'true' : undefined}
           title={displayTitle}
           className={cn(
-            'flex min-w-0 flex-1 flex-col items-start gap-0.5 py-2 pl-3 pr-8 text-left transition-colors',
+            'flex min-w-0 flex-1 items-center py-1.5 pl-2.5 pr-8 text-left transition-colors',
             'rounded-[var(--radius-sm)]',
             focusRing,
             isSelected
-              ? 'bg-[var(--surface-raised)] shadow-[inset_2px_0_0_0_var(--ink)]'
-              : 'hover:bg-[var(--bg-secondary)]'
+              ? 'bg-[color-mix(in_srgb,var(--border)_70%,transparent)]'
+              : 'hover:bg-[var(--accent)]'
           )}
         >
           <span
             className={cn(
-              'w-full truncate text-[length:var(--text-sm)] leading-5',
+              'w-full truncate text-[13px] leading-5',
               isSelected
                 ? 'font-medium text-[var(--text)]'
                 : 'text-[var(--text-secondary)]'
             )}
+            title={
+              created_at
+                ? `${displayTitle} · ${timeAgo(created_at)} (${exactTime(created_at) ?? ''})`
+                : displayTitle
+            }
           >
             {displayTitle}
           </span>
-          {created_at && (
-            <span
-              className="text-[length:var(--text-2xs)] tabular-nums text-[var(--text-muted)]"
-              title={exactTime(created_at)}
-            >
-              {timeAgo(created_at)}
-            </span>
-          )}
         </button>
         <button
           type="button"
