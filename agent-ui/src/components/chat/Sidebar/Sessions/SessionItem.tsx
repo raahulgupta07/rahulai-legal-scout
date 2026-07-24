@@ -56,15 +56,19 @@ const SessionItem = ({
   currentSessionId,
   onSessionClick
 }: SessionItemProps) => {
-  const [agentId] = useQueryState('agent')
+  const [urlAgentId] = useQueryState('agent')
   const [teamId] = useQueryState('team')
-  const [dbId] = useQueryState('db_id')
+  const [urlDbId] = useQueryState('db_id')
   const [, setSessionId] = useQueryState('session')
   const pathname = usePathname()
   const router = useRouter()
   const authToken = useStore((state) => state.authToken)
   const { getSession } = useSessionLoader()
-  const { selectedEndpoint, sessionsData, setSessionsData, mode } = useStore()
+  const { selectedEndpoint, sessionsData, setSessionsData, mode, agents } =
+    useStore()
+  // Same fallback as Sessions.tsx: admin routes drop the query params.
+  const agentId = urlAgentId ?? (teamId ? null : (agents[0]?.id || null))
+  const dbId = urlDbId ?? (teamId ? null : (agents[0]?.db_id || null))
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
   const { clearChat } = useChatActions()

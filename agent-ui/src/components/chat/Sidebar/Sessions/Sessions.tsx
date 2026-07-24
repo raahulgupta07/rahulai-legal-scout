@@ -37,13 +37,13 @@ const SessionsShell = ({ children }: { children: React.ReactNode }) => (
 )
 
 const Sessions = () => {
-  const [agentId] = useQueryState('agent', {
+  const [urlAgentId] = useQueryState('agent', {
     parse: (v: string | null) => v || undefined,
     history: 'push'
   })
   const [teamId] = useQueryState('team')
   const [sessionId] = useQueryState('session')
-  const [dbId] = useQueryState('db_id')
+  const [urlDbId] = useQueryState('db_id')
 
   const {
     selectedEndpoint,
@@ -53,8 +53,15 @@ const Sessions = () => {
     hydrated,
     sessionsData,
     setSessionsData,
-    isSessionsLoading
+    isSessionsLoading,
+    agents
   } = useStore()
+
+  // The rail is global: admin routes carry no ?agent/?db_id params, so fall
+  // back to the first loaded agent (single-agent product) to keep history
+  // alive everywhere.
+  const agentId = urlAgentId ?? (teamId ? null : (agents[0]?.id ?? null))
+  const dbId = urlDbId ?? (teamId ? null : (agents[0]?.db_id ?? null))
 
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(
     null
