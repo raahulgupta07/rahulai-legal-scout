@@ -184,33 +184,55 @@ const STATE_STYLE: Record<EventState, { dot: string; text: string; label: string
   failed: { dot: 'bg-[var(--danger)]', text: 'text-[var(--danger-strong)]', label: 'Failed' }
 }
 
+/** One timeline entry: state dot on the rail, label, duration. */
 const ToolEventRow = ({ event }: { event: TraceEvent }) => {
   const style = STATE_STYLE[event.state]
   return (
-    <li className="flex items-center gap-2.5 border-t border-[var(--border)] py-1.5 first:border-t-0">
-      {/* Glyph carries state: a green check when a step lands, a pulsing dot
-          while it runs, a warning when it fails. */}
-      <span aria-hidden className="flex h-3.5 w-3.5 shrink-0 items-center justify-center">
-        {event.state === 'done' && <Check className="h-3 w-3 text-[var(--ok)]" />}
-        {event.state === 'running' && (
-          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--warn)]" />
-        )}
-        {event.state === 'failed' && (
-          <AlertTriangle className="h-3 w-3 text-[var(--danger-strong)]" />
-        )}
-      </span>
+    <li className="relative flex items-baseline gap-2 py-1 pl-[18px]">
       <span
-        className={`min-w-0 flex-1 truncate font-[family-name:var(--font-mono)] text-[length:var(--text-xs)] ${style.text}`}
+        aria-hidden
+        className={`absolute left-[-3px] top-[9px] h-[7px] w-[7px] rounded-full ${
+          event.state === 'done'
+            ? 'bg-[var(--ok)]'
+            : event.state === 'running'
+              ? 'animate-pulse bg-[var(--brand)]'
+              : 'bg-[var(--danger)]'
+        }`}
+      />
+      <span
+        className={
+          event.state === 'running'
+            ? 'ls-shimmer text-[12.5px]'
+            : `text-[12.5px] ${event.state === 'failed' ? 'text-[var(--danger-strong)]' : 'text-[var(--text)]'}`
+        }
       >
         {event.label}
       </span>
-      <span className="shrink-0 font-[family-name:var(--font-mono)] text-[length:var(--text-2xs)] tabular-nums text-[var(--text-muted)]">
-        {event.duration ?? '—'}
-      </span>
+      {event.duration && (
+        <span className="shrink-0 font-[family-name:var(--font-mono)] text-[11px] tabular-nums text-[var(--faint)]">
+          {event.duration}
+        </span>
+      )}
       <span className="sr-only">{style.label}</span>
     </li>
   )
 }
+
+/** GPT-style pill shown above the timeline while the run is in flight. */
+const AnalyzingPill = () => (
+  <span className="inline-flex items-center gap-2 self-start rounded-full border border-[var(--border)] bg-[var(--surface)] px-3.5 py-1.5 text-[13px]">
+    <span className="ls-shimmer font-medium">Analyzing your request</span>
+    <span aria-hidden className="inline-flex gap-[3px]">
+      {[0, 1, 2].map((i) => (
+        <span
+          key={i}
+          className="h-1 w-1 animate-pulse rounded-full bg-[var(--text-muted)]"
+          style={{ animationDelay: `${i * 0.2}s` }}
+        />
+      ))}
+    </span>
+  </span>
+)
 
 /**
  * Collapsed to a single summary line when everything succeeded — the user
@@ -265,63 +287,57 @@ const ToolTrace = ({
 
   const totalMs = toolCalls.reduce((sum, tc) => sum + (tc.metrics?.time ?? 0), 0)
   const summaryState: EventState = failedCount > 0 ? 'failed' : runningCount > 0 ? 'running' : 'done'
-  // While running the header narrates the CURRENT activity (Claude/bow
-  // pattern) rather than counting steps; the count belongs to the summary of
-  // a finished run.
-  const runningLabel = [...events].reverse().find((e) => e.state === 'running')?.label
+
+  // Option D (B+C mix): while running, a gradient "Analyzing" pill sits above
+  // a dot timeline of tool activity; when finished it all collapses to one
+  // quiet "✓ N steps · Xs" line that re-expands on click.
+  const Timeline = (
+    <ul className="relative ml-[9px] mt-2 flex flex-col">
+      <span
+        aria-hidden
+        className="absolute bottom-[10px] left-[0px] top-[10px] w-[1.5px] bg-[var(--border)]"
+      />
+      {events.map((event) => (
+        <ToolEventRow key={event.key} event={event} />
+      ))}
+    </ul>
+  )
+
+  if (summaryState === 'running') {
+    return (
+      <div className="mb-2 flex flex-col">
+        <AnalyzingPill />
+        {Timeline}
+      </div>
+    )
+  }
+
   const summary =
     failedCount > 0
       ? `${failedCount} of ${events.length} steps failed`
-      : runningCount > 0
-        ? `${runningLabel ?? 'Working'}…`
-        : `${events.length} ${events.length === 1 ? 'step' : 'steps'}${totalMs ? ` · ${formatSeconds(totalMs)}` : ''}`
+      : `${events.length} ${events.length === 1 ? 'step' : 'steps'}${totalMs ? ` · ${formatSeconds(totalMs)}` : ''}`
 
   return (
-    <div
-      className={`mb-2 overflow-hidden rounded-[var(--radius-lg)] border bg-[var(--bg-secondary)] ${
-        summaryState === 'failed' ? 'border-[var(--danger)]' : 'border-[var(--border)]'
-      }`}
-    >
+    <div className="mb-2 flex flex-col items-start">
       <button
         onClick={() => setOpen(!open)}
         aria-expanded={open}
-        className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left transition-colors hover:bg-[var(--accent)] focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--border-strong)]"
+        className="flex cursor-pointer items-center gap-1.5 rounded-md py-0.5 pr-2 text-left text-[12.5px] text-[var(--text-muted)] transition-colors hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--border-strong)]"
       >
         <ChevronRight
           aria-hidden
-          className={`h-3.5 w-3.5 shrink-0 text-[var(--text-muted)] transition-transform ${open ? 'rotate-90' : ''}`}
+          className={`h-3.5 w-3.5 shrink-0 transition-transform ${open ? 'rotate-90' : ''}`}
         />
-        {summaryState === 'running' ? (
-          <span
-            aria-hidden
-            className="h-3 w-3 shrink-0 animate-spin rounded-full border-[1.5px] border-[var(--border-strong)] border-t-transparent"
-          />
+        {summaryState === 'done' ? (
+          <Check className="h-3 w-3 shrink-0 text-[var(--ok)]" aria-hidden />
         ) : (
-          <span aria-hidden className="flex h-3.5 w-3.5 shrink-0 items-center justify-center">
-            {summaryState === 'done' ? (
-              <Check className="h-3 w-3 text-[var(--ok)]" />
-            ) : (
-              <AlertTriangle className="h-3 w-3 text-[var(--danger-strong)]" />
-            )}
-          </span>
+          <AlertTriangle className="h-3 w-3 shrink-0 text-[var(--danger-strong)]" aria-hidden />
         )}
-        <span
-          className={
-            summaryState === 'running'
-              ? 'ls-shimmer text-[length:var(--text-xs)]'
-              : 'text-[length:var(--text-xs)] text-[var(--text-muted)]'
-          }
-        >
+        <span className={summaryState === 'failed' ? 'text-[var(--danger-strong)]' : ''}>
           {summary}
         </span>
       </button>
-      {open && (
-        <ul className="border-t border-[var(--border)] px-3 py-1.5">
-          {events.map((event) => (
-            <ToolEventRow key={event.key} event={event} />
-          ))}
-        </ul>
-      )}
+      {open && Timeline}
     </div>
   )
 }
