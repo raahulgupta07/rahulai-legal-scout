@@ -110,19 +110,25 @@ EXA_API_KEY=...           # Optional — only loaded when set, never embedded in
 ### Frontend
 | File | Purpose |
 |------|---------|
-| `agent-ui/src/app/page.tsx` | Chat interface (input capped at 5000 chars) |
-| `agent-ui/src/app/login/page.tsx` | Brutalist login page (Space Grotesk, warm yellow, ink borders) |
-| `agent-ui/src/app/admin/templates/page.tsx` | Template upload, training, preview (DocViewer + LibreOffice PDF) |
-| `agent-ui/src/app/admin/companies/page.tsx` | Company management (PDF/manual + dynamic field registry section + streaming extract logs) |
-| `agent-ui/src/app/admin/dashboard/page.tsx` | Dashboard KPIs |
-| `agent-ui/src/app/admin/documents/page.tsx` | Generated documents (split-view: PDF left, placeholder values right, back button) |
+| `agent-ui/src/app/page.tsx` | Chat workspace: SplitShell + panel auto-open logic (`docWorkLive`) + columns toggle wiring |
+| `agent-ui/src/app/login/page.tsx` | Login card on grid+glow background (Insights language) |
+| `agent-ui/src/components/shell/AppRail.tsx` + `AppShell.tsx` | ONE global rail (chat + admin): blue "New chat", flat Overview/Registers/Settings, session history, user row. Mounted once in root layout, never unmounts |
+| `agent-ui/src/components/shell/SplitShell.tsx` | Animated chat/document split — panel slides on `cubic-bezier(0.4,0,0.2,1)` 250ms, columns toggle rides the panel edge, resize handle w/ invisible-until-hover blue bar |
+| `agent-ui/src/components/shell/ArtifactPanel.tsx` | Document pane: hairline rounded card (`#f8f8f7`), cyan-tinted toolbar, Fields/Preview tabs, centered faint empty state |
+| `agent-ui/src/app/admin/overview/page.tsx` | Tabs: Dashboard \| Documents \| Emails (bodies in sibling `*View.tsx`) |
+| `agent-ui/src/app/admin/registers/page.tsx` | Tabs: Templates \| Companies \| People |
+| `agent-ui/src/app/admin/settings/page.tsx` | Tabs: AI models \| Email \| System \| Activity \| Users \| Knowledge |
+| `agent-ui/src/app/admin/*/​*View.tsx` | Extracted page bodies (verbatim features); old routes are client redirects w/ `?tab=` |
+| `agent-ui/src/components/chat/ChatArea/*` | Blank state (greeting+grid+glow, composer centered), typewriter-smoothed streaming, Analyzing pill + tool timeline, hover-only timestamps |
+| `agent-ui/src/hooks/useAIStreamHandler.tsx` | rAF typewriter: buffers bursty OpenRouter tokens, reveals ~120 chars/s (backlog-capped) |
+| `agent-ui/src/components/ui/typography/*` | Chat type scale: body 14px/1.625, headings capped 14–16px semibold, code chips, 11px uppercase table headers |
 | `agent-ui/src/components/ui/DocViewer.tsx` | Unified PDF/DOCX dispatcher; forces PdfViewer for `/preview-pdf/` paths |
 | `agent-ui/src/components/ui/PdfViewer.tsx` | Canvas PDF render via pdfjs-dist (Brave-shields-safe, sends Bearer header) |
 | `agent-ui/src/components/ui/DocxViewer.tsx` | Client-side docx render via docx-preview (sends Bearer header) |
 | `agent-ui/src/lib/api-client.ts` | API endpoint URLs |
 | `agent-ui/src/store.ts` | Zustand state |
-| `agent-ui/src/app/globals.css` | Global styles + brutalist utilities (.ink-border, .stamp-shadow, .tag-label, .stamp-press) |
-| `agent-ui/src/app/layout.tsx` | Root layout (Space Grotesk font) |
+| `agent-ui/src/app/globals.css` | Token layer (single source of truth) + `.ls-shimmer` streaming label |
+| `agent-ui/src/app/layout.tsx` | Root layout (system font stack — no webfont ships) + AppShell mount |
 
 ### Config
 | File | Purpose |
@@ -333,47 +339,37 @@ GET  /health                                  # Health check
 
 ---
 
-## Design System
+## Design System — CityAgent Insights language (restyle 2026-07-24, branch `feature/ui-insights-restyle`)
 
-**DASH-inspired brutalist aesthetic** — industrial/command-center feel across all pages. Inspired by City-Dash.
+Rebuilt to match CityAgent Insights (bagofwords): neutral Tailwind gray ramp, single blue accent, system font, dense 13-14px type. Single token layer in `globals.css` — components never hardcode hexes. Rollback tag `pre-insights-restyle`.
 
-### Colors
-| Token | Value | Usage |
-|-------|-------|-------|
-| Surface (page bg) | `#feffd6` | Chat area, admin pages |
-| Surface bright | `#fffff0` | Answer boxes, cards |
-| On-surface (text) | `#383832` | Primary text, borders |
-| Primary (green) | `#007518` | Active states, borders |
-| Primary neon | `#00fc40` | CLI prompts, send button, NEW CHAT button |
-| Error | `#be2d06` | Destructive actions, cancel |
-| Warning | `#ff9d00` | Traffic light dot |
-| Terminal dark | `#262622` | CLI blocks, user bubbles |
+### Tokens (light / dark)
+| Token | Light | Dark |
+|-------|-------|------|
+| `--bg` (content) | `#ffffff` | `#111827` |
+| `--bg-secondary` (rail) | `#F9FAFB` | `#030712` |
+| `--border` | `#E5E7EB` | `#1F2937` |
+| `--text` / `--text-muted` / `--faint` | `#111827` / `#6B7280` / `#9CA3AF` | `#F9FAFB` / `#9CA3AF` / `#6B7280` |
+| `--brand` | `#2563EB` | `#3B82F6` |
+| `--accent` (subtle fill) | `#F3F4F6` | `#1F2937` |
+| Radii | 6 / 8 / 12 / 16px + full | same |
+
+Three theme blocks: `@media (prefers-color-scheme: dark)` + `:root[data-theme='dark']` + `:root[data-theme='light']` — an explicit toggle must beat the media query both ways. NEVER Tailwind alpha modifiers on `var()` colors (`bg-[var(--x)]/20` emits NOTHING) — use `color-mix(in srgb, var(--token) N%, transparent)`.
 
 ### Typography
-- **Font:** Space Grotesk (loaded in layout.tsx), weight 900 for headers
-- **Pattern:** Uppercase, letter-spacing 0.05-0.15em, font-black
+- **Font:** system sans stack (`ui-sans-serif, system-ui, …`) — no webfont ships. Mono: `ui-monospace, SFMono-Regular, Menlo`.
+- **Scale:** 13px nav rows · 11px uppercase +0.05em section/table headers · 30px/400 home greeting · chat body 14px/1.625 · chat headings capped 14–16px semibold · code chips 13px mono · durations 11px mono tabular.
 
-### CSS Utilities (globals.css)
-- `.ink-border` — Asymmetric 2px/3px letterpress border
-- `.stamp-shadow` — Hard 4px offset shadow
-- `.tag-label` — Dark tag with yellow text (form labels)
-- `.stamp-press` — Button press translate effect
-- `.brutalist` — Zero border-radius override
-- `@keyframes cursorBlink` — CLI green block cursor
-- `@keyframes cliBlink` — Traffic light dots animation
+### Shell
+- **One rail** (`AppRail`, 240px, collapsible 56px): blue-text "New chat", flat Overview/Registers/Settings (minRole-gated), divider, session history (13px single-line), user row + version. Mounted once at root layout.
+- **Admin = 3 tabbed pages**: `/admin/overview` (Dashboard|Documents|Emails), `/admin/registers` (Templates|Companies|People), `/admin/settings` (AI models|Email|System|Activity|Users|Knowledge). Old routes redirect w/ `?tab=`. AuthGuard path-gates all (incl. the once-open `/admin/people`).
 
-### Chat UI (DASH-inspired)
-- **User messages:** Right-aligned, dark bubble `#262622`, letterpress border (4px right/bottom)
-- **Agent messages:** CLI terminal block (dark) + white answer box below with stamp shadow
-- **CLI block:** Always visible — `$ scout exec --agent legal` → `> ✓ tool_name` → `$ done · N steps`
-- **Streaming animation:** Green cursor `█` blink + traffic light dots `■■■` (green/orange/red)
-- **Answer box loading:** Doc icon + traffic light dots, "STREAMING" label until complete
-- **COPY button:** Under every answer, copies to clipboard
-- **Trace toggle:** `$ trace ▼` collapsible showing tool calls + duration
-- **Auto-suggestions:** LLM-powered via `POST /api/suggest-followups` (instant keyword fallback + async AI)
-- **Session tag:** `LEGAL SCOUT · 02:08 PM` centered at top of chat
-- **Status bar:** `SYSTEM_ACTIVE | POWERED BY AI AGENT | LEGAL SCOUT · MYANMAR`
-- **Timestamps:** `02:08 PM · READ` (user) / `02:08 PM · AGENT` (agent) — 12hr AM/PM format
+### Chat UX
+- **Home:** centered greeting → composer (`rounded-xl`, Email pill, graphite circular send) → chips, over a faint 24px grid + pastel glow. Composer keeps ONE tree position across empty→thread (never remounts).
+- **Streaming:** rAF typewriter smooths bursty OpenRouter delivery (~120 chars/s, backlog-capped); partial-markdown stabilizer closes open ```/** pairs; inline cursor; "Analyzing your request" pill + dot timeline of tools (green done / pulsing blue live, labels + durations) → collapses to `✓ N steps · Xs` on finish.
+- **Document panel:** hidden until a document tool runs or an artifact lands; slides open/closed on `cubic-bezier(0.4,0,0.2,1)` 250ms; columns toggle rides the panel edge; resizable (invisible handle, blue bar on hover).
+- **Timestamps:** hover-title only; response duration is the only visible time.
+- **Auto-suggestions:** LLM-powered via `POST /api/suggest-followups`, shown only after the answer settles.
 
 ---
 
@@ -467,3 +463,9 @@ All database connections use centralized `get_db_conn()` from `db/connection.py`
 - **`.dockerignore`** excludes `documents/`, `logs/`, `.git/`, `agent-ui/node_modules`, `agent-ui/.next`, `agent-ui/out` — minimal build context.
 - **Monitoring stack removed** from compose — only `scout-db` + `scout-api` ship.
 - **Download MIME fix** — `_file_response()` sets correct `media_type` + `Content-Disposition` so browsers (Safari especially) don't append `.txt` to `.docx`.
+
+## Current State (2026-07-25)
+
+- **Branch `feature/ui-insights-restyle` (UNMERGED, ~20 commits)** carries the full Insights restyle + streaming/panel work above. Baked into the local image and Playwright-verified; merge to dev/main + VERSION/CHANGELOG still pending. Rollback tags: `pre-insights-restyle`, `pre-rail-revamp`, `pre-ui-revamp`.
+- **Planned next: Legal Skills engine** (Anthropic Agent-Skills pattern ported to Agno): `legal_skills` DB table, L1 metadata injected under a `## Legal Skills` prompt marker, `load_skill(name)` tool for full bodies, 8 seed Myanmar corporate-law skills (5 hand-authored process playbooks + 3 generated from the templates' `document_workflow`/`legal_references` training data), Settings→Skills admin tab.
+- Design/mockup source of truth for the restyle lives in the session artifact (`legal-scout-insights-mockup.html`); `FUTURE_READINESS.md` predates the restyle — its §2 tokens and phase table are superseded, but its defect list (§6) and People-register data findings (§7) remain valid.
