@@ -36,7 +36,9 @@ function Workspace() {
 
   const togglePanel = () => {
     setPanelOpen((open) => {
-      if (open) userClosedRef.current = true
+      // Only a close on an ACTIVE document counts as "leave it closed" —
+      // closing an empty panel must not suppress the next auto-open.
+      if (open && hasDocSignal) userClosedRef.current = true
       return !open
     })
   }
