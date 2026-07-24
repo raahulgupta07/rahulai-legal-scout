@@ -59,7 +59,7 @@ export const AgentIcon: FC = ({ ...props }) => {
       xmlns="http://www.w3.org/2000/svg"
       {...props}
     >
-      <rect width="16" height="16" rx="0" fill="#383832" />
+      <rect width="16" height="16" rx="4" fill="#18181B" />
       <path
         fillRule="evenodd"
         clipRule="evenodd"

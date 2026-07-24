@@ -6,8 +6,8 @@ import { focusRing } from './Button'
 
 /** Shared control chrome. One definition, so every input in the app matches. */
 export const controlBase = cn(
-  'w-full bg-[var(--surface)] text-[var(--text)] border border-[var(--border-strong)]',
-  'rounded-[var(--radius-sm)] px-2.5 py-1.5 text-[length:var(--text-sm)]',
+  'w-full bg-[var(--surface)] text-[var(--text)] border border-[var(--border)]',
+  'rounded-[var(--radius-md)] px-2.5 py-1.5 text-[length:var(--text-sm)]',
   'placeholder:text-[var(--text-muted)] transition-colors',
   'disabled:opacity-50 disabled:cursor-not-allowed',
   focusRing

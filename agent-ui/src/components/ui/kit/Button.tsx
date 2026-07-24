@@ -28,7 +28,7 @@ const VARIANTS: Record<ButtonVariant, string> = {
   subtle:
     'bg-[var(--bg-secondary)] text-[var(--text-secondary)] border border-[var(--border)] hover:bg-[var(--surface)]',
   ghost:
-    'bg-transparent text-[var(--text-secondary)] border border-transparent hover:bg-[color-mix(in_srgb,var(--ink)_8%,transparent)]',
+    'bg-transparent text-[var(--text-secondary)] border border-transparent hover:bg-[var(--accent)] hover:text-[var(--text)]',
   danger:
     'bg-[var(--danger-strong)] text-[var(--brand-fg)] border border-[var(--danger-strong)] hover:bg-[color-mix(in_srgb,var(--danger-strong)_85%,black)]'
 }

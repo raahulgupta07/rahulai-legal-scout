@@ -274,41 +274,11 @@
 }
 
 /* ============================================
-   Brutalist Design System Utilities
+   Legacy animation + press utilities
+   The brutalist letterpress/stamp/tag utilities have been retired
+   in favour of the token-driven kit; only the still-referenced
+   press effect and CLI keyframes remain.
    ============================================ */
-
-.font-brutalist {
-  font-family: var(--font-display);
-}
-
-/* Structural border. Softened from the letterpress edge to a
-   single hairline in the border token (class kept for consumers). */
-.ink-border {
-  border: 1px solid var(--border);
-}
-
-/* Soft elevation shadow (class kept for consumers). */
-.stamp-shadow {
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
-}
-
-/* Dark tag label (used for form labels, section tags) */
-.tag-label {
-  display: inline-block;
-  padding: 2px 8px;
-  font-size: var(--text-2xs);
-  font-weight: 900;
-  text-transform: uppercase;
-  background: var(--ink);
-  color: var(--bg);
-  letter-spacing: var(--tracking-tag);
-}
-
-/* Green selection highlight */
-.brutalist ::selection {
-  background: var(--ok-strong);
-  color: var(--brand-fg);
-}
 
 /* CLI cursor blink (DASH-style green block cursor) */
 @keyframes cursorBlink {
@@ -358,7 +328,7 @@ body .bg-accent {
   background: var(--accent) !important;
 }
 
-/* Ensure font-brutalist loads everywhere */
+/* Ensure the display font stack loads everywhere */
 body {
   font-family: var(--font-display);
 }

@@ -96,7 +96,7 @@ export function DataTable<T>({
   return (
     <div
       className={cn(
-        'border border-[var(--border)] bg-[var(--surface)] rounded-[var(--radius-sm)] overflow-x-auto',
+        'border border-[var(--border)] bg-[var(--surface)] rounded-[var(--radius-lg)] overflow-x-auto',
         className
       )}
       style={maxHeight ? { maxHeight, overflowY: 'auto' } : undefined}
@@ -114,7 +114,7 @@ export function DataTable<T>({
                   scope="col"
                   style={c.width ? { width: c.width } : undefined}
                   className={cn(
-                    'border-b border-[var(--border)] px-3 py-2 font-semibold',
+                    'border-b border-[var(--border)] px-3.5 py-2.5 font-semibold',
                     'text-[length:var(--text-2xs)] uppercase tracking-[var(--tracking-tag)] text-[var(--text-muted)]',
                     c.numeric || c.align === 'right' ? 'text-right' : c.align === 'center' ? 'text-center' : 'text-left',
                     c.hideBelow && HIDE[c.hideBelow]
@@ -196,7 +196,7 @@ export function DataTable<T>({
                       key={c.key}
                       onClick={c.stopClickPropagation ? (e) => e.stopPropagation() : undefined}
                       className={cn(
-                        'px-3 py-2 align-middle text-[var(--text-secondary)]',
+                        'px-3.5 py-2.5 align-middle text-[var(--text-secondary)]',
                         c.numeric && 'text-right tabular-nums',
                         !c.numeric && c.align === 'right' && 'text-right',
                         c.align === 'center' && 'text-center',

@@ -6,11 +6,11 @@ import { useRouter } from "next/navigation"
 const CREDENTIAL_HINT =
   "Check the email for typos and retype your password. If it still fails, ask your administrator to reset it."
 
-const EYEBROW =
-  "text-[length:var(--text-2xs)] uppercase tracking-[var(--tracking-tag)] text-[var(--text-muted)]"
-
 const FIELD =
-  "w-full rounded-[var(--radius-xl)] border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-[length:var(--text-sm)] text-[var(--text)] placeholder:text-[var(--text-muted)] focus:border-[var(--brand)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]"
+  "w-full rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-[length:var(--text-sm)] text-[var(--text)] placeholder:text-[var(--text-muted)] focus:border-[var(--brand)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]"
+
+const LABEL =
+  "mb-1.5 block text-[length:var(--text-xs)] font-medium text-[var(--text-secondary)]"
 
 export default function LoginPage() {
   const [email, setEmail] = useState("")
@@ -80,135 +80,126 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="flex min-h-screen flex-col bg-[var(--bg)] font-[family-name:var(--font-body)] lg:flex-row">
-      {/* Brand panel */}
-      <aside className="flex flex-col justify-between border-b border-[var(--border)] bg-[var(--bg-secondary)] px-8 py-8 lg:w-[46%] lg:border-b-0 lg:border-r lg:px-14 lg:py-12">
-        <div className="flex items-center gap-2.5">
+    <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-[var(--bg)] px-4 py-12 font-[family-name:var(--font-body)]">
+      {/* Faint 24px grid, fading in from the top */}
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-0"
+        style={{
+          backgroundImage:
+            "linear-gradient(to right, color-mix(in srgb, var(--ink) 4%, transparent) 1px, transparent 1px), linear-gradient(to bottom, color-mix(in srgb, var(--ink) 4%, transparent) 1px, transparent 1px)",
+          backgroundSize: "24px 24px",
+          maskImage: "linear-gradient(to bottom, transparent, black)",
+          WebkitMaskImage: "linear-gradient(to bottom, transparent, black)",
+        }}
+      />
+      {/* Blurred pastel glow, anchored bottom-center */}
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute bottom-0 left-1/2 h-[160px] w-[160px] -translate-x-1/2 translate-y-1/3 rounded-full"
+        style={{
+          background: "linear-gradient(45deg, #BE93C5, #7BC6CC, #DBE6F6)",
+          filter: "blur(60px)",
+        }}
+      />
+
+      {/* Sign-in card */}
+      <div className="relative w-full max-w-[340px] rounded-[var(--radius-xl)] border border-[var(--border)] bg-[var(--surface)] p-7 shadow-[0_12px_32px_-8px_rgba(0,0,0,0.12)]">
+        <div className="flex flex-col items-center text-center">
           <span
             aria-hidden="true"
-            className="flex h-6 w-6 items-center justify-center rounded-[var(--radius-md)] bg-[var(--surface-inverse)] text-[length:var(--text-2xs)] font-semibold text-[var(--text-inverse)]"
+            className="flex h-10 w-10 items-center justify-center rounded-[var(--radius-md)] bg-[var(--surface-inverse)] text-[length:var(--text-sm)] font-semibold text-[var(--text-inverse)]"
           >
             LS
           </span>
-          <span className="text-[length:var(--text-base)] font-medium text-[var(--text)]">
-            Legal Scout
-          </span>
-        </div>
-
-        <div className="mt-12 max-w-md lg:mt-0">
-          <p className={EYEBROW}>Myanmar corporate law</p>
-          <h1 className="mt-2 font-[family-name:var(--font-display)] text-[length:var(--text-3xl)] leading-tight text-[var(--text)]">
-            Document automation for the legal team
-          </h1>
-          <p className="mt-3 text-[length:var(--text-sm)] leading-relaxed text-[var(--text-secondary)]">
-            Draft AGM minutes, director consents and shareholder resolutions from the company
-            records already on file. Sign in to continue.
+          <h1 className="mt-3 text-[18px] font-semibold text-[var(--text)]">Legal Scout</h1>
+          <p className="mt-1 text-[length:var(--text-sm)] text-[var(--text-muted)]">
+            Myanmar corporate-law document automation
           </p>
         </div>
 
-        <p className={`mt-12 ${EYEBROW} lg:mt-0`}>City Holdings Myanmar</p>
-      </aside>
+        {error && (
+          <div
+            role="alert"
+            className="mt-6 rounded-[var(--radius-md)] border border-[var(--danger)] bg-[color-mix(in_srgb,var(--danger)_8%,transparent)] px-3.5 py-3 text-[length:var(--text-sm)] leading-relaxed"
+          >
+            <p className="font-medium text-[var(--text)]">{error}</p>
+            {errorHint && <p className="mt-1 text-[var(--text-secondary)]">{errorHint}</p>}
+          </div>
+        )}
 
-      {/* Sign-in panel */}
-      <main className="flex flex-1 items-center px-8 py-12 lg:px-14">
-        <div className="w-full max-w-[380px]">
-          <p className={EYEBROW}>Sign in</p>
-          <h2 className="mt-2 font-[family-name:var(--font-display)] text-[length:var(--text-2xl)] text-[var(--text)]">
-            Welcome back
-          </h2>
+        <form onSubmit={handleLogin} className="mt-6 space-y-4">
+          <div>
+            <label htmlFor="email" className={LABEL}>
+              Email
+            </label>
+            <input
+              id="email"
+              name="email"
+              type="email"
+              autoComplete="username"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              required
+              placeholder="you@cityholdings.com.mm"
+              className={FIELD}
+            />
+          </div>
 
-          {error && (
-            <div
-              role="alert"
-              className="mt-6 rounded-[var(--radius-xl)] border border-[var(--danger)] bg-[color-mix(in_srgb,var(--danger)_8%,transparent)] px-3.5 py-3 text-[length:var(--text-sm)] leading-relaxed"
-            >
-              <p className="font-medium text-[var(--text)]">{error}</p>
-              {errorHint && (
-                <p className="mt-1 text-[var(--text-secondary)]">{errorHint}</p>
-              )}
-            </div>
-          )}
-
-          <form onSubmit={handleLogin} className="mt-6 space-y-5">
-            <div>
-              <label
-                htmlFor="email"
-                className="mb-1.5 block text-[length:var(--text-sm)] font-medium text-[var(--text)]"
-              >
-                Email
-              </label>
+          <div>
+            <label htmlFor="password" className={LABEL}>
+              Password
+            </label>
+            <div className="relative">
               <input
-                id="email"
-                name="email"
-                type="email"
-                autoComplete="username"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
+                id="password"
+                name="password"
+                type={showPassword ? "text" : "password"}
+                autoComplete="current-password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
                 required
-                placeholder="you@cityholdings.com.mm"
-                className={FIELD}
+                className={`${FIELD} pr-16`}
               />
-            </div>
-
-            <div>
-              <label
-                htmlFor="password"
-                className="mb-1.5 block text-[length:var(--text-sm)] font-medium text-[var(--text)]"
+              <button
+                type="button"
+                onClick={() => setShowPassword(!showPassword)}
+                className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded-[var(--radius-md)] px-2 py-1 text-[length:var(--text-xs)] text-[var(--text-muted)] transition-colors hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]"
               >
-                Password
-              </label>
-              <div className="relative">
-                <input
-                  id="password"
-                  name="password"
-                  type={showPassword ? "text" : "password"}
-                  autoComplete="current-password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  required
-                  className={`${FIELD} pr-16`}
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded-[var(--radius-xl)] px-2 py-1 text-[length:var(--text-xs)] text-[var(--text-muted)] transition-colors hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]"
-                >
-                  {showPassword ? "Hide" : "Show"}
-                </button>
-              </div>
+                {showPassword ? "Hide" : "Show"}
+              </button>
             </div>
+          </div>
 
-            <div className="flex items-center gap-2">
-              <input
-                id="remember"
-                type="checkbox"
-                checked={rememberMe}
-                onChange={(e) => setRememberMe(e.target.checked)}
-                className="h-3.5 w-3.5 accent-[var(--brand)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]"
-              />
-              <label
-                htmlFor="remember"
-                className="cursor-pointer select-none text-[length:var(--text-sm)] text-[var(--text-secondary)]"
-              >
-                Remember my email on this device
-              </label>
-            </div>
-
-            <button
-              type="submit"
-              disabled={loading}
-              className="w-full rounded-[var(--radius-xl)] bg-[var(--brand)] px-4 py-2.5 text-[length:var(--text-sm)] font-medium text-[var(--brand-fg)] transition-opacity hover:opacity-90 disabled:opacity-40 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)]"
+          <div className="flex items-center gap-2">
+            <input
+              id="remember"
+              type="checkbox"
+              checked={rememberMe}
+              onChange={(e) => setRememberMe(e.target.checked)}
+              className="h-3.5 w-3.5 accent-[var(--brand)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]"
+            />
+            <label
+              htmlFor="remember"
+              className="cursor-pointer select-none text-[length:var(--text-sm)] text-[var(--text-secondary)]"
             >
-              {loading ? "Signing in…" : "Sign in"}
-            </button>
-          </form>
+              Remember my email on this device
+            </label>
+          </div>
 
-          <p className="mt-6 text-[length:var(--text-sm)] leading-relaxed text-[var(--text-muted)]">
-            Accounts are issued by your administrator. If you cannot get in, contact them for a
-            reset.
-          </p>
-        </div>
-      </main>
+          <button
+            type="submit"
+            disabled={loading}
+            className="w-full rounded-[var(--radius-md)] bg-[var(--brand)] px-4 py-2.5 text-[length:var(--text-sm)] font-medium text-[var(--brand-fg)] transition-colors hover:bg-[color-mix(in_srgb,var(--brand)_86%,black)] disabled:opacity-40 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--surface)]"
+          >
+            {loading ? "Signing in…" : "Sign in"}
+          </button>
+        </form>
+
+        <p className="mt-6 text-center text-[length:var(--text-xs)] leading-relaxed text-[var(--text-muted)]">
+          Accounts are issued by your administrator. If you cannot get in, contact them for a reset.
+        </p>
+      </div>
     </div>
   )
 }

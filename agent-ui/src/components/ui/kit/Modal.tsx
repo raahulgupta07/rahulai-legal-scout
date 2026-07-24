@@ -43,8 +43,8 @@ export function Modal({
           className={cn(
             'fixed left-1/2 top-1/2 z-50 w-[calc(100vw-2rem)] -translate-x-1/2 -translate-y-1/2',
             'flex flex-col max-h-[85vh]',
-            'bg-[var(--surface)] border border-[var(--border-strong)] rounded-[var(--radius-sm)]',
-            'shadow-[0_16px_48px_-12px_rgba(0,0,0,0.35)]',
+            'bg-[var(--surface)] border border-[var(--border)] rounded-[var(--radius-lg)]',
+            'shadow-[0_12px_32px_-8px_rgba(0,0,0,0.25)]',
             'data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95',
             width
           )}

@@ -61,8 +61,8 @@ export function Badge({
   return (
     <span
       className={cn(
-        'inline-flex items-center gap-1.5 border px-1.5 py-0.5 rounded-[var(--radius-sm)]',
-        'text-[length:var(--text-2xs)] font-semibold leading-4 whitespace-nowrap',
+        'inline-flex items-center gap-1.5 border px-2 py-0.5 rounded-[var(--radius-full)]',
+        'text-[length:var(--text-2xs)] font-medium leading-4 whitespace-nowrap',
         solid ? t.solid : t.soft,
         className
       )}
