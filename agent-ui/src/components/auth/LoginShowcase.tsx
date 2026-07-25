@@ -19,7 +19,7 @@ const STEPS = [
 ] as const
 
 const QUESTION =
-  'Prepare the Corporate Shareholder Consent for Arctic Sun — who signs?'
+  'Prepare the Corporate Shareholder Consent for Golden Lotus Trading — who signs?'
 
 function pill(label: string, state: 'on' | 'done' | 'off'): string {
   const st =
@@ -64,12 +64,12 @@ function stageHtml(kind: string): string {
   if (kind === 'reg')
     return (
       head('READING COMPANY REGISTER') +
-      `<div style="border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:14px 16px;font-size:13px;line-height:2;background:rgba(255,255,255,.024)">ARCTIC SUN COMPANY LIMITED · 101687465<br>Holding member: <b style="color:#DBEAFE">PAHTAMA GROUP CO. LTD</b> — 51,000 ORD<br><span style="color:#F59E0B">⚖ Playbook: the corporate shareholder&#39;s own directors sign — never Arctic Sun&#39;s board</span></div>`
+      `<div style="border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:14px 16px;font-size:13px;line-height:2;background:rgba(255,255,255,.024)">GOLDEN LOTUS TRADING CO., LTD · 000000000<br>Holding member: <b style="color:#DBEAFE">EMERALD HOLDINGS CO. LTD</b> — 51,000 ORD<br><span style="color:#F59E0B">⚖ Playbook: the corporate shareholder&#39;s own directors sign — never Golden Lotus&#39;s own board</span></div>`
     )
   if (kind === 'sign')
     return (
       head('SIGNER — PICKED IN CHAT') +
-      `<div style="border:1px solid #3B82F6;border-radius:12px;padding:13px 16px;font-size:13.5px;color:#DBEAFE;background:rgba(37,99,235,.08)">◉ Director of Pahtama Group <span style="color:#64748B">(chosen from the picker card)</span></div>`
+      `<div style="border:1px solid #3B82F6;border-radius:12px;padding:13px 16px;font-size:13.5px;color:#DBEAFE;background:rgba(37,99,235,.08)">◉ Director of Emerald Holdings <span style="color:#64748B">(chosen from the picker card)</span></div>`
     )
   if (kind === 'draft') {
     let bars = ''
@@ -81,7 +81,7 @@ function stageHtml(kind: string): string {
     )
   }
   if (kind === 'done')
-    return `<div style="border:1px solid rgba(34,197,94,.33);border-radius:14px;padding:18px;background:rgba(34,197,94,.07)"><div style="font-size:11.5px;letter-spacing:.1em;color:#6EE7A8;font-weight:600">DRAFT READY — ATTORNEY REVIEW</div><div style="font-size:15px;font-weight:600;margin-top:7px;color:#F1F5F9">📄 Corporate_Shareholder_Consent_ARCTIC_SUN.docx</div><div style="font-size:12.5px;color:#94A3B8;margin-top:5px">12/12 fields · DICA Form C due within 28 days</div></div>`
+    return `<div style="border:1px solid rgba(34,197,94,.33);border-radius:14px;padding:18px;background:rgba(34,197,94,.07)"><div style="font-size:11.5px;letter-spacing:.1em;color:#6EE7A8;font-weight:600">DRAFT READY — ATTORNEY REVIEW</div><div style="font-size:15px;font-weight:600;margin-top:7px;color:#F1F5F9">📄 Corporate_Shareholder_Consent_GOLDEN_LOTUS.docx</div><div style="font-size:12.5px;color:#94A3B8;margin-top:5px">12/12 fields · DICA Form C due within 28 days</div></div>`
   return ''
 }
 
