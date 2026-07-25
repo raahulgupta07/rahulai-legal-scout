@@ -156,8 +156,11 @@ def ask_questions(questions_json: str, answers: str = "") -> str:
             "answers": parsed_answers,
             "instruction": (
                 "The user has answered. Use these answers verbatim as authoritative "
-                "values and continue the task now. Do not re-ask, do not restate the "
-                "options, and do not present a), b), c) lists in prose."
+                "values and CONTINUE THE TASK IN THIS SAME TURN: make the next "
+                "required tool call (prepare/preview/lookup/picker) or reply with "
+                "the next concrete step. Ending your turn with empty output is "
+                "forbidden. Do not re-ask, do not restate the options, and do not "
+                "present a), b), c) lists in prose."
             ),
         }
     )

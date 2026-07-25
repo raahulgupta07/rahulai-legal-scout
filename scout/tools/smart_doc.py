@@ -461,7 +461,7 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
                 "message": "Waiting for you to choose the "
                 + ", ".join(_role(r) for r in slot_requests)
                 + " from the card in the chat.",
-                "agent_instruction": "Ask with the person pickers, not in prose: "
+                "agent_instruction": "ACT NOW, IN THIS SAME TURN — do not end your turn empty. Call the first lookup tool immediately, then its picker: "
                 + ", ".join(
                     f"{r['lookup_tool']} → {r['picker']} for {r['kind']}"
                     + (f" of {r['candidates_from']}" if r["candidates_from"] else "")
