@@ -29,7 +29,7 @@ function pill(label: string, state: 'on' | 'done' | 'off'): string {
         ? 'border:1px solid #1E3A5F;color:#7DA6D9;background:transparent'
         : 'border:1px solid rgba(255,255,255,.08);color:#64748B;background:transparent'
   const dot = state === 'on' ? '#3B82F6' : state === 'done' ? '#22C55E' : '#334155'
-  return `<span style="display:inline-flex;align-items:center;gap:7px;font-size:11px;letter-spacing:.06em;font-weight:600;border-radius:9999px;padding:6px 13px;${st}"><span style="width:6px;height:6px;border-radius:9999px;background:${dot}"></span>${label}</span>`
+  return `<span style="display:inline-flex;align-items:center;gap:7px;font-size:12px;letter-spacing:.06em;font-weight:600;border-radius:9999px;padding:7px 16px;${st}"><span style="width:6px;height:6px;border-radius:9999px;background:${dot}"></span>${label}</span>`
 }
 
 const pipeHtml = (i: number) =>
@@ -176,7 +176,7 @@ export default function LoginShowcase() {
 
   return (
     <div
-      className="relative flex min-h-[560px] flex-1 flex-col overflow-hidden rounded-[24px] px-[30px] py-[26px] text-[#E2E8F0]"
+      className="relative flex min-h-[620px] w-[46%] shrink-0 flex-col overflow-hidden rounded-[28px] px-8 py-7 text-[#E2E8F0] max-lg:w-full"
       style={{
         background: 'linear-gradient(150deg,#0E1830,#0A1122 55%,#101E3C)'
       }}
@@ -206,9 +206,9 @@ export default function LoginShowcase() {
       </div>
       <div
         ref={qRef}
-        className="mt-4 min-h-[50px] rounded-[10px] border border-white/[.13] bg-white/[.04] px-4 py-[13px] text-[15.5px] font-semibold text-[#F1F5F9]"
+        className="mt-6 min-h-[56px] rounded-[12px] border border-white/[.13] bg-white/[.04] px-5 py-4 text-[16.5px] font-semibold text-[#F1F5F9]"
       />
-      <div ref={pipeRef} className="mb-[18px] mt-4 flex flex-wrap gap-2" />
+      <div ref={pipeRef} className="mb-5 mt-5 flex flex-wrap gap-2.5" />
       <div ref={stageRef} className="min-h-[230px] flex-1" />
       <div className="mt-3.5 flex justify-between text-[12.5px] text-[#64748B]">
         <span>

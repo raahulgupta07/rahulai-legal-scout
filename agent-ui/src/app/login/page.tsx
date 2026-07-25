@@ -9,11 +9,11 @@ const CREDENTIAL_HINT =
 
 /** bow sign-in field: label INSIDE the big rounded box, input under it. */
 const BOX =
-  "rounded-[12px] border border-[#E2E8F0] bg-white px-4 py-2.5 focus-within:border-[var(--brand)]"
+  "rounded-[14px] border border-[#E2E8F0] bg-white px-[18px] py-3 focus-within:border-[var(--brand)]"
 const BOX_LABEL =
-  "text-[10.5px] font-semibold tracking-[.12em] text-[#64748B]"
+  "text-[11px] font-semibold tracking-[.12em] text-[#64748B]"
 const BOX_INPUT =
-  "w-full border-none bg-transparent py-[3px] text-[15px] text-[#0F172A] outline-none placeholder:text-[#94A3B8]"
+  "w-full border-none bg-transparent py-1 text-[16px] text-[#0F172A] outline-none placeholder:text-[#94A3B8]"
 
 function greeting(): string {
   const h = new Date().getHours()
@@ -97,16 +97,16 @@ export default function LoginPage() {
       }}
     >
       {/* Header — logo left, live chip right, NO border */}
-      <div className="flex items-start justify-between px-9 pt-[26px]">
+      <div className="flex items-start justify-between px-[70px] pt-[28px] max-lg:px-8">
         <div className="flex items-center gap-3">
-          <span className="grid h-11 w-11 place-items-center rounded-[12px] bg-[#0F172A] text-[16px] font-bold text-white">
+          <span className="grid h-16 w-16 place-items-center rounded-[16px] bg-[#0F172A] text-[20px] font-bold text-white">
             LS
           </span>
           <div>
-            <div className="text-[19px] font-bold text-[#0F172A]">
+            <div className="text-[20px] font-bold text-[#0F172A]">
               Legal <span className="text-[#2563EB]">Scout</span>
             </div>
-            <div className="text-[10px] font-medium tracking-[.22em] text-[#94A3B8]">
+            <div className="text-[11px] font-medium tracking-[.22em] text-[#94A3B8]">
               MYANMAR CORPORATE LAW AUTOMATION
             </div>
           </div>
@@ -118,21 +118,21 @@ export default function LoginPage() {
       </div>
 
       {/* Body: form left, showcase right */}
-      <div className="flex flex-1 gap-10 px-9 pb-2.5 pt-[30px] max-lg:flex-col">
-        <div className="flex w-[40%] min-w-[360px] flex-col justify-center max-lg:w-full">
-          <h1 className="mb-[18px] text-[44px] font-bold leading-[1.12] tracking-[-0.02em] text-[#0F172A]">
+      <div className="flex flex-1 items-stretch justify-between gap-16 px-[70px] pb-3 pt-[26px] max-lg:flex-col max-lg:px-8">
+        <div className="flex w-[580px] shrink-0 flex-col justify-center max-lg:w-full">
+          <h1 className="mb-[20px] text-[46px] font-bold leading-[1.14] tracking-[-0.02em] text-[#0F172A]">
             {greeting()},
             <br />
             sign in to <span className="text-[#2563EB]">Legal Scout</span>
           </h1>
-          <p className="mb-[26px] max-w-[420px] text-[15px] text-[#475569]">
+          <p className="mb-[30px] max-w-[480px] text-[16px] text-[#475569]">
             Myanmar corporate documents — drafted from your registers, reviewed
             by you.
           </p>
 
           {error && (
             <div
-              className="mb-4 max-w-[460px] rounded-[12px] border border-[color-mix(in_srgb,var(--danger)_35%,transparent)] bg-[color-mix(in_srgb,var(--danger)_8%,transparent)] px-4 py-3"
+              className="mb-4 max-w-[580px] rounded-[14px] border border-[color-mix(in_srgb,var(--danger)_35%,transparent)] bg-[color-mix(in_srgb,var(--danger)_8%,transparent)] px-4 py-3"
               role="alert"
             >
               <p className="text-[13.5px] font-medium text-[var(--danger-strong)]">{error}</p>
@@ -142,7 +142,7 @@ export default function LoginPage() {
             </div>
           )}
 
-          <form onSubmit={handleLogin} className="flex max-w-[460px] flex-col gap-3.5">
+          <form onSubmit={handleLogin} className="flex max-w-[580px] flex-col gap-4">
             <label className={BOX}>
               <span className={BOX_LABEL}>EMAIL</span>
               <input
@@ -193,13 +193,13 @@ export default function LoginPage() {
             <button
               type="submit"
               disabled={loading}
-              className="rounded-[12px] bg-[#2563EB] p-[15px] text-[15.5px] font-semibold text-white transition-colors hover:bg-[#1D4ED8] disabled:opacity-60"
+              className="rounded-[14px] bg-[#2563EB] p-[18px] text-[16px] font-semibold text-white transition-colors hover:bg-[#1D4ED8] disabled:opacity-60"
             >
               {loading ? "Signing in…" : "Continue with email  →"}
             </button>
           </form>
 
-          <div className="mt-4 flex max-w-[460px] items-center gap-3">
+          <div className="mt-5 flex max-w-[580px] items-center gap-3">
             <span className="flex-1 border-t border-[#E2E8F0]" />
             <span className="text-[11px] font-medium tracking-[.14em] text-[#94A3B8]">
               OR CONTINUE WITH
@@ -209,7 +209,7 @@ export default function LoginPage() {
           <button
             type="button"
             title="Ask your administrator to enable SSO"
-            className="mt-3 flex max-w-[460px] items-center justify-center gap-[9px] rounded-[12px] border border-[#E2E8F0] bg-[#F8FAFC] p-[13px] text-[14.5px] font-medium text-[#0F172A]"
+            className="mt-3.5 flex max-w-[580px] items-center justify-center gap-[9px] rounded-[14px] border border-[#E2E8F0] bg-[#F8FAFC] p-4 text-[15px] font-medium text-[#0F172A]"
           >
             <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden>
               <path
