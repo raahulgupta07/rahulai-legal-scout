@@ -45,7 +45,7 @@ Port 80 (configurable via PORT in .env)
 ### Tech Stack
 | Layer | Technology |
 |-------|-----------|
-| Frontend | Next.js 15, React 18, TypeScript, Tailwind, Zustand, Radix UI, Space Grotesk font |
+| Frontend | Next.js 15, React 18, TypeScript, Tailwind, Zustand, Radix UI, single system sans stack (no webfont) |
 | Backend | FastAPI, Agno 2.5, python-docx, psycopg, SQLAlchemy |
 | AI | Configurable via Settings: GPT-5.4 Mini (chat), Gemini 3 Flash (training), Gemini 3.1 Flash Lite (classification), text-embedding-3-small — all via OpenRouter (base URL configurable via `OPENROUTER_BASE_URL` env var) |
 | Database | PostgreSQL 18 + pgvector |
@@ -85,7 +85,10 @@ EXA_API_KEY=...           # Optional — only loaded when set, never embedded in
 | File | Purpose |
 |------|---------|
 | `app/main.py` | FastAPI app, 50+ endpoints, auth, admin, training |
-| `scout/agent.py` | AI agent definition, 27+ tools, system prompt, prompt injection sanitizer |
+| `scout/agent.py` | AI agent definition, 27+ tools, system prompt (Task Continuity rules, Legal-Skills L1 block via `_build_legal_skills_block()`), prompt injection sanitizer |
+| `scout/tools/ask_questions.py` | HITL clarify tool `ask_questions(questions_json, answers)` — Agno `requires_user_input` pause/resume. NEVER name a tool `ask_user`/`get_user_input` (agno reserves them and hijacks resume → provider 400) |
+| `scout/tools/legal_skills.py` | `load_skill(name)` / `list_skills` — L2 skill bodies loaded on demand from `legal_skills` table |
+| `scout/tools/people_picker.py` | Signer/member selection via in-chat picker cards |
 | `scout/tools/smart_doc.py` | Document generation, placeholder fill (thread-safe, no globals) |
 | `scout/tools/clarification.py` | Template/company matching |
 | `scout/tools/companies_db.py` | Company DB queries |
@@ -106,21 +109,31 @@ EXA_API_KEY=...           # Optional — only loaded when set, never embedded in
 | `db/migration_008_fix_user_role_constraint.sql` | User role constraint (adds 'editor') |
 | `db/migration_009_company_extra_fields.sql` | `auditor_name`, `auditor_fee`, `next_financial_year_end_date` columns |
 | `db/migration_010_dynamic_fields.sql` | `custom_fields JSONB` + `company_field_registry` table |
+| `db/migration_011_people_register.sql` | People register table |
+| `db/migration_012_party_selections.sql` | Per-run party/signer selections |
+| `db/migration_013_legal_skills.sql` | `legal_skills` table (name, description, body, category, source, enabled) |
+| `db/migration_014_seed_legal_skills.sql` | 12 seeded skills (7 adapted from anthropics/claude-for-legal, Apache-2.0 attributed; 4 native Myanmar playbooks; 1 practice profile) |
 
 ### Frontend
 | File | Purpose |
 |------|---------|
-| `agent-ui/src/app/page.tsx` | Chat workspace: SplitShell + panel auto-open logic (`docWorkLive`) + columns toggle wiring |
-| `agent-ui/src/app/login/page.tsx` | Login card on grid+glow background (Insights language) |
+| `agent-ui/src/app/page.tsx` | Chat workspace: SplitShell + panel auto-open logic (`docWorkLive` regex on document tools) + `userClosedRef` + columns toggle wiring |
+| `agent-ui/src/app/login/page.tsx` | Pixel-exact bagofwords sign-in clone (measured live at :8095): 40px h1, 440px form col, 64px boxed fields (label inside), h-12 rounded-[11px] buttons, full-width SSO, 677px showcase col |
+| `agent-ui/src/components/auth/LoginShowcase.tsx` | Animated dark-navy "LIVE" panel: legal pipeline loop (UNDERSTAND→…→REVIEW). FICTIONAL data only (Golden Lotus/Emerald Holdings) — never real client info pre-auth |
 | `agent-ui/src/components/shell/AppRail.tsx` + `AppShell.tsx` | ONE global rail (chat + admin): blue "New chat", flat Overview/Registers/Settings, session history, user row. Mounted once in root layout, never unmounts |
 | `agent-ui/src/components/shell/SplitShell.tsx` | Animated chat/document split — panel slides on `cubic-bezier(0.4,0,0.2,1)` 250ms, columns toggle rides the panel edge, resize handle w/ invisible-until-hover blue bar |
 | `agent-ui/src/components/shell/ArtifactPanel.tsx` | Document pane: hairline rounded card (`#f8f8f7`), cyan-tinted toolbar, Fields/Preview tabs, centered faint empty state |
-| `agent-ui/src/app/admin/overview/page.tsx` | Tabs: Dashboard \| Documents \| Emails (bodies in sibling `*View.tsx`) |
+| `agent-ui/src/app/admin/overview/page.tsx` | Tabs: Dashboard \| Documents \| Emails \| Skills (bodies in sibling `*View.tsx`). Tab band MUST be `overflow-y-auto` (not hidden) or detail views clip |
 | `agent-ui/src/app/admin/registers/page.tsx` | Tabs: Templates \| Companies \| People |
 | `agent-ui/src/app/admin/settings/page.tsx` | Tabs: AI models \| Email \| System \| Activity \| Users \| Knowledge |
+| `agent-ui/src/app/admin/skills/SkillsView.tsx` | Skills tab: stat cards, category filters, enable/disable toggles, body edit modal (`/api/skills` CRUD) |
 | `agent-ui/src/app/admin/*/​*View.tsx` | Extracted page bodies (verbatim features); old routes are client redirects w/ `?tab=` |
 | `agent-ui/src/components/chat/ChatArea/*` | Blank state (greeting+grid+glow, composer centered), typewriter-smoothed streaming, Analyzing pill + tool timeline, hover-only timestamps |
-| `agent-ui/src/hooks/useAIStreamHandler.tsx` | rAF typewriter: buffers bursty OpenRouter tokens, reveals ~120 chars/s (backlog-capped) |
+| `agent-ui/src/components/chat/AskUserCard.tsx` + `AskUserCardList.tsx` | Clickable question cards: chips auto-submit single-pick, multi-select, free-text, "Other…"; answered → locked w/ green banner |
+| `agent-ui/src/components/chat/askUserPayload.ts` | `ASK_USER_TOOL='ask_questions'` + legacy read-only match set |
+| `agent-ui/src/hooks/useAIStreamHandler.tsx` | rAF typewriter (buffers bursty OpenRouter tokens ~120 chars/s), RunPaused → picker/ask cards, silent-stop auto-`continue` nudge (once per run_id) |
+| `agent-ui/src/hooks/useSessionLoader.tsx` | History rehydration of pauses: match by tool NAME; answers live in `user_input_schema` (`result` is null); answered→locked, pending→resumable |
+| `agent-ui/src/api/os.ts` | `buildResumeRequest` (echo WHOLE `user_input_schema`, fill only target fields), `buildContinueRunRequest`, `buildAskUserContinueRequest` |
 | `agent-ui/src/components/ui/typography/*` | Chat type scale: body 14px/1.625, headings capped 14–16px semibold, code chips, 11px uppercase table headers |
 | `agent-ui/src/components/ui/DocViewer.tsx` | Unified PDF/DOCX dispatcher; forces PdfViewer for `/preview-pdf/` paths |
 | `agent-ui/src/components/ui/PdfViewer.tsx` | Canvas PDF render via pdfjs-dist (Brave-shields-safe, sends Bearer header) |
@@ -185,6 +198,13 @@ EXA_API_KEY=...           # Optional — only loaded when set, never embedded in
 | `list_tracked_documents` | List generated documents with filters |
 | `get_document_info` | Details of a specific document |
 | `get_document_stats` | Document generation statistics |
+
+### Interaction & Skills
+| Tool | Purpose |
+|------|---------|
+| `ask_questions` | HITL clarify cards — pauses run, user answers via clickable chips (see Ask-Questions section) |
+| `load_skill` / `list_skills` | Load legal playbook bodies on demand (see Legal Skills section) |
+| People picker tools | Signer/member selection cards (`people_picker.py`) |
 
 ### Other
 | Tool | Purpose |
@@ -339,9 +359,9 @@ GET  /health                                  # Health check
 
 ---
 
-## Design System — CityAgent Insights language (restyle 2026-07-24, branch `feature/ui-insights-restyle`)
+## Design System — CityAgent Insights language (restyle 2026-07-24/25, MERGED TO `main`)
 
-Rebuilt to match CityAgent Insights (bagofwords): neutral Tailwind gray ramp, single blue accent, system font, dense 13-14px type. Single token layer in `globals.css` — components never hardcode hexes. Rollback tag `pre-insights-restyle`.
+Rebuilt to match CityAgent Insights (bagofwords): neutral Tailwind gray ramp, single blue accent, ONE system sans, dense 13-14px type. Single token layer in `globals.css` — components never hardcode hexes. Rollback tags: `pre-insights-restyle`, `pre-legal-skills`, `pre-ui-revamp`, `pre-rail-revamp`.
 
 ### Tokens (light / dark)
 | Token | Light | Dark |
@@ -357,12 +377,12 @@ Rebuilt to match CityAgent Insights (bagofwords): neutral Tailwind gray ramp, si
 Three theme blocks: `@media (prefers-color-scheme: dark)` + `:root[data-theme='dark']` + `:root[data-theme='light']` — an explicit toggle must beat the media query both ways. NEVER Tailwind alpha modifiers on `var()` colors (`bg-[var(--x)]/20` emits NOTHING) — use `color-mix(in srgb, var(--token) N%, transparent)`.
 
 ### Typography
-- **Font:** system sans stack (`ui-sans-serif, system-ui, …`) — no webfont ships. Mono: `ui-monospace, SFMono-Regular, Menlo`.
+- **Font:** ONE system sans stack (`ui-sans-serif, system-ui, …`) — no webfont ships. `--font-mono` token deliberately resolves to the SAME sans (single-font decision 2026-07-25; revert comment sits on the token in `globals.css`).
 - **Scale:** 13px nav rows · 11px uppercase +0.05em section/table headers · 30px/400 home greeting · chat body 14px/1.625 · chat headings capped 14–16px semibold · code chips 13px mono · durations 11px mono tabular.
 
 ### Shell
 - **One rail** (`AppRail`, 240px, collapsible 56px): blue-text "New chat", flat Overview/Registers/Settings (minRole-gated), divider, session history (13px single-line), user row + version. Mounted once at root layout.
-- **Admin = 3 tabbed pages**: `/admin/overview` (Dashboard|Documents|Emails), `/admin/registers` (Templates|Companies|People), `/admin/settings` (AI models|Email|System|Activity|Users|Knowledge). Old routes redirect w/ `?tab=`. AuthGuard path-gates all (incl. the once-open `/admin/people`).
+- **Admin = 3 tabbed pages**: `/admin/overview` (Dashboard|Documents|Emails|Skills), `/admin/registers` (Templates|Companies|People), `/admin/settings` (AI models|Email|System|Activity|Users|Knowledge). Old routes redirect w/ `?tab=`. AuthGuard path-gates all (incl. the once-open `/admin/people`). Tab band = `flex-1 min-h-0 overflow-y-auto` — `overflow-hidden` clips detail views (template preview / company form / document preview).
 
 ### Chat UX
 - **Home:** centered greeting → composer (`rounded-xl`, Email pill, graphite circular send) → chips, over a faint 24px grid + pastel glow. Composer keeps ONE tree position across empty→thread (never remounts).
@@ -370,6 +390,29 @@ Three theme blocks: `@media (prefers-color-scheme: dark)` + `:root[data-theme='d
 - **Document panel:** hidden until a document tool runs or an artifact lands; slides open/closed on `cubic-bezier(0.4,0,0.2,1)` 250ms; columns toggle rides the panel edge; resizable (invisible handle, blue bar on hover).
 - **Timestamps:** hover-title only; response duration is the only visible time.
 - **Auto-suggestions:** LLM-powered via `POST /api/suggest-followups`, shown only after the answer settles.
+
+---
+
+## Ask-Questions HITL (in-chat cards, 2026-07-25)
+
+ALL agent choices (template pick, yes/no approvals, missing fields, signer/member selection) go through clickable cards — the prose `a) b) c)` pattern is PURGED from the system prompt (verify: `grep '^[abc]) ' scout/agent.py` must be ZERO).
+
+- **Backend:** `scout/tools/ask_questions.py` — Agno `@tool(requires_user_input=True)`; run pauses (RunPaused), FE resumes same run_id echoing the WHOLE `user_input_schema` with only the `answers` field filled (JSON).
+- **LANDMINE:** agno RESERVES tool names `ask_user` and `get_user_input` (`_tools.py:795`) — its built-in handler hijacks resume, skips execution, leaves a dangling tool call → provider 400 "No tool output found". Hence the name `ask_questions`.
+- **History:** answered pauses flip `requires_user_input`→false and store answers inside `user_input_schema` (`result` stays null); pause runs persist as status=ERROR with fallback text — rehydrate by tool NAME (`useSessionLoader.tsx`).
+- **Task Continuity:** prompt section + imperative tool result ("CONTINUE THE TASK IN THIS SAME TURN… empty output is forbidden") + FE auto-nudge: RunCompleted with empty content + tool work + nothing pending → send `continue` once per run_id (mitigates 100k+-token resumed-context silent stops).
+
+---
+
+## Legal Skills Engine (Anthropic Agent-Skills pattern, 2026-07-25)
+
+Progressive-disclosure playbooks — no sandbox needed (skills are markdown instructions; L3 "resources" are the existing Agno tools).
+
+- **L1:** name+description (~50 tok/skill) always in system prompt, injected by `_refresh_legal_skills()` (app/main.py) between markers `## Legal Skills (playbooks — load on demand)` … `■■■`, placed AFTER the template-knowledge `═══` fence. Refreshes on skill CRUD without agent restart.
+- **L2:** full body via `load_skill(name)` tool (`scout/tools/legal_skills.py`), stored in `legal_skills` table.
+- **12 seeded skills** (migration_014): 7 adapted from `anthropics/claude-for-legal` (Apache-2.0, attributed in `source`), 4 native Myanmar corporate-law playbooks, 1 CHL practice-profile.
+- **Signing rules (client complaint fix, E2E-proven):** Corporate Shareholder Consent is signed by the CORPORATE SHAREHOLDER'S OWN directors (e.g. Pahtama Group's directors for Arctic Sun) — never the new company's board; signers always chosen via picker, never guessed; DICA extracts never carry phone/email/residential address.
+- **Admin:** Overview → Skills tab (`SkillsView.tsx`) — toggles, edit, `/api/skills` CRUD.
 
 ---
 
@@ -466,6 +509,7 @@ All database connections use centralized `get_db_conn()` from `db/connection.py`
 
 ## Current State (2026-07-25)
 
-- **Branch `feature/ui-insights-restyle` (UNMERGED, ~20 commits)** carries the full Insights restyle + streaming/panel work above. Baked into the local image and Playwright-verified; merge to dev/main + VERSION/CHANGELOG still pending. Rollback tags: `pre-insights-restyle`, `pre-rail-revamp`, `pre-ui-revamp`.
-- **Planned next: Legal Skills engine** (Anthropic Agent-Skills pattern ported to Agno): `legal_skills` DB table, L1 metadata injected under a `## Legal Skills` prompt marker, `load_skill(name)` tool for full bodies, 8 seed Myanmar corporate-law skills (5 hand-authored process playbooks + 3 generated from the templates' `document_workflow`/`legal_references` training data), Settings→Skills admin tab.
-- Design/mockup source of truth for the restyle lives in the session artifact (`legal-scout-insights-mockup.html`); `FUTURE_READINESS.md` predates the restyle — its §2 tokens and phase table are superseded, but its defect list (§6) and People-register data findings (§7) remain valid.
+- **EVERYTHING ON `main` (~40 commits, all feature branches deleted).** Insights restyle + streaming/typewriter + animated document panel + ask_questions cards + Task Continuity + Legal Skills engine + single sans + pixel-exact bagofwords login + admin scroll fixes. Baked into the local Docker image (:8080) and Playwright-verified live. Rollback tags kept: `pre-insights-restyle`, `pre-legal-skills`, `pre-ui-revamp`, `pre-rail-revamp`, `pre-v2-phase0`. NOT pushed to any remote.
+- **Login page** measured 1:1 against Insights `:8095/users/sign-in` (computed-style loop): h1 40px/600, form col 440px, fields 440×64 r12, buttons h-12 r11 full-width, showcase panel 677px r22. Showcase animation uses FICTIONAL companies only — no real client data pre-auth.
+- **Known LEFT items:** one full-chain E2E in a single run (card→picker→fields→preview→generate→download; prior failures were test-selector brittleness, not product); context diet for 100k+-token resumed turns (auto-nudge is mitigation); People-register backfill + `country_of_residence` migration; company page link to the ORIGINAL uploaded DICA PDF (`pdf_url` never stored on extraction — file exists on disk under `/documents/legal/uploads/`); cold-start-interview run to fill the CHL practice-profile skill.
+- `FUTURE_READINESS.md` predates the restyle — its §2 tokens and phase table are superseded, but its defect list (§6) and People-register data findings (§7) remain valid.

@@ -14,6 +14,8 @@ AI-powered legal document automation system for Myanmar corporate law. Generate 
 - **Deep Training** — AI analyzes templates for field types, legal references, document workflows, Q&A pairs, cross-template relationships
 - **Dynamic Field Registry** — New templates auto-register their user_input fields; Edit Company UI renders inputs dynamically. Zero code changes per template.
 - **Document Split-View** — Generated docs render side-by-side: pixel-match PDF left, placeholder values + validation stats right
+- **Interactive Chat Cards** — clarifying questions, approvals and signer picks arrive as clickable cards in chat (Claude-style), not prose options
+- **Legal Playbook Skills** — 12 Myanmar corporate-law skills (7 adapted Apache-2.0 from anthropics/claude-for-legal + 5 native) loaded into the agent on demand; managed from Overview → Skills
 
 ---
 
@@ -110,7 +112,7 @@ curl http://localhost:${PORT:-80}/health
 
 # 4. Verify migrations applied
 docker compose exec scout-api python -m db.migrate --status
-# Expected: 10/10 applied
+# Expected: 14/14 applied
 
 # 5. Verify admin auto-created
 docker compose exec scout-db psql -U scout -d legalscout -c "SELECT email, role FROM users;"
@@ -375,21 +377,16 @@ User chats "Create AGM for ARCTIC SUN"
 
 ## Features
 
-### Chat Interface (DASH-inspired brutalist design)
-- Natural language document requests
-- AI agent with 27+ tools (document generation, company lookup, template intelligence, knowledge base, email, web search)
-- DASH-style CLI terminal blocks showing tool execution (`$ scout exec --agent legal`)
-- Streaming animation with green cursor blink + traffic light dots
-- Answer box with stamp shadow, streaming indicator until complete
-- COPY button on every response
-- LLM-powered auto-suggestions after each response (`POST /api/suggest-followups`)
-- Collapsible trace toggle (`$ trace`) showing tool calls + duration
-- Session tag (`LEGAL SCOUT · 02:08 PM`) at top of chat
-- Status bar (`SYSTEM_ACTIVE | POWERED BY AI AGENT | LEGAL SCOUT · MYANMAR`)
-- User messages right-aligned with dark bubble, agent messages left-aligned with CLI + answer box
-- Option buttons (a/b/c/d/e) for clarification
-- Document download cards
-- Session history with agent name + time ago
+### Chat Interface (CityAgent Insights design language)
+- Natural language document requests over a clean neutral-gray + single-blue-accent UI (system font, 13-14px density)
+- AI agent with 27+ tools (document generation, company lookup, template intelligence, knowledge base, legal skills, email, web search)
+- Smooth typewriter streaming (rAF-buffered — no bursty token dumps)
+- "Analyzing your request" pill + live tool timeline (green done / pulsing blue running, durations) → collapses to `✓ N steps · Xs`
+- **Interactive question cards** — every choice (template pick, yes/no approval, missing fields, signer selection) arrives as clickable chips in chat, never "reply a/b/c" prose; answers resume the paused run in place
+- **Animated document panel** — appears only when a document starts generating; slides open/closed with a moving toggle button; resizable split view
+- **12 legal playbook skills** (adapted from Anthropic's claude-for-legal + native Myanmar corporate-law rules) loaded on demand — e.g. the agent knows a Corporate Shareholder Consent is signed by the corporate shareholder's own directors, not the new company's board
+- LLM-powered auto-suggestions after each response
+- Document download cards, session history in the global rail
 
 ### AI Agent Capabilities (27+ Tools)
 - **Document Generation** — `generate_document`, `create_document`, `prepare_document`, `preview_document`, `analyze_template`
@@ -397,6 +394,8 @@ User chats "Create AGM for ARCTIC SUN"
 - **Template Intelligence** — `list_templates`, `analyze_new_template`, `find_matching_templates`, `get_template_data`, `get_data_for_template`
 - **Knowledge Base** — `search_knowledge` (semantic vector search), `lookup_knowledge` (fast key-value), `quick_info`
 - **Document Tracking** — `list_tracked_documents`, `get_document_info`, `get_document_stats`
+- **Interactive Questions** — `ask_questions` pauses the run and renders clickable answer cards in chat (single-pick, multi-select, free-text)
+- **Legal Skills** — `load_skill` / `list_skills` pull Myanmar corporate-law playbooks (12 seeded) into context on demand
 - **Communication** — `send_email` (with optional document attachment, requires SMTP config)
 - **File Operations** — `read_file`, `list_files`, `save_file`, `search_content`
 - **Web Search** — `web_search_exa` (optional, requires `EXA_API_KEY`)
@@ -447,15 +446,10 @@ User chats "Create AGM for ARCTIC SUN"
 - Document history with date filtering
 - Version tracking
 
-### Admin Panel
-- **Dashboard** — KPIs, stats, recent activity
-- **Documents** — Generated document history
-- **Templates** — Upload, train, preview
-- **Companies** — Add, edit, train
-- **Knowledge** — AI training status
-- **Users** — User management (admin/editor/user roles)
-- **Settings** — AI models, S3 storage, email, timezone
-- **Emails** — Email sending logs
+### Admin Panel (3 tabbed pages, one global rail)
+- **Overview** — Dashboard (KPIs, stats) | Documents (history) | Emails (send logs) | Skills (legal playbooks: toggle, edit, add)
+- **Registers** — Templates (upload, train, preview) | Companies (add, edit, train) | People (signer register)
+- **Settings** — AI models | Email/SMTP | System (S3, timezone) | Activity | Users (admin/editor/user) | Knowledge (training status)
 
 ### Security
 - JWT authentication on all API endpoints (no unprotected routes)
@@ -603,8 +597,8 @@ CHLLegalScout/
 │   ├── src/components/           # UI components
 │   └── src/lib/                  # API client, utilities
 ├── scout/                        # AI agent
-│   ├── agent.py                  # Agent definition + system prompt
-│   └── tools/                    # 11 tool modules
+│   ├── agent.py                  # Agent definition + system prompt (skills L1, task continuity)
+│   └── tools/                    # 18 tool modules (incl. ask_questions, legal_skills, people_picker)
 ├── db/                           # Database
 │   ├── init.sql                  # Schema
 │   └── migration_*.sql           # Migrations
