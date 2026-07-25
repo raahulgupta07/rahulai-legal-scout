@@ -143,6 +143,8 @@ const useAIChatStreamHandler = () => {
   // proportional to the backlog, so bursts render as continuous typing.
   const streamTargetRef = useRef('')
   const revealRafRef = useRef<number | null>(null)
+  // Runs already auto-nudged after a silent empty completion — one per run.
+  const autoContinuedRunsRef = useRef<Set<string>>(new Set())
 
   const cancelReveal = useCallback(() => {
     if (revealRafRef.current != null) {
@@ -456,6 +458,29 @@ const useAIChatStreamHandler = () => {
         cancelReveal()
         if (typeof chunk.content === 'string')
           streamTargetRef.current = chunk.content
+
+        // Silent-stop guard: large-context runs sometimes finish with tool
+        // work done but an EMPTY final message (the model just stops). If
+        // nothing is pending for the user, nudge once per run with the
+        // "continue" a human would type.
+        const finishedEmpty =
+          typeof chunk.content === 'string' && chunk.content.trim() === ''
+        const didToolWork = (chunk.tools?.length ?? 0) > 0
+        const waitingOnUser = (chunk.tools ?? []).some(
+          (t) => t.requires_user_input === true
+        )
+        if (
+          finishedEmpty &&
+          didToolWork &&
+          !waitingOnUser &&
+          chunk.run_id &&
+          !autoContinuedRunsRef.current.has(chunk.run_id)
+        ) {
+          autoContinuedRunsRef.current.add(chunk.run_id)
+          setTimeout(() => {
+            useStore.getState().setPendingMessage('continue')
+          }, 400)
+        }
         setMessages((prevMessages) => {
           const newMessages = prevMessages.map((message, index) => {
             if (index === prevMessages.length - 1 && message.role === 'agent') {
