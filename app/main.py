@@ -229,6 +229,12 @@ async def startup_sync():
     except Exception as e:
         print(f"[STARTUP] Agent refresh warning: {e}")
 
+    # Rebuild agent legal-skills L1 block from DB
+    try:
+        _refresh_legal_skills()
+    except Exception as e:
+        print(f"[STARTUP] Legal skills refresh warning: {e}")
+
 
 def _refresh_agent_knowledge():
     """Reload template knowledge into the agent's system prompt."""
@@ -247,6 +253,28 @@ def _refresh_agent_knowledge():
         _am.INSTRUCTIONS = _before + _marker + "\n" + _am.TEMPLATE_KNOWLEDGE + "\n" + _after
     _am.scout.instructions = _am.INSTRUCTIONS
     print(f"[AGENT] Template knowledge refreshed ({len(_am.TEMPLATE_KNOWLEDGE)} chars)")
+
+
+def _refresh_legal_skills():
+    """Reload the L1 legal-skills block into the agent's system prompt.
+
+    Mirrors _refresh_agent_knowledge but splices between the legal-skills
+    markers ("## Legal Skills (playbooks — load on demand)" .. "\n■■■") so it
+    never overlaps the template-knowledge span (marker .. "\n═══").
+    """
+    import scout.agent as _am
+    _am.LEGAL_SKILLS_BLOCK = _am._build_legal_skills_block()
+    _old = _am.INSTRUCTIONS
+    _marker = "## Legal Skills (playbooks — load on demand)"
+    _end_marker = "\n■■■"
+    if _marker in _old and _end_marker in _old:
+        _before = _old[:_old.index(_marker)]
+        _after_idx = _old.index(_end_marker, _old.index(_marker)) + len(_end_marker)
+        _after = _old[_after_idx:]
+        # _build_legal_skills_block() already includes the trailing end marker.
+        _am.INSTRUCTIONS = _before + _am.LEGAL_SKILLS_BLOCK + _after
+        _am.scout.instructions = _am.INSTRUCTIONS
+    print(f"[AGENT] Legal skills refreshed ({len(_am.LEGAL_SKILLS_BLOCK)} chars)")
 
 
 # ---------------------------------------------------------------------------
@@ -5783,6 +5811,238 @@ async def restore_backup(request: Request, file: UploadFile = File(...)):
         return {"success": False, "error": "Invalid JSON file"}
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+
+# ---------------------------------------------------------------------------
+# Legal Skills — Agent-Skills engine (L1 metadata in prompt, L2 body on demand)
+# Registered before the frontend catch-all so the GET routes aren't shadowed.
+# ---------------------------------------------------------------------------
+import re as _skills_re
+
+_SKILL_NAME_RE = _skills_re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+
+
+def _valid_skill_name(name: str) -> bool:
+    return bool(name) and len(name) <= 64 and bool(_SKILL_NAME_RE.match(name))
+
+
+@app.get("/api/skills")
+async def list_legal_skills(request: Request):
+    """List all legal skills (any authenticated role). Bodies excluded — body_chars only."""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    conn = None
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT id, name, description, version, enabled, source, updated_at,
+                   char_length(body)
+            FROM legal_skills ORDER BY name
+        """)
+        rows = cur.fetchall()
+        cur.close()
+        skills = [{
+            "id": r[0], "name": r[1], "description": r[2], "version": r[3],
+            "enabled": r[4], "source": r[5],
+            "updated_at": r[6].isoformat() if r[6] else None,
+            "body_chars": r[7] or 0,
+        } for r in rows]
+        return {"success": True, "skills": skills, "count": len(skills)}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.get("/api/skills/{name}")
+async def get_legal_skill(name: str, request: Request):
+    """Get a single legal skill including its full body (any authenticated role)."""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    conn = None
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT id, name, description, body, version, enabled, source, updated_at
+            FROM legal_skills WHERE name = %s
+        """, (name,))
+        row = cur.fetchone()
+        cur.close()
+        if not row:
+            raise HTTPException(status_code=404, detail="Skill not found")
+        return {"success": True, "skill": {
+            "id": row[0], "name": row[1], "description": row[2], "body": row[3],
+            "version": row[4], "enabled": row[5], "source": row[6],
+            "updated_at": row[7].isoformat() if row[7] else None,
+        }}
+    except HTTPException:
+        raise
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.post("/api/skills")
+async def create_legal_skill(request: Request):
+    """Create a new manual legal skill (admin only)."""
+    user = require_admin(request)
+    conn = None
+    try:
+        body = await request.json()
+        name = (body.get("name") or "").strip()
+        description = (body.get("description") or "").strip()
+        skill_body = body.get("body") or ""
+        if not _valid_skill_name(name):
+            return {"success": False, "error": "Invalid name — use kebab-case, max 64 chars (a-z, 0-9, hyphens)."}
+        if not description:
+            return {"success": False, "error": "Description is required."}
+        if not skill_body.strip():
+            return {"success": False, "error": "Body is required."}
+        conn = get_db_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT 1 FROM legal_skills WHERE name = %s", (name,))
+        if cur.fetchone():
+            cur.close()
+            return {"success": False, "error": f"Skill '{name}' already exists."}
+        cur.execute("""
+            INSERT INTO legal_skills (name, description, body, source)
+            VALUES (%s, %s, %s, 'manual')
+            RETURNING id
+        """, (name, description, skill_body))
+        new_id = cur.fetchone()[0]
+        conn.commit(); cur.close()
+        _refresh_legal_skills()
+        log_activity(user.get("user_id"), user.get("email"), "create_skill", f"Created skill {name}", "")
+        return {"success": True, "id": new_id, "name": name}
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        return {"success": False, "error": str(e)}
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.put("/api/skills/{name}")
+async def update_legal_skill(name: str, request: Request):
+    """Update a legal skill's description/body/version (admin only)."""
+    user = require_admin(request)
+    conn = None
+    try:
+        body = await request.json()
+        fields = []
+        params = []
+        if "description" in body:
+            desc = (body.get("description") or "").strip()
+            if not desc:
+                return {"success": False, "error": "Description cannot be empty."}
+            fields.append("description = %s"); params.append(desc)
+        if "body" in body:
+            new_body = body.get("body") or ""
+            if not new_body.strip():
+                return {"success": False, "error": "Body cannot be empty."}
+            fields.append("body = %s"); params.append(new_body)
+        if "version" in body:
+            ver = (body.get("version") or "").strip()[:16]
+            fields.append("version = %s"); params.append(ver)
+        if not fields:
+            return {"success": False, "error": "Nothing to update."}
+        fields.append("updated_at = now()")
+        conn = get_db_conn()
+        cur = conn.cursor()
+        params.append(name)
+        cur.execute(
+            f"UPDATE legal_skills SET {', '.join(fields)} WHERE name = %s RETURNING id",
+            tuple(params),
+        )
+        row = cur.fetchone()
+        if not row:
+            cur.close()
+            raise HTTPException(status_code=404, detail="Skill not found")
+        conn.commit(); cur.close()
+        _refresh_legal_skills()
+        log_activity(user.get("user_id"), user.get("email"), "update_skill", f"Updated skill {name}", "")
+        return {"success": True, "name": name}
+    except HTTPException:
+        raise
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        return {"success": False, "error": str(e)}
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.post("/api/skills/{name}/toggle")
+async def toggle_legal_skill(name: str, request: Request):
+    """Enable/disable a legal skill (admin only)."""
+    user = require_admin(request)
+    conn = None
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE legal_skills SET enabled = NOT enabled, updated_at = now() WHERE name = %s RETURNING enabled",
+            (name,),
+        )
+        row = cur.fetchone()
+        if not row:
+            cur.close()
+            raise HTTPException(status_code=404, detail="Skill not found")
+        conn.commit(); cur.close()
+        _refresh_legal_skills()
+        log_activity(user.get("user_id"), user.get("email"), "toggle_skill", f"Skill {name} enabled={row[0]}", "")
+        return {"success": True, "name": name, "enabled": row[0]}
+    except HTTPException:
+        raise
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        return {"success": False, "error": str(e)}
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.delete("/api/skills/{name}")
+async def delete_legal_skill(name: str, request: Request):
+    """Delete a legal skill (admin only). Only source='manual' is deletable;
+    'adapted'/'template' skills are toggle-only."""
+    user = require_admin(request)
+    conn = None
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT source FROM legal_skills WHERE name = %s", (name,))
+        row = cur.fetchone()
+        if not row:
+            cur.close()
+            raise HTTPException(status_code=404, detail="Skill not found")
+        if row[0] != "manual":
+            cur.close()
+            return {"success": False, "error": f"Skill '{name}' (source={row[0]}) cannot be deleted — disable it instead."}
+        cur.execute("DELETE FROM legal_skills WHERE name = %s", (name,))
+        conn.commit(); cur.close()
+        _refresh_legal_skills()
+        log_activity(user.get("user_id"), user.get("email"), "delete_skill", f"Deleted skill {name}", "")
+        return {"success": True, "name": name}
+    except HTTPException:
+        raise
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        return {"success": False, "error": str(e)}
+    finally:
+        if conn:
+            conn.close()
 
 
 # ---------------------------------------------------------------------------

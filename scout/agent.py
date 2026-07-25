@@ -53,6 +53,7 @@ from scout.tools import (
     create_fast_info_tool,
 )
 from scout.tools.knowledge_tools import create_knowledge_tools
+from scout.tools.legal_skills import create_legal_skills_tools
 from scout.tools.people_picker import people_picker
 from scout.tools.upload_tools import create_upload_tools
 
@@ -83,6 +84,7 @@ template_analyzer = create_template_analyzer_tool(documents_dir=str(DOCUMENTS_DI
 fast_info = create_fast_info_tool(documents_dir=str(DOCUMENTS_DIR))
 knowledge_tools = create_knowledge_tools()
 upload_tools = create_upload_tools(host=API_HOST)
+legal_skills_tools = create_legal_skills_tools()
 
 
 # ---------------------------------------------------------------------------
@@ -240,6 +242,8 @@ _tools_to_add = [
     people_picker["choose_representative_director"],
     people_picker["choose_attendees"],
     people_picker["choose_person_from_register"],
+    legal_skills_tools["list_skills"],
+    legal_skills_tools["load_skill"],
 ]
 
 base_tools: list = (
@@ -406,6 +410,50 @@ def _build_template_knowledge() -> str:
 
 
 TEMPLATE_KNOWLEDGE = _build_template_knowledge()
+
+
+# ---------------------------------------------------------------------------
+# Legal skills L1 metadata — auto-loaded from DB (bodies loaded on demand via load_skill)
+# ---------------------------------------------------------------------------
+# Marker fences: start "## Legal Skills (playbooks — load on demand)", end "\n■■■".
+# These are unique/greppable so app/main.py:_refresh_legal_skills() can splice the
+# block in place without touching the template-knowledge span (which ends at "\n═══").
+def _build_legal_skills_block() -> str:
+    """Build the L1 legal-skills block (one metadata line per enabled skill)."""
+    conn = None
+    try:
+        from db.connection import get_db_conn
+        conn = get_db_conn()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT name, description FROM legal_skills WHERE enabled = TRUE ORDER BY name"
+        )
+        rows = cur.fetchall()
+        cur.close()
+
+        lines = [
+            "## Legal Skills (playbooks — load on demand)",
+            "When a request matches a skill description below, call load_skill(name) FIRST and follow it.",
+            "One line per skill:",
+        ]
+        if rows:
+            for name, desc in rows:
+                lines.append(f"- {name}: {_sanitize_for_prompt(desc or '', max_len=300)}")
+        else:
+            lines.append("- (no skills loaded yet)")
+        return "\n".join(lines) + "\n■■■"
+    except Exception as e:
+        logging.getLogger("legalscout").warning(f"DB error in _build_legal_skills_block: {e}")
+        return (
+            "## Legal Skills (playbooks — load on demand)\n"
+            "(skills unavailable)\n■■■"
+        )
+    finally:
+        if conn:
+            conn.close()
+
+
+LEGAL_SKILLS_BLOCK = _build_legal_skills_block()
 
 # ---------------------------------------------------------------------------
 # Instructions
@@ -1380,6 +1428,19 @@ Example: Just type "yes" or "no" to continue.
 
 {INTENT_ROUTING_CONTEXT}\
 """
+
+# Inject the L1 legal-skills block AFTER the template-knowledge section. It lands
+# just before "## AI Reasoning for Follow-ups", which is past the "═══" fence that
+# closes template knowledge — so app/main.py:_refresh_agent_knowledge() (which
+# splices the marker→"\n═══" span) never overlaps this block.
+if "## AI Reasoning for Follow-ups" in INSTRUCTIONS:
+    INSTRUCTIONS = INSTRUCTIONS.replace(
+        "## AI Reasoning for Follow-ups",
+        LEGAL_SKILLS_BLOCK + "\n\n## AI Reasoning for Follow-ups",
+        1,
+    )
+else:
+    INSTRUCTIONS = INSTRUCTIONS + "\n\n" + LEGAL_SKILLS_BLOCK
 
 # ---------------------------------------------------------------------------
 # Create Agent
