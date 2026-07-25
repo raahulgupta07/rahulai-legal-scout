@@ -25,7 +25,7 @@ const ChatArea = () => {
   const isEmpty = useStore((s) => s.messages.length === 0)
 
   return (
-    <main className="relative m-0 flex flex-grow flex-col bg-[var(--bg)]">
+    <main className="relative m-0 flex min-h-0 flex-grow flex-col overflow-hidden bg-[var(--bg)]">
       {/* Thread lives above the composer once there is one; on the empty home
           it is absent and the composer block below expands to centre itself. */}
       {!isEmpty && <MessageArea />}

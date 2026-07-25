@@ -10,7 +10,7 @@ const MessageArea = () => {
 
   return (
     <StickToBottom
-      className="relative mb-4 flex max-h-[calc(100vh-64px)] min-h-0 flex-grow flex-col"
+      className="relative mb-4 flex min-h-0 flex-grow flex-col overflow-y-auto"
       resize="smooth"
       initial="smooth"
     >

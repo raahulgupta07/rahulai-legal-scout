@@ -220,7 +220,7 @@ export default function SplitShell({
       )}
 
       <div
-        className={`flex min-w-0 flex-col bg-[var(--surface)] ${dragging ? '' : SLIDE}`}
+        className={`flex min-h-0 min-w-0 flex-col overflow-hidden bg-[var(--surface)] ${dragging ? '' : SLIDE}`}
         style={{ width: artifactHidden ? '100%' : `${effective * 100}%` }}
       >
         {chat}
