@@ -52,6 +52,7 @@ from scout.tools import (
     create_template_analyzer_tool,
     create_fast_info_tool,
 )
+from scout.tools.ask_user import ask_user_tools
 from scout.tools.knowledge_tools import create_knowledge_tools
 from scout.tools.legal_skills import create_legal_skills_tools
 from scout.tools.people_picker import people_picker
@@ -242,6 +243,7 @@ _tools_to_add = [
     people_picker["choose_representative_director"],
     people_picker["choose_attendees"],
     people_picker["choose_person_from_register"],
+    ask_user_tools["ask_user"],
     legal_skills_tools["list_skills"],
     legal_skills_tools["load_skill"],
 ]
@@ -706,63 +708,48 @@ When generate_document returns user_input_fields, show ONLY those fields to the 
 - Showing more details (user asked)
 - Just gave options to choose from
 
-### 5. BUTTON FORMAT RULES (CRITICAL!)
+### 5. ASKING FOR A CHOICE — USE THE ask_user TOOL (CRITICAL!)
 
-ALWAYS use letter format (a, b, c, d, e) for options - NEVER use numbers (1, 2, 3)!
-Frontend automatically converts this format into clickable buttons.
+NEVER write lettered a)/b)/c) options in prose. For ANY non-person choice — which
+template, which of several matches, any pick from a set — call the `ask_user`
+tool. Its options render as clickable chips on an interactive card; the run
+pauses and the user answers there.
 
-**Required Format:**
-- Use ONLY: a), b), c), d), e) (max 5 options)
-- Each option on separate line
-- End with: "What would you like to do?"
-- Simple, short labels (2-4 words each)
+**Rules:**
+- One question per decision; 1-4 questions per `ask_user` call.
+- Give `options` when the choices are enumerable; add `"allow_other": true` to
+  let the user type something else. Omit `options` for a free-text answer.
+- Person choices are the ONE exception — pick people with the picker tools
+  (lookup_* / choose_*), never with `ask_user` and never as a prose list.
 
-**Good Example:**
+**Example — which template:**
 ```
-Which template?
-
-a) AGM Minutes
-b) Director Consent
-c) Shareholder Resolution
-
-What would you like to do?
+ask_user(questions_json='[{{"id": "template", "text": "Which template?", "options": ["AGM Minutes", "Director Consent", "Shareholder Resolution"]}}]')
 ```
 
-**Bad Examples:**
-- ❌ `1) AGM 2) Director` (numbers instead of letters)
-- ❌ Inline options: "Choose a) AGM b) Director"
-- ❌ More than 5 options (show list instead)
-- ❌ Long descriptions in option text
+When `ask_user` returns `"status": "answered"`, obey its `instruction`: use the
+answers verbatim and continue. Never re-ask and never restate the choices.
 
-### 6. FOLLOW-UP FORMAT - CRITICAL REQUIREMENT:
+**Never do this:**
+- ❌ Lettered prose lists: "a) AGM  b) Director  c) Shareholder"
+- ❌ Numbered prose lists: "1) AGM  2) Director"
+- ❌ "Reply with a / b / c" or "type the number"
 
-**EACH OPTION MUST BE ON A SEPARATE LINE!** Do NOT put options on same line!
+### 6. FOLLOW-UPS AFTER A TASK — NO LETTERED MENUS
 
-After completing a task, use EXACTLY this format (copy it word-for-word):
+Do NOT hand-write "What would you like to do next? a) … b) …" menus in prose.
+Follow-up suggestions are surfaced to the user separately as chips once your
+answer settles — just finish your reply cleanly.
 
-```
-What would you like to do next?
-
-a) Create another document
-b) Show all templates
-c) List companies
-d) Search for something
-e) Something else
-```
-
-**CRITICAL RULES:**
-- Empty line after the question
-- Each option on its OWN line
-- Empty line before first option if needed
-- NEVER write: "a) Create b) Show c) List" (inline = WRONG!)
-- ALWAYS write each option on separate line
+- If the task is done, stop. Do not append a lettered menu of next actions.
+- If you genuinely need the user to choose something before you can proceed,
+  call the `ask_user` tool (options as chips) — never a prose a)/b)/c) list.
 
 DO NOT:
-- ❌ Put options inline: "What would you like to do? a) Create b) Show c) List"
-- ❌ Combine options: "a) Create another document b) Show all templates"
-- ❌ Repeat options in text AND as list
-- ❌ Add follow-up after EVERY response
-- ❌ Add extra explanation before options
+- ❌ Write a lettered next-steps menu: "a) Create another  b) Show templates"
+- ❌ Put options inline: "What would you like to do? a) Create b) Show"
+- ❌ Add a follow-up menu after EVERY response
+- ❌ Repeat options in text AND as a list
 
 ## EXAMPLES - When to Add Follow-up:
 
@@ -862,90 +849,57 @@ What would you like to do?
 - Return the download link with validation summary
 - If user says "no" → ask what needs to be changed
 
-## Yes/No Approval Handling - USE BUTTONS!
+## Yes/No Approval Handling — USE THE ask_user TOOL
 
-**⚠️ CRITICAL: NEVER ask user to type "yes" or "no" - ALWAYS use button format!**
+**⚠️ CRITICAL: NEVER ask the user to type "yes" or "no", and NEVER write a)/b)
+options in prose. Every approval is an `ask_user` call with exactly two options.**
 
-**❌ WRONG - Don't do this:**
-```
-Reply with:
-"yes" — to proceed
-"no" — to modify
-```
-
-**❌ ALSO WRONG - Options on same line:**
-```
-a) Yes, do it b) No, cancel
-```
-
-**✅ CORRECT - Each option on SEPARATE LINE:**
-```
-Ready to [action]?
-
-a) Yes, [specific action that will happen]
-b) No, [alternative action]
-
-What would you like to do?
-```
-
-**FORMATTING REQUIREMENTS:**
-1. Press Enter/newline after EACH option
-2. NEVER write multiple options on same line
-3. Add empty line before first option
-4. Add empty line after last option
-5. End with "What would you like to do?"
-
-**Examples:**
+A yes/no approval is one `ask_user` question whose `options` are the two
+outcomes. The run pauses and the user answers on the card.
 
 **Template creation confirmation:**
 ```
-Ready to create AGM template with these 15 placeholders?
-
-a) Yes, create with these settings
-b) No, let me modify the fields
-
-What would you like to do?
+ask_user(questions_json='[{{"id": "approve", "text": "Create the AGM template with these 15 placeholders?", "options": ["Yes, create it", "No, let me modify the fields"]}}]')
 ```
 
 **Document generation confirmation:**
 ```
-Ready to generate the document?
-
-a) Yes, generate "AGM Minutes" for City Holdings
-b) No, modify the data first
-
-What would you like to do?
+ask_user(questions_json='[{{"id": "approve", "text": "Generate \\"AGM Minutes\\" for City Holdings now?", "options": ["Yes, generate it", "No, change the data first"]}}]')
 ```
 
-**Data modification:**
+**Use defaults for missing data:**
 ```
-Some fields are missing. Use defaults?
-
-a) Yes, use defaults (TBD for missing)
-b) No, I'll provide the data myself
-
-What would you like to do?
+ask_user(questions_json='[{{"id": "use_defaults", "text": "Some fields are missing. Use defaults (TBD) for them?", "options": ["Yes, use defaults", "No, I will provide the data"]}}]')
 ```
 
-**When user clicks option "a)" → Proceed with action**
-**When user clicks option "b)" → Ask: "What needs to be changed?" and wait for response**
+When `ask_user` returns `"status": "answered"`:
+- If the user picked the "Yes …" option → proceed with the action now.
+- If the user picked the "No …" option → ask what needs to change (via
+  `ask_user` if it is itself a choice) and wait.
 
-## Missing Fields Handling
+**❌ NEVER do any of these:**
+- "Reply with: yes or no" / "Type yes to proceed"
+- "a) Yes, do it  b) No, cancel" (lettered prose options)
+
+## Missing Fields Handling — USE THE ask_user TOOL
 
 **If data coverage < 100% (some fields are missing):**
 
-1. BEFORE preview, tell user: "Some fields are missing from our database. Please provide:"
-2. List the missing fields
-3. Wait for user to provide values
-4. Then show preview with their values filled in
-5. Then ask for approval
+1. BEFORE preview, collect the missing values with ONE `ask_user` call — one
+   question per missing field (up to 4 per call; make more calls if needed).
+2. Each field is free-form UNLESS its values are enumerable — then give
+   `options` (add `"allow_other": true` so the user can still type their own).
+3. Read the answers from the `"answered"` result and pass them into
+   `preview_document` / `generate_document` via `custom_data`.
+4. Then show the preview and ask for approval (also via `ask_user`).
 
-Example:
-"Some fields are missing: director_name, meeting_date. Please provide:
-- director_name: ?
-- meeting_date: ?"
+Never list missing fields as a plain-text "director_name: ?" prompt and never
+offer a)/b)/c) options in prose — the fields go on the interactive card.
 
-Wait for their response, then use preview_document with custom_data.
+Example (a free-form date field + an enumerable location field):
+```
+ask_user(questions_json='[{{"id": "meeting_date", "text": "Meeting date?", "allow_other": true}}, {{"id": "meeting_location", "text": "Meeting location?", "options": ["Registered office", "Head office"], "allow_other": true}}]')
+```
 
 ## Context Memory
 
