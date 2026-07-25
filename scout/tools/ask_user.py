@@ -1,11 +1,11 @@
 """
-Interactive Structured Questions (ask_user)
+Interactive Structured Questions (ask_questions)
 ===========================================
 
 A universal in-chat human-in-the-loop question tool, built on Agno's native
 pause/resume — the same mechanism the person pickers use.
 
-`ask_user` is a `@tool(requires_user_input=True, user_input_fields=["answers"])`
+`ask_questions` is a `@tool(requires_user_input=True, user_input_fields=["answers"])`
 function. Agno pauses the run before executing it and emits a RunPausedEvent
 carrying the tool's arguments, so the question payload travels to the frontend
 inside `ToolExecution.tool_args["questions_json"]`. The frontend renders an
@@ -59,7 +59,7 @@ def _validate_questions(questions: Any) -> List[str]:
 
 
 @tool(requires_user_input=True, user_input_fields=["answers"])
-def ask_user(questions_json: str, answers: str = "") -> str:
+def ask_questions(questions_json: str, answers: str = "") -> str:
     """Ask the user one to four structured questions in an interactive chat card.
 
     Use this for EVERY non-person decision: template choices, yes/no approvals,
@@ -68,7 +68,7 @@ def ask_user(questions_json: str, answers: str = "") -> str:
     interactive card; you never fill `answers` yourself (Agno fills it on resume).
 
     Person selection is the ONE exception — choose people with the dedicated
-    picker tools (lookup_* / choose_*), not with ask_user.
+    picker tools (lookup_* / choose_*), not with ask_questions.
 
     `questions_json` is a JSON array (1-4 items) of question objects:
         {
@@ -82,19 +82,19 @@ def ask_user(questions_json: str, answers: str = "") -> str:
     "allow_other": true) when the choices are enumerable.
 
     Example (a) — single-pick template choice with options:
-        ask_user(questions_json='['
+        ask_questions(questions_json='['
             '{"id": "template", "text": "Which template?",'
             ' "options": ["AGM Minutes", "Director Consent", "Shareholder Resolution"]}'
         ']')
 
     Example (b) — yes/no approval (exactly two options):
-        ask_user(questions_json='['
+        ask_questions(questions_json='['
             '{"id": "approve", "text": "Generate AGM Minutes for City Holdings now?",'
             ' "options": ["Yes, generate it", "No, change the data first"]}'
         ']')
 
     Example (c) — mixed missing fields (free-text date + options for location):
-        ask_user(questions_json='['
+        ask_questions(questions_json='['
             '{"id": "meeting_date", "text": "Meeting date?", "allow_other": true},'
             '{"id": "meeting_location", "text": "Meeting location?",'
             ' "options": ["Registered office", "Head office"], "allow_other": true}'
@@ -143,7 +143,7 @@ def ask_user(questions_json: str, answers: str = "") -> str:
             {
                 "status": "no_answer",
                 "instruction": (
-                    "The user has not answered yet. Call ask_user again so the "
+                    "The user has not answered yet. Call ask_questions again so the "
                     "question is shown as an interactive card. NEVER ask as plain "
                     "text and NEVER offer a), b), c) options in prose."
                 ),
@@ -163,6 +163,6 @@ def ask_user(questions_json: str, answers: str = "") -> str:
     )
 
 
-ask_user_tools = {
-    "ask_user": ask_user,
+ask_questions_tools = {
+    "ask_questions": ask_questions,
 }

@@ -8,10 +8,14 @@ import type {
 } from '@/types/os'
 
 /** The single HITL tool that pauses a run to ask the user structured questions. */
-export const ASK_USER_TOOL = 'ask_user'
+// Backend tool name. 'ask_user' is RESERVED by agno (built-in user-feedback
+// control tool hijacks the resume path) — hence ask_questions. The old name is
+// still matched read-only so pre-rename history renders.
+export const ASK_USER_TOOL = 'ask_questions'
+const LEGACY_ASK_USER_TOOLS = new Set(['ask_user', 'ask_questions'])
 
 export const isAskUserTool = (toolName?: string | null): boolean =>
-  toolName === ASK_USER_TOOL
+  !!toolName && LEGACY_ASK_USER_TOOLS.has(toolName)
 
 /**
  * Parses the model-written `questions_json` into a clean question list.
