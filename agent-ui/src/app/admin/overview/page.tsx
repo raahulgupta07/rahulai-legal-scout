@@ -32,7 +32,7 @@ function OverviewInner() {
         description="Dashboard, generated documents, and the emails the agent has sent."
       />
       <AdminTabs tabs={TABS} active={active} onSelect={select} ariaLabel="Overview sections" />
-      <div className="flex-1 min-h-0 overflow-hidden">
+      <div className="flex-1 min-h-0 overflow-y-auto">
         {active === "dashboard" && <DashboardView />}
         {active === "documents" && <DocumentsView />}
         {active === "emails" && <EmailsView />}

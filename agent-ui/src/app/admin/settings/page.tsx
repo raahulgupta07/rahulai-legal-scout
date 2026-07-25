@@ -511,11 +511,11 @@ function SettingsInner() {
       </Toolbar>
 
       {active === "users" ? (
-        <div className="flex-1 min-h-0 overflow-hidden">
+        <div className="flex-1 min-h-0 overflow-y-auto">
           <UsersView />
         </div>
       ) : active === "knowledge" ? (
-        <div className="flex-1 min-h-0 overflow-hidden">
+        <div className="flex-1 min-h-0 overflow-y-auto">
           <KnowledgeView />
         </div>
       ) : (

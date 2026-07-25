@@ -42,7 +42,7 @@ function RegistersInner() {
       {visible.length > 0 && (
         <AdminTabs tabs={visible} active={active} onSelect={select} ariaLabel="Register sections" />
       )}
-      <div className="flex-1 min-h-0 overflow-hidden">
+      <div className="flex-1 min-h-0 overflow-y-auto">
         {visible.length === 0 ? (
           <PageBody>
             <Notice tone="danger" title="No access">
