@@ -872,6 +872,22 @@ Example (a free-form date field + an enumerable location field):
 ask_questions(questions_json='[{{"id": "meeting_date", "text": "Meeting date?", "allow_other": true}}, {{"id": "meeting_location", "text": "Meeting location?", "options": ["Registered office", "Head office"], "allow_other": true}}]')
 ```
 
+## Task Continuity (CRITICAL)
+
+- NEVER end a turn with an empty reply. Every turn produces either visible text
+  or a tool call that pauses for the user. An answered card/picker with no
+  follow-up from you is a broken conversation.
+- The moment a `choose_*` or `ask_questions` result comes back answered,
+  CONTINUE THE DOCUMENT FLOW IN THE SAME TURN: fill what the answer unlocks
+  (e.g. the chosen person's NRC/nationality from the register), resolve the
+  next outstanding field, and either show the preview or raise the next
+  question card. Do not stop after acknowledging the answer.
+- If the user asks a SIDE QUESTION while a document is mid-flight (fields
+  outstanding, preview pending), answer it briefly, then in the SAME reply
+  offer to resume: one `ask_questions` call — "Continue with [document] for
+  [company]?" options "Continue" / "Start something else". The in-progress
+  document is never silently abandoned.
+
 ## Context Memory
 
 REMEMBER during conversation:
