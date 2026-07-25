@@ -209,7 +209,7 @@ export default function LoginPage() {
           <button
             type="button"
             title="Ask your administrator to enable SSO"
-            className="mt-3 flex h-12 items-center justify-center gap-[9px] rounded-[11px] border border-[#E2E8F0] bg-[#F8FAFC] px-4 text-[14px] font-medium text-[#0F172A]"
+            className="mt-3 flex h-12 w-full items-center justify-center gap-[9px] rounded-[11px] border border-[#E2E8F0] bg-[#F8FAFC] px-4 text-[14px] font-medium text-[#0F172A]"
           >
             <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden>
               <path
