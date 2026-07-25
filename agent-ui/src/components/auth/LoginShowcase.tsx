@@ -29,14 +29,14 @@ function pill(label: string, state: 'on' | 'done' | 'off'): string {
         ? 'border:1px solid #1E3A5F;color:#7DA6D9;background:transparent'
         : 'border:1px solid rgba(255,255,255,.08);color:#64748B;background:transparent'
   const dot = state === 'on' ? '#3B82F6' : state === 'done' ? '#22C55E' : '#334155'
-  return `<span style="display:inline-flex;align-items:center;gap:7px;font-size:12px;letter-spacing:.06em;font-weight:600;border-radius:9999px;padding:7px 16px;${st}"><span style="width:6px;height:6px;border-radius:9999px;background:${dot}"></span>${label}</span>`
+  return `<span style="display:inline-flex;align-items:center;gap:7px;font-size:9.5px;letter-spacing:.02em;font-weight:600;border-radius:9999px;padding:3px 8px;${st}"><span style="width:6px;height:6px;border-radius:9999px;background:${dot}"></span>${label}</span>`
 }
 
 const pipeHtml = (i: number) =>
   STEPS.map((s, k) => pill(s, k < i ? 'done' : k === i ? 'on' : 'off')).join('')
 
 const head = (t: string) =>
-  `<div style="display:flex;align-items:center;gap:8px;font-size:11.5px;letter-spacing:.1em;color:#7DA6D9;font-weight:600;margin-bottom:12px"><span style="width:7px;height:7px;border-radius:9999px;background:#3B82F6"></span>${t}</div>`
+  `<div style="display:flex;align-items:center;gap:8px;font-size:10.5px;letter-spacing:.1em;color:#7DA6D9;font-weight:600;margin-bottom:12px"><span style="width:7px;height:7px;border-radius:9999px;background:#3B82F6"></span>${t}</div>`
 
 function tile(
   abbr: string,
@@ -46,8 +46,8 @@ function tile(
   dim?: boolean
 ): string {
   return `<div style="border:1px solid rgba(255,255,255,.08);border-radius:14px;padding:16px 12px;text-align:center;background:rgba(255,255,255,.024);opacity:${dim ? '0.45' : '1'}">
-    <div style="width:44px;height:44px;border-radius:10px;background:${color};display:grid;place-items:center;margin:0 auto 10px;font-size:13px;font-weight:700;color:#fff">${abbr}</div>
-    <div style="font-size:13.5px;font-weight:600;color:#E2E8F0">${name}</div><div style="font-size:11px;color:#64748B;margin-top:2px">${sub}</div></div>`
+    <div style="width:40px;height:40px;border-radius:9px;background:${color};display:grid;place-items:center;margin:0 auto 10px;font-size:13px;font-weight:700;color:#fff">${abbr}</div>
+    <div style="font-size:12.5px;font-weight:600;color:#E2E8F0">${name}</div><div style="font-size:11px;color:#64748B;margin-top:2px">${sub}</div></div>`
 }
 
 function stageHtml(kind: string): string {
@@ -176,9 +176,9 @@ export default function LoginShowcase() {
 
   return (
     <div
-      className="relative flex min-h-[620px] w-[46%] shrink-0 flex-col overflow-hidden rounded-[28px] px-8 py-7 text-[#E2E8F0] max-lg:w-full"
+      className="relative flex min-h-[620px] w-full flex-col overflow-hidden rounded-[22px] px-[33px] pb-5 pt-[21px] text-[#E2E8F0]"
       style={{
-        background: 'linear-gradient(150deg,#0E1830,#0A1122 55%,#101E3C)'
+        background: 'radial-gradient(120% 120% at 82% -12%, #1E3A8A 0%, #0F1E3D 52%, #0A1226 100%)'
       }}
     >
       <div
@@ -194,23 +194,23 @@ export default function LoginShowcase() {
         }}
       />
       <div className="flex items-center gap-2.5">
-        <span className="rounded-md bg-[#2563EB] px-[9px] py-[3px] text-[11px] font-bold tracking-[.08em] text-white">
+        <span className="rounded-[6px] bg-[#2563EB] px-2 py-[2px] text-[10.5px] font-bold tracking-[.08em] text-white">
           LIVE
         </span>
-        <span className="text-[14px] text-[#CBD5E1]">
+        <span className="text-[13px] text-[#CBD5E1]">
           Legal Scout is working on your task
         </span>
-        <span ref={elRef} className="ml-auto text-[12.5px] text-[#64748B]">
+        <span ref={elRef} className="ml-auto text-[12px] text-[#64748B]">
           0.0s
         </span>
       </div>
       <div
         ref={qRef}
-        className="mt-6 min-h-[56px] rounded-[12px] border border-white/[.13] bg-white/[.04] px-5 py-4 text-[16.5px] font-semibold text-[#F1F5F9]"
+        className="mt-[9px] min-h-[44px] rounded-[11px] border border-white/[.13] bg-white/[.04] px-[13px] py-[10px] text-[14.5px] font-semibold text-[#F1F5F9]"
       />
-      <div ref={pipeRef} className="mb-5 mt-5 flex flex-wrap gap-2.5" />
+      <div ref={pipeRef} className="mb-4 mt-3 flex flex-wrap gap-1.5" />
       <div ref={stageRef} className="min-h-[230px] flex-1" />
-      <div className="mt-3.5 flex justify-between text-[12.5px] text-[#64748B]">
+      <div className="mt-auto flex justify-between pt-3 text-[11.5px] text-[#64748B]">
         <span>
           <b className="text-[#94A3B8]">15</b> templates ·{' '}
           <b className="text-[#94A3B8]">12</b> legal playbooks

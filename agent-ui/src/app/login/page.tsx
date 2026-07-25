@@ -9,11 +9,11 @@ const CREDENTIAL_HINT =
 
 /** bow sign-in field: label INSIDE the big rounded box, input under it. */
 const BOX =
-  "rounded-[14px] border border-[#E2E8F0] bg-white px-[18px] py-3 focus-within:border-[var(--brand)]"
+  "block rounded-[12px] border border-[#E5E7EB] bg-white px-[15px] py-[9px] focus-within:border-[var(--brand)]"
 const BOX_LABEL =
-  "text-[11px] font-semibold tracking-[.12em] text-[#64748B]"
+  "block text-[11px] font-semibold tracking-[.03em] text-[#9CA3AF]"
 const BOX_INPUT =
-  "w-full border-none bg-transparent py-1 text-[16px] text-[#0F172A] outline-none placeholder:text-[#94A3B8]"
+  "w-full border-none bg-transparent py-[1px] text-[15px] text-[#0F172A] outline-none placeholder:text-[#94A3B8]"
 
 function greeting(): string {
   const h = new Date().getHours()
@@ -97,42 +97,42 @@ export default function LoginPage() {
       }}
     >
       {/* Header — logo left, live chip right, NO border */}
-      <div className="flex items-start justify-between px-[70px] pt-[28px] max-lg:px-8">
+      <div className="mx-auto flex w-full max-w-[1500px] items-center justify-between px-11 py-4">
         <div className="flex items-center gap-3">
-          <span className="grid h-16 w-16 place-items-center rounded-[16px] bg-[#0F172A] text-[20px] font-bold text-white">
+          <span className="grid h-10 w-10 place-items-center rounded-[9px] bg-[#0F172A] text-[14px] font-bold text-white">
             LS
           </span>
           <div>
-            <div className="text-[20px] font-bold text-[#0F172A]">
+            <div className="text-[17px] font-bold text-[#0F172A]">
               Legal <span className="text-[#2563EB]">Scout</span>
             </div>
-            <div className="text-[11px] font-medium tracking-[.22em] text-[#94A3B8]">
+            <div className="text-[9.5px] font-semibold tracking-[2px] text-[#94A3B8]">
               MYANMAR CORPORATE LAW AUTOMATION
             </div>
           </div>
         </div>
-        <span className="inline-flex items-center gap-[7px] rounded-full border border-[#E2E8F0] bg-white px-3.5 py-1.5 text-[13px] text-[#334155]">
+        <span className="inline-flex items-center gap-[7px] rounded-full border border-[#E2E8F0] bg-white px-3 py-1.5 text-[12px] text-[#334155]">
           <span className="h-[7px] w-[7px] rounded-full bg-[#22C55E]" />
           live
         </span>
       </div>
 
       {/* Body: form left, showcase right */}
-      <div className="flex flex-1 items-stretch justify-between gap-16 px-[70px] pb-3 pt-[26px] max-lg:flex-col max-lg:px-8">
-        <div className="flex w-[580px] shrink-0 flex-col justify-center max-lg:w-full">
-          <h1 className="mb-[20px] text-[46px] font-bold leading-[1.14] tracking-[-0.02em] text-[#0F172A]">
+      <div className="mx-auto grid w-full max-w-[1500px] flex-1 grid-cols-[1fr_677px] gap-11 px-11 pb-4 max-lg:grid-cols-1 max-lg:px-8">
+        <div className="flex flex-col justify-center pl-14 max-lg:pl-0"><div className="w-[440px] max-w-full">
+          <h1 className="mb-3 text-[40px] font-semibold leading-[1.12] tracking-[-0.02em] text-[#0F172A]">
             {greeting()},
             <br />
             sign in to <span className="text-[#2563EB]">Legal Scout</span>
           </h1>
-          <p className="mb-[30px] max-w-[480px] text-[16px] text-[#475569]">
+          <p className="mb-[22px] max-w-[390px] text-[15px] text-[#6B7280]">
             Myanmar corporate documents — drafted from your registers, reviewed
             by you.
           </p>
 
           {error && (
             <div
-              className="mb-4 max-w-[580px] rounded-[14px] border border-[color-mix(in_srgb,var(--danger)_35%,transparent)] bg-[color-mix(in_srgb,var(--danger)_8%,transparent)] px-4 py-3"
+              className="mb-4 rounded-[12px] border border-[color-mix(in_srgb,var(--danger)_35%,transparent)] bg-[color-mix(in_srgb,var(--danger)_8%,transparent)] px-4 py-3"
               role="alert"
             >
               <p className="text-[13.5px] font-medium text-[var(--danger-strong)]">{error}</p>
@@ -142,7 +142,7 @@ export default function LoginPage() {
             </div>
           )}
 
-          <form onSubmit={handleLogin} className="flex max-w-[580px] flex-col gap-4">
+          <form onSubmit={handleLogin} className="flex flex-col gap-[18px]">
             <label className={BOX}>
               <span className={BOX_LABEL}>EMAIL</span>
               <input
@@ -169,7 +169,7 @@ export default function LoginPage() {
               <button
                 type="button"
                 onClick={() => setShowPassword(!showPassword)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 rounded-[8px] border border-[#E2E8F0] bg-[#F8FAFC] px-3 py-[5px] text-[13px] text-[#475569]"
+                className="absolute right-[13px] top-1/2 -translate-y-1/2 rounded-[8px] border border-[#E2E8F0] bg-[#F8FAFC] px-[11px] py-[5px] text-[12px] text-[#475569]"
               >
                 {showPassword ? "Hide" : "Show"}
               </button>
@@ -178,10 +178,10 @@ export default function LoginPage() {
             <button
               type="button"
               onClick={() => setRememberMe(!rememberMe)}
-              className="my-0.5 inline-flex items-center gap-[9px] self-start text-[14.5px] text-[#334155]"
+              className="mt-[3px] inline-flex items-center gap-2 self-start text-[13.5px] text-[#334155]"
             >
               <span
-                className={`grid h-[18px] w-[18px] place-items-center rounded-[5px] text-[11px] text-white ${
+                className={`grid h-[18px] w-[18px] place-items-center rounded-[6px] text-[11px] text-white ${
                   rememberMe ? "bg-[#2563EB]" : "border border-[#CBD5E1] bg-white"
                 }`}
               >
@@ -193,13 +193,13 @@ export default function LoginPage() {
             <button
               type="submit"
               disabled={loading}
-              className="rounded-[14px] bg-[#2563EB] p-[18px] text-[16px] font-semibold text-white transition-colors hover:bg-[#1D4ED8] disabled:opacity-60"
+              className="mt-[13px] h-12 rounded-[11px] bg-[#2563EB] px-4 text-[15px] font-semibold text-white transition-colors hover:bg-[#1D4ED8] disabled:opacity-60"
             >
               {loading ? "Signing in…" : "Continue with email  →"}
             </button>
           </form>
 
-          <div className="mt-5 flex max-w-[580px] items-center gap-3">
+          <div className="mt-[18px] flex items-center gap-3">
             <span className="flex-1 border-t border-[#E2E8F0]" />
             <span className="text-[11px] font-medium tracking-[.14em] text-[#94A3B8]">
               OR CONTINUE WITH
@@ -209,7 +209,7 @@ export default function LoginPage() {
           <button
             type="button"
             title="Ask your administrator to enable SSO"
-            className="mt-3.5 flex max-w-[580px] items-center justify-center gap-[9px] rounded-[14px] border border-[#E2E8F0] bg-[#F8FAFC] p-4 text-[15px] font-medium text-[#0F172A]"
+            className="mt-3 flex h-12 items-center justify-center gap-[9px] rounded-[11px] border border-[#E2E8F0] bg-[#F8FAFC] px-4 text-[14px] font-medium text-[#0F172A]"
           >
             <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden>
               <path
@@ -222,10 +222,11 @@ export default function LoginPage() {
           </button>
         </div>
 
+        </div>
         <LoginShowcase />
       </div>
 
-      <footer className="py-3.5 text-center text-[13px] text-[#94A3B8]">
+      <footer className="pb-3.5 pt-2 text-center text-[12.5px] text-[#94A3B8]">
         © 2026 Legal Scout · Myanmar corporate-law automation
       </footer>
     </div>
