@@ -80,6 +80,14 @@ export const apiClient = {
   lookupKnowledge: (key: string, value: string) => `${API_BASE_URL}/api/knowledge/lookup?key=${encodeURIComponent(key)}&value=${encodeURIComponent(value)}`,
   getKnowledgeData: (filename: string, limit = 50) => `${API_BASE_URL}/api/knowledge/data/${encodeURIComponent(filename)}?limit=${limit}`,
   deleteKnowledgeSource: (filename: string) => `${API_BASE_URL}/api/knowledge/sources/${encodeURIComponent(filename)}`,
+
+  // Legal Skills endpoints (playbooks the agent loads on demand)
+  getSkills: () => `${API_BASE_URL}/api/skills`,
+  getSkill: (name: string) => `${API_BASE_URL}/api/skills/${encodeURIComponent(name)}`,
+  createSkill: () => `${API_BASE_URL}/api/skills`,
+  updateSkill: (name: string) => `${API_BASE_URL}/api/skills/${encodeURIComponent(name)}`,
+  deleteSkill: (name: string) => `${API_BASE_URL}/api/skills/${encodeURIComponent(name)}`,
+  toggleSkill: (name: string) => `${API_BASE_URL}/api/skills/${encodeURIComponent(name)}/toggle`,
 }
 
 export default apiClient

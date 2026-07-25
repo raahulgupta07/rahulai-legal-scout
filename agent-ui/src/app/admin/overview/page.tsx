@@ -7,11 +7,13 @@ import { AdminTabs } from "../AdminTabs"
 import DashboardView from "../dashboard/DashboardView"
 import DocumentsView from "../documents/DocumentsView"
 import EmailsView from "../emails/EmailsView"
+import SkillsView from "../skills/SkillsView"
 
 const TABS = [
   { id: "dashboard", label: "Dashboard" },
   { id: "documents", label: "Documents" },
   { id: "emails", label: "Emails" },
+  { id: "skills", label: "Skills" },
 ]
 
 function OverviewInner() {
@@ -34,6 +36,7 @@ function OverviewInner() {
         {active === "dashboard" && <DashboardView />}
         {active === "documents" && <DocumentsView />}
         {active === "emails" && <EmailsView />}
+        {active === "skills" && <SkillsView />}
       </div>
     </Page>
   )
