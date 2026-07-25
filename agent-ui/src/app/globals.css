@@ -61,7 +61,10 @@
     /* System font stack — no webfont ships (Insights language). */
     --font-display: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans', sans-serif;
     --font-body: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans', sans-serif;
-    --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+    /* Single-typeface decision (2026-07-25): identifiers use the same sans
+       as everything else, distinguished by weight/chip background instead of
+       a mono face. Restore ui-monospace here to bring the second font back. */
+    --font-mono: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans', sans-serif;
 
     /* --- type scale ------------------------------------ */
     --text-2xs: 0.625rem;
