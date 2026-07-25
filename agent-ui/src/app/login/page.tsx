@@ -9,7 +9,7 @@ const CREDENTIAL_HINT =
 
 /** bow sign-in field: label INSIDE the big rounded box, input under it. */
 const BOX =
-  "block rounded-[12px] border border-[#E5E7EB] bg-white px-[15px] py-[9px] focus-within:border-[var(--brand)]"
+  "block rounded-[12px] border border-[#E5E7EB] bg-white px-[15px] py-[10.5px] focus-within:border-[var(--brand)]"
 const BOX_LABEL =
   "block text-[11px] font-semibold tracking-[.03em] text-[#9CA3AF]"
 const BOX_INPUT =
