@@ -36,9 +36,10 @@ const historicalPickerRequests = (
   context: { runId: string; agentId?: string; sessionId?: string }
 ): PickerRequest[] =>
   toolCalls
+    .filter((toolCall) => isPickerTool(toolCall.tool_name))
     .filter(
       (toolCall) =>
-        toolCall.requires_user_input === true && isPickerTool(toolCall.tool_name)
+        toolCall.requires_user_input === true || toolCall.answered === true
     )
     .map((toolCall) => {
       const request = buildPickerRequest(toolCall, {
@@ -61,11 +62,17 @@ const historicalPickerRequests = (
         }
       }
 
-      return {
-        ...request,
-        status: 'historical' as const,
-        answer_summary: answerSummary
+      // Same policy as ask_questions: an ANSWERED pause locks with its summary;
+      // a genuinely outstanding one stays LIVE — the run persists server-side,
+      // so resuming from a reloaded session works (proven by ask_questions).
+      if (toolCall.answered === true || answerSummary) {
+        return {
+          ...request,
+          status: 'answered' as const,
+          answer_summary: answerSummary
+        }
       }
+      return request
     })
 
 /**
