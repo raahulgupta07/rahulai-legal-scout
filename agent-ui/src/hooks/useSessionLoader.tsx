@@ -18,6 +18,8 @@ import {
 import {
   buildAskUserRequest,
   isAskUserTool,
+  resolveAskUserAnswers,
+  summariseAnswers,
   summariseAnswersFromResult
 } from '@/components/chat/askUserPayload'
 
@@ -67,30 +69,45 @@ const historicalPickerRequests = (
     })
 
 /**
- * Rebuilds `ask_user` question cards from a past run. Always read-only, for the
- * same reason as the pickers: the paused run this tab no longer owns. Unusable
- * (bad JSON) questions are dropped rather than rendered broken.
+ * Rebuilds `ask_user` question cards from a past run.
+ *
+ * History differs from the live RunPaused chunk: an answered tool comes back
+ * with `requires_user_input=false` / `answered=true` and its answers stored in
+ * the `answers` entry of `user_input_schema` (the `result` field is null). So
+ * we match on the tool NAME, not the flag, and read answers from the schema.
+ *
+ *   - Answered  → locked card with the green "Answered" banner + summary.
+ *   - Still paused → interactive card; the run persists server-side, so resume
+ *     still works after reload using the run_id carried in from history.
+ *
+ * Unusable (bad JSON) questions are dropped rather than rendered broken.
  */
 const historicalAskUserRequests = (
   toolCalls: ToolCall[],
   context: { runId: string; agentId?: string; sessionId?: string }
 ): AskUserRequest[] =>
   toolCalls
-    .filter(
-      (toolCall) =>
-        toolCall.requires_user_input === true &&
-        isAskUserTool(toolCall.tool_name)
-    )
+    .filter((toolCall) => isAskUserTool(toolCall.tool_name))
     .map((toolCall): AskUserRequest | null => {
       const request = buildAskUserRequest(toolCall, context)
       if (!request) return null
+
+      const answers = resolveAskUserAnswers(
+        toolCall.user_input_schema,
+        toolCall.tool_args
+      )
+      const answered = toolCall.answered === true || answers !== null
+      if (!answered) {
+        // Genuine outstanding pause — leave it live so it can be resumed.
+        return request
+      }
+
       return {
         ...request,
-        status: 'historical',
-        answer_summary: summariseAnswersFromResult(
-          request.questions,
-          toolCall.result
-        )
+        status: 'answered',
+        answer_summary:
+          (answers && summariseAnswers(request.questions, answers)) ||
+          summariseAnswersFromResult(request.questions, toolCall.result)
       }
     })
     .filter((request): request is AskUserRequest => request !== null)

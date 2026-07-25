@@ -119,26 +119,64 @@ export const summariseAnswers = (
     .filter(Boolean)
     .join(' · ')
 
+/** Coerces a raw answers value (object or JSON string) into a clean map. */
+const parseAnswerMap = (raw: unknown): AskUserAnswerMap | null => {
+  if (raw == null) return null
+  let parsed: unknown = raw
+  if (typeof raw === 'string') {
+    const trimmed = raw.trim()
+    if (!trimmed) return null
+    try {
+      parsed = JSON.parse(trimmed)
+    } catch {
+      return null
+    }
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+  const out: AskUserAnswerMap = {}
+  Object.entries(parsed as Record<string, unknown>).forEach(([key, value]) => {
+    if (typeof value === 'string') out[key] = value
+    else if (Array.isArray(value))
+      out[key] = value.filter((v): v is string => typeof v === 'string')
+  })
+  return Object.keys(out).length ? out : null
+}
+
+/**
+ * The answers the user already gave, for a card rehydrated from history.
+ *
+ * On resume agno writes them into the `answers` entry of `user_input_schema`
+ * (NOT the tool `result`, which stays null for `ask_user`). So a completed
+ * pause is recognised by a non-empty `answers` value there.
+ */
+export const resolveAskUserAnswers = (
+  userInputSchema: UserInputField[] | undefined | null,
+  toolArgs?: Record<string, unknown> | null
+): AskUserAnswerMap | null => {
+  const fromSchema = (userInputSchema ?? []).find((f) => f.name === 'answers')
+  return parseAnswerMap(fromSchema?.value) ?? parseAnswerMap(toolArgs?.answers)
+}
+
 /**
  * Reconstructs an answer summary from a finished tool result, for cards
- * rehydrated from session history. The resumed tool echoes the `answers` map;
- * we tolerate either a bare map or one nested under an `answers` key.
+ * rehydrated from history. Secondary to the schema `answers` field — used only
+ * if a backend variant echoes the map into `result` (bare or under `answers`).
  */
 export const summariseAnswersFromResult = (
   questions: AskUserQuestion[],
   result: string | null | undefined
 ): string | undefined => {
   if (!result) return undefined
+  let parsed: unknown
   try {
-    const parsed = JSON.parse(result)
-    const map =
-      parsed && typeof parsed === 'object' && 'answers' in parsed
-        ? (parsed as { answers: unknown }).answers
-        : parsed
-    if (!map || typeof map !== 'object' || Array.isArray(map)) return undefined
-    const summary = summariseAnswers(questions, map as AskUserAnswerMap)
-    return summary || undefined
+    parsed = JSON.parse(result)
   } catch {
     return undefined
   }
+  const nested =
+    parsed && typeof parsed === 'object' && 'answers' in parsed
+      ? (parsed as { answers: unknown }).answers
+      : parsed
+  const answers = parseAnswerMap(nested)
+  return answers ? summariseAnswers(questions, answers) || undefined : undefined
 }
