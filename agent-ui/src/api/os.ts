@@ -4,12 +4,16 @@ import { APIRoutes } from './routes'
 
 import {
   AgentDetails,
+  AskUserAnswerMap,
+  AskUserRequest,
   PickerRequest,
   PickerSelectionEntry,
   Sessions,
   TeamDetails,
   UserInputField
 } from '@/types/os'
+
+import { buildAnswersValue } from '@/components/chat/askUserPayload'
 
 // Helper function to create headers with optional auth token
 const createHeaders = (authToken?: string): HeadersInit => {
@@ -34,30 +38,42 @@ const createAuthHeaders = (authToken?: string): Record<string, string> => {
   return headers
 }
 
+interface ResumeOptions {
+  authToken?: string
+  sessionId?: string | null
+  userId?: string | null
+}
+
+/** The subset of a paused HITL request needed to build a /continue call. */
+interface ResumableRequest {
+  tool_call_id: string
+  tool_name: string
+  run_id: string
+  agent_id?: string
+  session_id?: string
+  user_input_schema: UserInputField[]
+  raw_tool: Record<string, unknown>
+}
+
 /**
- * Builds the resume request for a paused (HITL) agent run.
+ * Core resume request for any paused (HITL) agent run.
  *
  * Agno's `POST /agents/{agent_id}/runs/{run_id}/continue` takes multipart form
  * fields: `tools` (JSON array of full ToolExecution dicts), `session_id`,
- * `user_id`, `stream`. The ToolExecution is echoed back verbatim with ONLY the
- * `selected` entry of `user_input_schema` filled in — its value is a JSON
- * string: an object for single-select, an ordered array for multi-select.
+ * `user_id`, `stream`. The ToolExecution is echoed back VERBATIM — the whole
+ * `user_input_schema` is preserved and only the named `fills` entries are given
+ * a value (each a JSON string). Echoing the untouched fields matters: dropping
+ * a param wipes it server-side (e.g. `questions_json` for `ask_user`).
  */
-export const buildContinueRunRequest = (
+const buildResumeRequest = (
   base: string,
-  request: PickerRequest,
-  selection: PickerSelectionEntry | PickerSelectionEntry[],
-  options: {
-    authToken?: string
-    sessionId?: string | null
-    userId?: string | null
-  } = {}
+  request: ResumableRequest,
+  fills: Record<string, string>,
+  options: ResumeOptions
 ): { url: string; headers: Record<string, string>; formData: FormData } => {
   const schema: UserInputField[] = (request.user_input_schema ?? []).map(
     (field) =>
-      field.name === 'selected'
-        ? { ...field, value: JSON.stringify(selection) }
-        : field
+      field.name in fills ? { ...field, value: fills[field.name] } : field
   )
 
   const toolPayload = {
@@ -84,6 +100,41 @@ export const buildContinueRunRequest = (
     formData
   }
 }
+
+/**
+ * Resume request for the people picker: fills the `selected` schema entry — a
+ * JSON string, an object for single-select or an ordered array for multi.
+ */
+export const buildContinueRunRequest = (
+  base: string,
+  request: PickerRequest,
+  selection: PickerSelectionEntry | PickerSelectionEntry[],
+  options: ResumeOptions = {}
+): { url: string; headers: Record<string, string>; formData: FormData } =>
+  buildResumeRequest(
+    base,
+    request,
+    { selected: JSON.stringify(selection) },
+    options
+  )
+
+/**
+ * Resume request for `ask_user`: fills the `answers` schema entry with the
+ * JSON string of { question_id: answer | answer[] }. The model-written
+ * `questions_json` field is left untouched so it survives the round-trip.
+ */
+export const buildAskUserContinueRequest = (
+  base: string,
+  request: AskUserRequest,
+  answers: AskUserAnswerMap,
+  options: ResumeOptions = {}
+): { url: string; headers: Record<string, string>; formData: FormData } =>
+  buildResumeRequest(
+    base,
+    request,
+    { answers: buildAnswersValue(answers) },
+    options
+  )
 
 export const getAgentsAPI = async (
   endpoint: string,

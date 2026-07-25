@@ -107,6 +107,48 @@ export interface PickerRequest {
   payload_source?: string
 }
 
+/* ------------------------------------------------------------------ *
+ * Structured question cards (`ask_user` — Agno native HITL pause/resume)
+ *
+ * The model writes an array of questions into the tool's `questions_json`
+ * parameter; resume echoes the whole `user_input_schema` back with only the
+ * `answers` field filled (a JSON string of { question_id: answer | answer[] }).
+ * ------------------------------------------------------------------ */
+
+export interface AskUserQuestion {
+  id: string
+  text: string
+  /** Absent/empty → free-text input. Present → chip choices. */
+  options?: string[]
+  /** Chips become multi-select checkboxes. */
+  multi_select?: boolean
+  /** Adds an "Other…" chip that reveals a free-text input. */
+  allow_other?: boolean
+}
+
+/** A single question's answer: one value, or many for multi-select. */
+export type AskUserAnswer = string | string[]
+
+/** question id -> chosen answer, the shape written back into `answers`. */
+export type AskUserAnswerMap = Record<string, AskUserAnswer>
+
+export type AskUserStatus = 'pending' | 'answered' | 'historical'
+
+export interface AskUserRequest {
+  tool_call_id: string
+  tool_name: string
+  run_id: string
+  agent_id?: string
+  session_id?: string
+  questions: AskUserQuestion[]
+  user_input_schema: UserInputField[]
+  /** Full ToolExecution dict as received, echoed back verbatim on resume. */
+  raw_tool: Record<string, unknown>
+  status: AskUserStatus
+  /** Human-readable summary of the answers, for the resolved state. */
+  answer_summary?: string
+}
+
 export interface ReasoningSteps {
   title: string
   action?: string
@@ -308,6 +350,8 @@ export interface ChatMessage {
   attachments?: AttachmentData[]
   /** Interactive picker cards rendered inline in this message. */
   picker_requests?: PickerRequest[]
+  /** Structured `ask_user` question cards rendered inline in this message. */
+  ask_user_requests?: AskUserRequest[]
 }
 
 export interface AttachmentData {

@@ -2,13 +2,15 @@ import { useCallback, useRef } from 'react'
 import { toast } from 'sonner'
 
 import { APIRoutes } from '@/api/routes'
-import { buildContinueRunRequest } from '@/api/os'
+import { buildContinueRunRequest, buildAskUserContinueRequest } from '@/api/os'
 
 import useChatActions from '@/hooks/useChatActions'
 import { useStore } from '../store'
 import {
   RunEvent,
   RunResponseContent,
+  type AskUserAnswerMap,
+  type AskUserRequest,
   type PickerRequest,
   type PickerSelectionEntry,
   type RunResponse
@@ -23,6 +25,11 @@ import {
   isPickerTool,
   summariseSelection
 } from '@/components/chat/pickerPayload'
+import {
+  buildAskUserRequest,
+  isAskUserTool,
+  summariseAnswers
+} from '@/components/chat/askUserPayload'
 
 const getLocalUserId = (): string | null => {
   if (typeof window === 'undefined') return null
@@ -198,16 +205,19 @@ const useAIChatStreamHandler = () => {
   }, [cancelReveal, setMessages])
 
   /**
-   * RunPaused — the agent hit a `choose_*` tool declared with
-   * requires_user_input=True. Attach one picker request per paused tool to the
-   * in-flight agent message so the cards render inline in the transcript.
+   * RunPaused — the agent hit a tool declared with requires_user_input=True.
+   * Two HITL tool families pause: the `choose_*` people pickers and the
+   * structured `ask_user` question tool. Attach one request per paused tool to
+   * the in-flight agent message so the cards render inline in the transcript.
    */
   const handleRunPaused = useCallback(
     (chunk: RunResponse) => {
-      const pausedTools = (chunk.tools ?? []).filter(
-        (tool) => tool.requires_user_input === true && isPickerTool(tool.tool_name)
+      const paused = (chunk.tools ?? []).filter(
+        (tool) => tool.requires_user_input === true
       )
-      if (pausedTools.length === 0) return
+      const pausedPickers = paused.filter((tool) => isPickerTool(tool.tool_name))
+      const pausedAsks = paused.filter((tool) => isAskUserTool(tool.tool_name))
+      if (pausedPickers.length === 0 && pausedAsks.length === 0) return
 
       setMessages((prevMessages) => {
         const newMessages = [...prevMessages]
@@ -215,24 +225,38 @@ const useAIChatStreamHandler = () => {
         if (!lastMessage || lastMessage.role !== 'agent') return prevMessages
 
         const priorToolCalls = lastMessage.tool_calls ?? []
-        const existing = lastMessage.picker_requests ?? []
-        const requests: PickerRequest[] = [...existing]
+        const ctx = {
+          runId: chunk.run_id ?? '',
+          agentId: chunk.agent_id,
+          sessionId: chunk.session_id
+        }
 
-        for (const tool of pausedTools) {
-          if (requests.some((r) => r.tool_call_id === tool.tool_call_id)) continue
-          requests.push(
-            buildPickerRequest(tool, {
-              runId: chunk.run_id ?? '',
-              agentId: chunk.agent_id,
-              sessionId: chunk.session_id,
-              priorToolCalls
-            })
+        const pickerRequests: PickerRequest[] = [
+          ...(lastMessage.picker_requests ?? [])
+        ]
+        for (const tool of pausedPickers) {
+          if (pickerRequests.some((r) => r.tool_call_id === tool.tool_call_id))
+            continue
+          pickerRequests.push(
+            buildPickerRequest(tool, { ...ctx, priorToolCalls })
           )
+        }
+
+        const askRequests: AskUserRequest[] = [
+          ...(lastMessage.ask_user_requests ?? [])
+        ]
+        for (const tool of pausedAsks) {
+          if (askRequests.some((r) => r.tool_call_id === tool.tool_call_id))
+            continue
+          // Bad/empty questions_json → null; nothing renders, run stays paused.
+          const built = buildAskUserRequest(tool, ctx)
+          if (built) askRequests.push(built)
         }
 
         newMessages[newMessages.length - 1] = {
           ...lastMessage,
-          picker_requests: requests,
+          picker_requests: pickerRequests.length ? pickerRequests : undefined,
+          ask_user_requests: askRequests.length ? askRequests : undefined,
           tool_calls: processChunkToolCalls(chunk, lastMessage.tool_calls)
         }
         return newMessages
@@ -513,52 +537,83 @@ const useAIChatStreamHandler = () => {
     [setMessages]
   )
 
-  /**
-   * Resumes a paused run with the user's picker selection.
-   *
-   * POST {endpoint}/agents/{agent_id}/runs/{run_id}/continue as multipart form:
-   *   tools       = [ <the paused ToolExecution, verbatim, with only the
-   *                   `selected` entry of user_input_schema given a value> ]
-   *   session_id  = current session
-   *   user_id     = localStorage ls_user.id
-   *   stream      = true
-   * Same run_id, so history stays intact.
-   */
-  const continueRun = useCallback(
-    async (
-      request: PickerRequest,
-      selection: PickerSelectionEntry | PickerSelectionEntry[]
+  /** As setPickerStatus, for `ask_user` cards. */
+  const setAskUserStatus = useCallback(
+    (
+      toolCallId: string,
+      status: AskUserRequest['status'],
+      answerSummary?: string
     ) => {
-      const summary = summariseSelection(selection)
+      setMessages((prevMessages) =>
+        prevMessages.map((message) => {
+          if (!message.ask_user_requests?.length) return message
+          if (
+            !message.ask_user_requests.some((r) => r.tool_call_id === toolCallId)
+          )
+            return message
+          return {
+            ...message,
+            ask_user_requests: message.ask_user_requests.map((request) =>
+              request.tool_call_id === toolCallId
+                ? { ...request, status, answer_summary: answerSummary }
+                : request
+            )
+          }
+        })
+      )
+    },
+    [setMessages]
+  )
 
-      if (!request.run_id) {
+  /**
+   * Streams a paused run's /continue call. Both HITL families (picker and
+   * ask_user) share this: only the resume-request body and the per-card status
+   * transitions differ, so those come in as callbacks.
+   *
+   * POST {endpoint}/agents/{agent_id}/runs/{run_id}/continue as multipart form,
+   * same run_id so history stays intact. The answered card is locked first (the
+   * run can only be continued once); the resumed response streams into a NEW
+   * agent message so the answered card stays visible above it. On failure the
+   * card is returned to `pending` so the user can retry.
+   */
+  const resumeRun = useCallback(
+    async (params: {
+      runId: string
+      agentId?: string
+      sessionId?: string
+      toolCallId: string
+      summary: string
+      buildRequest: (
+        endpointUrl: string,
+        options: {
+          authToken?: string
+          sessionId?: string | null
+          userId?: string | null
+        }
+      ) => { url: string; headers: Record<string, string>; formData: FormData }
+      markAnswered: (summary: string) => void
+      markPending: () => void
+    }) => {
+      if (!params.runId) {
         toast.error('Cannot resume: this request has no run id.')
         return
       }
-      const resolvedAgentId = request.agent_id ?? agentId
-      if (!resolvedAgentId) {
+      if (!(params.agentId ?? agentId)) {
         toast.error('Cannot resume: no agent selected.')
         return
       }
 
       // Disable the card immediately — the run can only be continued once.
-      setPickerStatus(request.tool_call_id, 'answered', summary)
+      params.markAnswered(params.summary)
       setIsStreaming(true)
 
       const endpointUrl = constructEndpointUrl(selectedEndpoint)
-      const { url, headers, formData } = buildContinueRunRequest(
-        endpointUrl,
-        { ...request, agent_id: resolvedAgentId },
-        selection,
-        {
-          authToken,
-          sessionId: sessionId ?? request.session_id ?? '',
-          userId: getLocalUserId()
-        }
-      )
+      const { url, headers, formData } = params.buildRequest(endpointUrl, {
+        authToken,
+        sessionId: sessionId ?? params.sessionId ?? '',
+        userId: getLocalUserId()
+      })
 
-      // The resumed response streams into a NEW agent message so the answered
-      // card stays visible above it.
       addMessage({
         role: 'agent',
         content: '',
@@ -582,7 +637,7 @@ const useAIChatStreamHandler = () => {
           onChunk: handleChunk,
           onError: (error) => {
             // The resume never landed — let the user try again.
-            setPickerStatus(request.tool_call_id, 'pending')
+            params.markPending()
             updateMessagesWithErrorState()
             setStreamingErrorMessage(error.message)
             toast.error(`Could not resume the run: ${error.message}`)
@@ -592,7 +647,7 @@ const useAIChatStreamHandler = () => {
       } catch (error) {
         const message =
           error instanceof Error ? error.message : String(error)
-        setPickerStatus(request.tool_call_id, 'pending')
+        params.markPending()
         updateMessagesWithErrorState()
         setStreamingErrorMessage(message)
         toast.error(`Could not resume the run: ${message}`)
@@ -608,7 +663,6 @@ const useAIChatStreamHandler = () => {
       authToken,
       focusChatInput,
       handleChunk,
-      setPickerStatus,
       selectedEndpoint,
       sessionId,
       setAbortController,
@@ -617,6 +671,55 @@ const useAIChatStreamHandler = () => {
       streamResponse,
       updateMessagesWithErrorState
     ]
+  )
+
+  /** Resumes a paused run with the user's people-picker selection. */
+  const continueRun = useCallback(
+    (
+      request: PickerRequest,
+      selection: PickerSelectionEntry | PickerSelectionEntry[]
+    ) =>
+      resumeRun({
+        runId: request.run_id,
+        agentId: request.agent_id,
+        sessionId: request.session_id,
+        toolCallId: request.tool_call_id,
+        summary: summariseSelection(selection),
+        buildRequest: (endpointUrl, options) =>
+          buildContinueRunRequest(
+            endpointUrl,
+            { ...request, agent_id: request.agent_id ?? agentId ?? undefined },
+            selection,
+            options
+          ),
+        markAnswered: (summary) =>
+          setPickerStatus(request.tool_call_id, 'answered', summary),
+        markPending: () => setPickerStatus(request.tool_call_id, 'pending')
+      }),
+    [resumeRun, agentId, setPickerStatus]
+  )
+
+  /** Resumes a paused run with the user's `ask_user` answers. */
+  const continueRunAskUser = useCallback(
+    (request: AskUserRequest, answers: AskUserAnswerMap) =>
+      resumeRun({
+        runId: request.run_id,
+        agentId: request.agent_id,
+        sessionId: request.session_id,
+        toolCallId: request.tool_call_id,
+        summary: summariseAnswers(request.questions, answers),
+        buildRequest: (endpointUrl, options) =>
+          buildAskUserContinueRequest(
+            endpointUrl,
+            { ...request, agent_id: request.agent_id ?? agentId ?? undefined },
+            answers,
+            options
+          ),
+        markAnswered: (summary) =>
+          setAskUserStatus(request.tool_call_id, 'answered', summary),
+        markPending: () => setAskUserStatus(request.tool_call_id, 'pending')
+      }),
+    [resumeRun, agentId, setAskUserStatus]
   )
 
   const handleStreamResponse = useCallback(
@@ -780,7 +883,7 @@ const useAIChatStreamHandler = () => {
     }
   }, [abortController, setAbortController, setIsStreaming, setStreamingErrorMessage])
 
-  return { handleStreamResponse, cancelStream, continueRun }
+  return { handleStreamResponse, cancelStream, continueRun, continueRunAskUser }
 }
 
 export default useAIChatStreamHandler

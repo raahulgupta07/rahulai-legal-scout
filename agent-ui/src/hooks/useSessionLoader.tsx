@@ -7,13 +7,19 @@ import {
   ToolCall,
   ReasoningMessage,
   ChatEntry,
-  PickerRequest
+  PickerRequest,
+  AskUserRequest
 } from '@/types/os'
 import { getJsonMarkdown } from '@/lib/utils'
 import {
   buildPickerRequest,
   isPickerTool
 } from '@/components/chat/pickerPayload'
+import {
+  buildAskUserRequest,
+  isAskUserTool,
+  summariseAnswersFromResult
+} from '@/components/chat/askUserPayload'
 
 /**
  * Rebuilds picker cards from a past run.
@@ -59,6 +65,35 @@ const historicalPickerRequests = (
         answer_summary: answerSummary
       }
     })
+
+/**
+ * Rebuilds `ask_user` question cards from a past run. Always read-only, for the
+ * same reason as the pickers: the paused run this tab no longer owns. Unusable
+ * (bad JSON) questions are dropped rather than rendered broken.
+ */
+const historicalAskUserRequests = (
+  toolCalls: ToolCall[],
+  context: { runId: string; agentId?: string; sessionId?: string }
+): AskUserRequest[] =>
+  toolCalls
+    .filter(
+      (toolCall) =>
+        toolCall.requires_user_input === true &&
+        isAskUserTool(toolCall.tool_name)
+    )
+    .map((toolCall): AskUserRequest | null => {
+      const request = buildAskUserRequest(toolCall, context)
+      if (!request) return null
+      return {
+        ...request,
+        status: 'historical',
+        answer_summary: summariseAnswersFromResult(
+          request.questions,
+          toolCall.result
+        )
+      }
+    })
+    .filter((request): request is AskUserRequest => request !== null)
 
 interface SessionResponse {
   session_id: string
@@ -181,11 +216,19 @@ const useSessionLoader = () => {
                   )
                 ]
 
-                const pickerRequests = historicalPickerRequests(toolCalls, {
+                const historyContext = {
                   runId: run.run_id ?? '',
                   agentId: run.agent_id,
                   sessionId
-                })
+                }
+                const pickerRequests = historicalPickerRequests(
+                  toolCalls,
+                  historyContext
+                )
+                const askUserRequests = historicalAskUserRequests(
+                  toolCalls,
+                  historyContext
+                )
 
                 filteredMessages.push({
                   role: 'agent',
@@ -193,6 +236,8 @@ const useSessionLoader = () => {
                   tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
                   picker_requests:
                     pickerRequests.length > 0 ? pickerRequests : undefined,
+                  ask_user_requests:
+                    askUserRequests.length > 0 ? askUserRequests : undefined,
                   extra_data: run.extra_data,
                   images: run.images,
                   videos: run.videos,

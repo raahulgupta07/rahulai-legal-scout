@@ -7,6 +7,7 @@ import React, { type FC } from 'react'
 
 import ChatBlankState from './ChatBlankState'
 import PickerCardList from '@/components/chat/PickerCardList'
+import AskUserCardList from '@/components/chat/AskUserCardList'
 import { useStore } from '@/store'
 import { Copy, Check, ChevronRight, AlertTriangle } from 'lucide-react'
 
@@ -393,6 +394,9 @@ const AgentMessageWrapper = ({ message, isLastMessage }: MessageWrapperProps) =>
 
         {/* Interactive people pickers (paused HITL run) */}
         <PickerCardList requests={message.picker_requests} />
+
+        {/* Structured question cards (paused HITL run) */}
+        <AskUserCardList requests={message.ask_user_requests} />
 
         {!isStillStreaming && hasContent && (
           <div className="-ml-2 mt-2 flex items-center">
