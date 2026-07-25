@@ -74,7 +74,8 @@ export default function AppRail({ onNavigate, forceExpanded }: AppRailProps) {
   const [user, setUser] = useState({ name: 'User', email: '' })
 
   const { clearChat, focusChatInput, initialize } = useChatActions()
-  const { selectedEndpoint, isEndpointActive, hydrated, mode } = useStore()
+  const { selectedEndpoint, isEndpointActive, hydrated, mode, setMessages } =
+    useStore()
 
   const collapsed = forceExpanded ? false : storedCollapsed
 
@@ -113,9 +114,17 @@ export default function AppRail({ onNavigate, forceExpanded }: AppRailProps) {
   }
 
   const handleNewChat = () => {
-    clearChat()
-    focusChatInput()
-    if (pathname !== '/') router.push('/')
+    if (pathname !== '/') {
+      // Off the chat page clearChat()'s setSessionId(null) is a nuqs URL
+      // write on the CURRENT route, which races with (and cancels) the
+      // navigation. Clear the store directly and push a bare "/" — no
+      // params means no session, i.e. a fresh chat.
+      setMessages([])
+      router.push('/')
+    } else {
+      clearChat()
+      focusChatInput()
+    }
     onNavigate?.()
   }
 
