@@ -446,6 +446,13 @@ def ask_questions(questions_json: str, answers: str = "") -> str:
             }
         )
 
+    # The reuse sentence is a MITIGATION, not the fix. Nothing on the server
+    # remembers a non-person answer: smart_doc recomputes `missing_user_fields`
+    # per document from the company record alone, so a pack of documents asks for
+    # the same meeting date, location and pronoun once per template. The only
+    # conversation-scoped memory that exists is `party_selections`, and it covers
+    # PERSON slots only. Until an answer store exists, the model carrying its own
+    # answers forward is the whole of the defence.
     continue_instruction = (
         "The user has answered. Use these answers verbatim as authoritative "
         "values and CONTINUE THE TASK IN THIS SAME TURN: make the next "
@@ -453,7 +460,11 @@ def ask_questions(questions_json: str, answers: str = "") -> str:
         "turn with one or two sentences telling the user what you just did and "
         "what happens next. Ending your turn with empty output — or with tool "
         "calls and no text — is forbidden. Do not re-ask, do not restate the "
-        "options, and do not present a), b), c) lists in prose."
+        "options, and do not present a), b), c) lists in prose. These answers "
+        "stay valid for the REST OF THIS CONVERSATION: when a later document "
+        "needs the same value — the meeting date, the meeting location, a "
+        "pronoun — reuse the answer you already have and do not ask for it a "
+        "second time."
     )
 
     if blocked:

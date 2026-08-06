@@ -845,17 +845,57 @@ def _member_position_covered(placeholder: str, member_parties: list[dict]) -> bo
         return False
 
 
+def _explicit_value(value: Any) -> str:
+    """A value somebody actually supplied. Blank and "TBD" are not answers."""
+    text = str(value or "").strip()
+    return "" if text.upper() == "TBD" else text
+
+
+# Keys an explicitly chosen representative travels under. These mirror the first
+# two tiers of repeat_regions._corp_representative and stop there on purpose.
+#
+# `corporate_shareholder_3_name` is in that tier there and is deliberately NOT
+# here: it holds the corporate MEMBER's name, not a person's, so a company with
+# three members would otherwise read its own third shareholder as the answer.
+# `authorized_director_name` is excluded for the same class of reason — smart_doc
+# pre-fills it from directors[0], which is a guess, not a choice.
+_EXPLICIT_REP_DATA_KEYS = (
+    "representative",
+    "representative_name",
+    "corporate_representative",
+    "corporate_shareholder_representative",
+    "authorized_director",
+    "authorised_director",
+)
+
+
 def _corp_rep_resolvable(party: dict, data: dict) -> bool:
-    """True when a corporate member's authorised representative is already known
-    or auto-resolvable (from the party, the supplied data, or the register). When
-    it is, forcing a representative pick is a phantom ask (findings F1 + F4)."""
-    try:
-        from scout.tools.repeat_regions import _corp_representative
-        return bool(_corp_representative(
-            party if isinstance(party, dict) else {"name": str(party)}, data or {}))
-    except Exception:  # noqa: BLE001
-        p = party if isinstance(party, dict) else {}
-        return bool(p.get("representative") or p.get("representative_name"))
+    """True when a corporate member's authorised representative is already KNOWN.
+
+    Known means somebody CHOSE them: a representative carried on the party itself
+    (that is how a picker answer travels) or one supplied in `data`.
+
+    It deliberately does not count repeat_regions' last-resort fallback, which
+    returns the corporate member's FIRST DIRECTOR from the register. That is a
+    positional guess — precisely what slots exist to abolish (see this module's
+    docstring) — and treating "the expander will put some name there" as "the
+    question is answered" is how a resolution came to be signed by whoever the
+    register happened to list first, with no picker shown and no warning.
+
+    Measured 2026-08-06 against the live register: for CITY MART HOLDING COMPANY
+    LIMITED, whose only member is the corporate shareholder CITY HOLDINGS
+    LIMITED, the fallback resolved to MIN MIN and the representative ask was
+    skipped on all four "Shareholders Resolution In Writing" templates. A
+    representative nobody has chosen is now asked for.
+    """
+    p = party if isinstance(party, dict) else {"name": str(party)}
+    if _explicit_value(p.get("representative")) or _explicit_value(p.get("representative_name")):
+        return True
+    if isinstance(data, dict):
+        for key in _EXPLICIT_REP_DATA_KEYS:
+            if _explicit_value(data.get(key)):
+                return True
+    return False
 
 
 # Roles the register can never answer: a director being APPOINTED is not on the
