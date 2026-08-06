@@ -13,7 +13,7 @@
 ```bash
 cp .env.example .env    # Fill in OPENROUTER_API_KEY + generate secrets
 docker compose up -d --build
-# Open http://localhost (or http://localhost:PORT)
+# Open http://localhost:8080  (PORT=8080 in .env — NOT port 80)
 # Login: ADMIN_EMAIL / ADMIN_PASSWORD from .env
 ```
 
@@ -47,7 +47,7 @@ Port 80 (configurable via PORT in .env)
 |-------|-----------|
 | Frontend | Next.js 15, React 18, TypeScript, Tailwind, Zustand, Radix UI, single system sans stack (no webfont) |
 | Backend | FastAPI, Agno 2.5, python-docx, psycopg, SQLAlchemy |
-| AI | Configurable via Settings: GPT-5.4 Mini (chat), Gemini 3 Flash (training), Gemini 3.1 Flash Lite (classification), text-embedding-3-small — all via OpenRouter (base URL configurable via `OPENROUTER_BASE_URL` env var) |
+| AI | Configurable via Settings: **Gemini 3.6 Flash** for chat + training + classification (upgraded 2026-08-03 from GPT-5.4 Mini / Gemini 3 Flash / Gemini 3.1 Flash Lite), text-embedding-3-small for embeddings — all via OpenRouter (base URL configurable via `OPENROUTER_BASE_URL` env var) |
 | Database | PostgreSQL 18 + pgvector |
 | Auth | JWT + bcrypt (timing-attack-safe login) |
 | Storage | Local filesystem + optional S3 (AWS, MinIO, R2, B2) |
@@ -89,7 +89,14 @@ EXA_API_KEY=...           # Optional — only loaded when set, never embedded in
 | `scout/tools/ask_questions.py` | HITL clarify tool `ask_questions(questions_json, answers)` — Agno `requires_user_input` pause/resume. NEVER name a tool `ask_user`/`get_user_input` (agno reserves them and hijacks resume → provider 400) |
 | `scout/tools/legal_skills.py` | `load_skill(name)` / `list_skills` — L2 skill bodies loaded on demand from `legal_skills` table |
 | `scout/tools/people_picker.py` | Signer/member selection via in-chat picker cards |
-| `scout/tools/smart_doc.py` | Document generation, placeholder fill (thread-safe, no globals) |
+| `tests/tracker_layer1.py` | 25 deterministic assertions off `/api/documents/fill-view` — the real regression gate |
+| `tests/tracker_layer2.py` | 14 chat runs; asserts the agent ASKS rather than guesses |
+| `tests/tracker_layer3.py` | Drives whole conversations to a generated `.docx`, unzips `word/document.xml` and proves the answers landed |
+| `db/migration_016_people_father_name.sql` | `people.father_name` — Myanmar drafting names a person against their father; NOT in the DICA extract, hand-entered |
+| `scout/tools/people_sync.py` | Projects `companies.directors` + individual `members` into the People register. `sync_company_people()` runs inside `add_company()` (same conn, caller commits); `sync_all_companies()` backs `POST /api/people/sync-from-companies`. Dedup: NRC → name+DOB → name-with-no-NRC. Merge is FILL-BLANKS-ONLY (hand edits always win). Director+shareholder collapses to role `both`; corporate members skipped |
+| `scout/tools/smart_doc.py` | Document generation, placeholder fill (thread-safe, no globals). Calls `expand_repeat_regions()` at the top of `fill_template_with_validation` before the highlight fill |
+| `scout/tools/repeat_regions.py` | Dynamic list expansion — grows/shrinks Present-member paragraph blocks, appointed-director lists and signing-table row groups to the real party count; individual-vs-corporate signing split; no-op when no parties. Returns synthetic `__rr_N__` tokens merged into `data` |
+| `scout/tools/fill_view.py` | `build_fill_view(template, company)` → whole document as ordered text/blank/break blocks, each blank carrying kind + register candidates (directors, shareholders, People register, pronoun, location, auditor). Backs the Fill-in view |
 | `scout/tools/clarification.py` | Template/company matching |
 | `scout/tools/companies_db.py` | Company DB queries |
 | `scout/tools/knowledge_base.py` | Knowledge storage/search |
@@ -112,6 +119,7 @@ EXA_API_KEY=...           # Optional — only loaded when set, never embedded in
 | `db/migration_011_people_register.sql` | People register table |
 | `db/migration_012_party_selections.sql` | Per-run party/signer selections |
 | `db/migration_013_legal_skills.sql` | `legal_skills` table (name, description, body, category, source, enabled) |
+| `db/migration_015_people_extra_fields.sql` | `people.business_occupation` (DICA publishes it per director) + `people.country_of_residence` (hand-entered; consent forms split resident/non-resident) |
 | `db/migration_014_seed_legal_skills.sql` | 12 seeded skills (7 adapted from anthropics/claude-for-legal, Apache-2.0 attributed; 4 native Myanmar playbooks; 1 practice profile) |
 
 ### Frontend
@@ -122,7 +130,8 @@ EXA_API_KEY=...           # Optional — only loaded when set, never embedded in
 | `agent-ui/src/components/auth/LoginShowcase.tsx` | Animated dark-navy "LIVE" panel: legal pipeline loop (UNDERSTAND→…→REVIEW). FICTIONAL data only (Golden Lotus/Emerald Holdings) — never real client info pre-auth |
 | `agent-ui/src/components/shell/AppRail.tsx` + `AppShell.tsx` | ONE global rail (chat + admin): blue "New chat", flat Overview/Registers/Settings, session history, user row. Mounted once in root layout, never unmounts |
 | `agent-ui/src/components/shell/SplitShell.tsx` | Animated chat/document split — panel slides on `cubic-bezier(0.4,0,0.2,1)` 250ms, columns toggle rides the panel edge, resize handle w/ invisible-until-hover blue bar |
-| `agent-ui/src/components/shell/ArtifactPanel.tsx` | Document pane: hairline rounded card (`#f8f8f7`), cyan-tinted toolbar, Fields/Preview tabs, centered faint empty state |
+| `agent-ui/src/components/shell/ArtifactPanel.tsx` | Document pane: hairline rounded card (`#f8f8f7`), cyan-tinted toolbar, Fields / **Fill in** / Preview tabs, centered faint empty state |
+| `agent-ui/src/components/shell/FillInView.tsx` | Fill-in view: fetches `/api/documents/fill-view`, renders the whole document inline with blanks as click-to-pick buttons (register candidates + free text), generates via `/api/documents/fill-generate` then shows the PDF preview |
 | `agent-ui/src/app/admin/overview/page.tsx` | Tabs: Dashboard \| Documents \| Emails \| Skills (bodies in sibling `*View.tsx`). Tab band MUST be `overflow-y-auto` (not hidden) or detail views clip |
 | `agent-ui/src/app/admin/registers/page.tsx` | Tabs: Templates \| Companies \| People |
 | `agent-ui/src/app/admin/settings/page.tsx` | Tabs: AI models \| Email \| System \| Activity \| Users \| Knowledge |
@@ -178,6 +187,7 @@ EXA_API_KEY=...           # Optional — only loaded when set, never embedded in
 | Tool | Purpose |
 |------|---------|
 | `list_templates` / `get_known_templates` | List all trained templates |
+| `list_new_company_setup_templates` | List ONLY the 5 new-company-setup templates (`template_group='new_company_setup'`) — offer these when setting up a new company |
 | `analyze_new_template` | Deep-analyze a newly uploaded template |
 | `save_template_to_knowledge` | Save template analysis to KB |
 | `find_matching_templates` | Find templates matching a user request |
@@ -242,24 +252,34 @@ Triggered from `/admin/templates` → "Train Agent" → "Start Training". Stream
 |------|------|----------|--------|
 | 1 | Extract `{{placeholders}}` from `.docx` | None (local regex) | Field list |
 | 2 | Read full document text (paragraphs + tables) | None (local) | Content string |
-| 3 | AI analysis (category, purpose, when_to_use, legal refs) | Gemini 3 Flash | JSON metadata |
+| 3 | AI analysis (category, purpose, when_to_use, legal refs) | Gemini 3.6 Flash | JSON metadata |
 | 4 | Save metadata to `templates` table (37 columns) | None (DB write) | — |
-| 5 | Classify fields: `db_field` vs `user_input` | Gemini 3.1 Flash Lite | Classification JSON |
-| 5.5 | Map placeholders → exact DB columns | Gemini 3.1 Flash Lite | Field mapping JSON |
+| 5 | Classify fields: `db_field` vs `user_input` | Gemini 3.6 Flash | Classification JSON |
+| 5.5 | Map placeholders → exact DB columns | Gemini 3.6 Flash | Field mapping JSON |
 | 6 | Store in `knowledge_vec` + `knowledge_lookup` | None (DB write) | KB entries |
 | 7 | Generate vector embedding | text-embedding-3-small | 1536-dim vector |
 | 8 | Create PDF preview (yellow-highlighted placeholders) | None (LibreOffice) | Cached PDF |
-| 9 | Deep field analysis (type, format, validation per field) | Gemini 3 Flash | Per-field JSON |
-| 10 | Legal reference extraction (Myanmar Companies Law 2017) | Gemini 3 Flash | Sections + compliance |
-| 11 | Sample filled document (realistic Myanmar data) | Gemini 3 Flash | Sample values JSON |
-| 12 | Document workflow (trigger, before/after docs) | Gemini 3 Flash | Workflow JSON |
-| 13 | Q&A pairs (10 practical questions + answers) | Gemini 3 Flash | Stored in `knowledge_vec` |
-| 14 | Cross-template relationships (prerequisite/follow-up/related) | Gemini 3 Flash | Relationships JSON |
+| 9 | Deep field analysis (type, format, validation per field) | Gemini 3.6 Flash | Per-field JSON |
+| 10 | Legal reference extraction (Myanmar Companies Law 2017) | Gemini 3.6 Flash | Sections + compliance |
+| 11 | Sample filled document (realistic Myanmar data) | Gemini 3.6 Flash | Sample values JSON |
+| 12 | Document workflow (trigger, before/after docs) | Gemini 3.6 Flash | Workflow JSON |
+| 13 | Q&A pairs (10 practical questions + answers) | Gemini 3.6 Flash | Stored in `knowledge_vec` |
+| 14 | Cross-template relationships (prerequisite/follow-up/related) | Gemini 3.6 Flash | Relationships JSON |
 | 15 | Confidence score (0-100%) based on which steps passed | None (local calc) | Score integer |
 
-**AI calls per template: ~9 total** — 1x Gemini 3 Flash (step 3) + 2x Gemini 3.1 Flash Lite (steps 5, 5.5) + 1x text-embedding-3-small (step 7) + 6x Gemini 3 Flash (steps 9-14)
+**AI calls per template: ~9 total** — 8x Gemini 3.6 Flash (steps 3, 5, 5.5, 9-14) + 1x text-embedding-3-small (step 7)
 
 ---
+
+## Background Template Training (server-side job, 2026-07-27)
+
+Training runs as a **server-side background job** — survives the training modal/tab/browser closing AND a server restart. Before: a JS for-loop in the open browser tab drove per-template SSE; closing the tab aborted it ("stops in between").
+
+- **`app/training_jobs.py`** (new): DB table `template_training_jobs` (status queued|running|done|error|cancelled, queue jsonb, current_index, done/fail counts, logs jsonb heartbeat = updated_at). Daemon **thread** `_worker(job_id)` drives the EXISTING 15-step train-stream pipeline INTERNALLY via httpx to `http://127.0.0.1:8000` (mints own admin token `create_token(0,"system@training","admin")`) — zero pipeline change. **Per-template failure logs + continues** (fixes stop-at-N).
+- **Endpoints:** `POST /api/knowledge/train-start` (`{retrain_all|templates}`), `GET /api/knowledge/train-job` (poll ~1.5s), `POST /api/knowledge/train-cancel`. FE POSTs start then POLLS, resumes live status on modal-reopen/reload, has Stop (no AbortController teardown).
+- **★★★LANDMINE — `@app.on_event("startup")` is DEAD.** `app = agent_os.get_app()` (Agno) sets a **lifespan**; FastAPI/Starlette **silently ignores ALL `on_event("startup")` handlers when a lifespan exists**. So `startup_sync()` never runs (incl. dir-create, migration check, `_refresh_agent_knowledge`, `_refresh_legal_skills`, resume). FIX: watchdog started at **module-import time** (bottom of `training_jobs.py`; `from app import training_jobs` in main.py guarantees it per worker). ⚠️ OTHER startup_sync work is also silently dead — flagged, not yet fixed.
+- **★★multi-worker** (`uvicorn --workers 2`) → job state MUST be DB. Single-runner guard = **Postgres advisory lock** `pg_try_advisory_lock(4210771)` on a dedicated conn for worker life. On restart the killed process's session-lock lingers until PG reaps it → one-shot lock LOSES → orphaned 'running' forever; fixed with **watchdog** (45s, import-started) re-spawning a worker for any 'queued' or stale-'running' (updated_at > 120s) + orphan-aware lock retry. Worker gates on `/health` readiness before internal calls.
+- ★logging: use `logging.getLogger("legalscout")` (child `legalscout.training_jobs` had no handler → swallowed). E2E-verified: browser-close (100s no client → advanced), server-restart (watchdog revived → 11/11 done, 0 fail, DB 15/15), start/cancel. BAKED `scout:latest`, rollback `scout:pre-bgtrain-fix-20260727`. UNCOMMITTED.
 
 ## Database Tables
 
@@ -281,6 +301,7 @@ Triggered from `/admin/templates` → "Train Agent" → "Start Training". Stream
 | `company_field_registry` | Dynamic per-template user_input field registry (auto-populated after training) |
 | `companies.custom_fields` | JSONB column — per-company key/value overrides for any field discovered by training |
 | `schema_migrations` | Tracks applied SQL migration files (driven by `python -m db.migrate`) |
+| `template_training_jobs` | Server-side background training job state (status, queue, current_index, done/fail counts, logs) |
 
 ---
 
@@ -342,9 +363,15 @@ POST /api/dashboard/upload/template           # Upload .docx (auth required)
 POST /api/dashboard/add/company               # Add company (auth required)
 DELETE /api/dashboard/company/{name}          # Delete company (auth required)
 DELETE /api/dashboard/document/{id}           # Delete document (auth required)
+POST /api/knowledge/train-start               # Start server-side background training job ({retrain_all|templates})
+GET  /api/knowledge/train-job                 # Poll background training job status
+POST /api/knowledge/train-cancel              # Cancel background training job
 GET  /api/knowledge/train-stream/{template}   # SSE training stream (15 steps, auth required)
 GET  /api/knowledge/train-companies-stream    # SSE company training stream (auth required)
 POST /api/knowledge/deep-train                # Batch train all templates (auth required)
+POST /api/templates/group                     # Tag a template's group e.g. new_company_setup (admin)
+GET  /api/documents/fill-view                  # ?template=&company= → fill-in blocks + register candidates
+POST /api/documents/fill-generate             # Generate straight from the fill-in view's chosen values
 GET  /api/templates/preview-pdf/{name}        # PDF preview (JWT token query param)
 POST /api/company/extract-pdf-stream          # AI extract from DICA PDF (ND-JSON streaming logs)
 GET  /api/dashboard/document-detail/{id}      # Full doc record incl custom_data + validation_result
@@ -415,6 +442,27 @@ Progressive-disclosure playbooks — no sandbox needed (skills are markdown inst
 - **Admin:** Overview → Skills tab (`SkillsView.tsx`) — toggles, edit, `/api/skills` CRUD.
 
 ---
+
+## Dynamic Templates & Fill-in View (client feedback, 2026-07-27)
+
+Built from the legal team's testing feedback. Three additions:
+
+### 1. New-company-setup template filter
+`templates.template_group` (migration 011) is now wired: `find_matching_templates(setup_only=True)` and the `list_new_company_setup_templates` tool restrict to the 5 setup forms; agent prompt shows only these when setting up a new company. Admins tag/untag templates via `POST /api/templates/group` and the **Setup** toggle column in `TemplatesView.tsx`. New uploads can be added to the set from there.
+
+### 2. Dynamic (unbounded) attendees / signatories — `scout/tools/repeat_regions.py`
+Templates hard-code fixed slots (`individual shareholder_1..2`, `corporate shareholder_3`, `director_1..3`). `expand_repeat_regions(doc, data, ...)` runs at the top of `fill_template_with_validation` and rewrites those regions to the real party count:
+- **Present-member / appointed-director paragraph blocks** — contiguous run of "list unit" paragraphs (placeholder + short role tag), cloned/deleted to fit.
+- **Signing-table row groups** — delete-and-rebuild by party type; a corporate party clones the "signed by its authorized representative" row group and fills the representative, an individual gets the plain block.
+- Party lists: member family auto-falls-back to the company's `shareholders_list` (zero agent change); `appointed_directors` / `signing_directors` come from `custom_data`.
+- Returns synthetic `__rr_N__` tokens merged into `data`, so the normal highlighter fills+colours them.
+- **Safe:** no-op on all 15 templates with empty data; single scattered refs (e.g. the Chairperson line) are never touched.
+- ★`_is_corporate` must accept member `type` value `"Company"` (real DICA data), not only `"corporate"`.
+- ★`_tail_attr` must check `"name"` before `"share"` — else "shareholder_1_**name**" matches "share" and renders blank.
+- Landmine: the existing `slot_resolver.collect_slot_requests` still ASKS for numbered member slots up front; the expander fixes the OUTPUT but the ask-step over-asking is a pending reconciliation.
+
+### 3. Whole-document fill-in view — `scout/tools/fill_view.py` + `FillInView.tsx`
+`GET /api/documents/fill-view?template=&company=` renders the doc as ordered blocks; each blank carries `kind` + register candidates. `FillInView.tsx` (3rd panel tab) shows the whole document, blanks are click-to-pick chips (candidates + free text), and `POST /api/documents/fill-generate` generates + previews. E2E-proven live on ARCTIC SUN (1 corporate member → 1 Present line + 1 corporate signing block).
 
 ## Commands
 
@@ -507,9 +555,61 @@ All database connections use centralized `get_db_conn()` from `db/connection.py`
 - **Monitoring stack removed** from compose — only `scout-db` + `scout-api` ship.
 - **Download MIME fix** — `_file_response()` sets correct `media_type` + `Content-Disposition` so browsers (Safari especially) don't append `.txt` to `.docx`.
 
-## Current State (2026-07-25)
+## Current State (2026-08-04)
+
+**Bug-sweep release.** ~20 defects closed, three test suites built, everything baked into `scout:latest` and running on `http://localhost:8080`. **UNCOMMITTED** — the image and the working tree are the only copies.
+
+### ★★★ Model landmines (gemini-3.6-flash, switched 2026-08-03)
+
+Chat, training and classification all run `google/gemini-3.6-flash`. **Reasoning cannot be disabled** — OpenRouter rejects `reasoning:{enabled:false}` ("Reasoning is mandatory for this endpoint"), and `exclude:true` only hides it while still spending the tokens. Two consequences, both of which shipped silently:
+
+1. **Tight `max_tokens` returns empty content.** Follow-up suggestions at 200 tokens returned `[\n  "`, `json.loads` threw, a bare `except` returned `[]` — the feature was dead and nothing surfaced it. The AI connectivity probe at 20 tokens reported "(empty response)" for a healthy model. **Budget ≥800 even for trivial completions.** Never swallow the parse error.
+2. **`reasoning_content` is separate from `content`.** A turn can produce reasoning and ZERO content — that is what the long-standing "silent stop" actually was, not a stalled agent. Fixed by capturing `chunk.reasoning_content` in `useAIStreamHandler` and rendering a collapsed "Thought process" block. Render it as PLAIN TEXT, not markdown: reasoning is full of `**`/`###` that the markdown renderer blows into headings louder than the answer. Note `extra_data.reasoning_steps` is a DIFFERENT Agno concept and a red herring.
+
+### ★★ Prompt ↔ tool contract
+
+Two tools the system prompt told the model to call were not registered — `generate_dica_extract` (never added to `_tools_to_add`) and `list_companies` (registered under its `__name__` `list_all_companies` while the prompt said `list_companies()`). Both failed **silently**: the model follows the instruction, finds no tool, ends the turn with nothing. No test caught either. `scout/agent.py` now runs `_audit_prompt_tool_contract()` at import and logs `PROMPT/TOOL MISMATCH`.
+
+### ★★ Party selection must carry role AND company
+
+- `choose_person_from_register` recorded an EMPTY `company_name`, so picks were written to `party_selections` but unfindable by the `(lower(company_name), picker)` index.
+- `PICKER_SLOT_KINDS` hardcoded `'signatory'` for every picker, so `slot_kind` could not discriminate roles. `_KIND_PATTERNS` only matched snake_case, so a prose purpose ("select the new director to be appointed") fell through to the catch-all. Result: **a person chosen as the INCOMING director appeared on the NEXT document's resignation line.** Wrong person, right company, no warning.
+- Fixed: patterns are prose-tolerant, `classify_kind()` is shared with `people_picker`, the real role is recorded at pick time, and the read-back filters on `slot_kind`.
+
+### ★ Other landmines
+
+- **U+00A0 in placeholder names.** Five templates carry non-breaking spaces inside `[individual\xa0shareholder_1_name]`. A different string from the normal-space spelling, so any hand-written alias misses and the field comes out blank. Normalised in `placeholders.py:placeholder_name()`.
+- **`@app.on_event("startup")` is dead** under the AgentOS lifespan — `startup_sync()` is now called at module import (bottom of `app/main.py`). `[STARTUP]` lines in the log confirm it ran.
+- **The nudge was unbounded.** The guard was per `run_id`, but every nudge starts a NEW run with a NEW id, so nothing capped it — that is what generated the same document three times. Now `MAX_CONSECUTIVE_NUDGES = 3`, reset on real output.
+- **`documents/` is a bind mount** to the repo — template edits on disk are live without a rebuild.
+- **Port is 8080**, not 80.
+
+### Test suites (`tests/`)
+
+| Suite | Scope | Determinism |
+|---|---|---|
+| `tracker_layer1.py` | 25 assertions off `/api/documents/fill-view` | **Deterministic — the real gate** |
+| `tracker_layer2.py` | 14 chat runs; asserts it asks rather than guesses | Non-deterministic |
+| `tracker_layer3.py` | Full conversations → generated `.docx`, unzipped and grepped | Non-deterministic |
+
+Layer 2/3 failures move between cases run to run; do not treat one as a regression until it reproduces. Runs are tagged with `user_id` so they appear in the app's own sidebar.
+
+### Known open
+
+- The model still sometimes ends a turn without a closing sentence. Reasoning is now visible so nothing is hidden, but a prompt fix is outstanding.
+- `collect_slot_requests` suppression extended but not exhaustive.
+- Python-repr parser retained in `useArtifact.ts` — required for sessions stored before tool results became JSON.
+- "Director and Shareholder Consent Form" template does not exist; tracker case B5 blocked.
+- The client's OneDrive master copy of *Notice of AGM to Shareholders* still lacks `[director_name]` — re-uploading reintroduces a fixed bug.
+
+## Previous State (2026-07-27)
+
+- **Background training release**: template training is now a server-side background job (`app/training_jobs.py`) that survives modal/tab/browser close AND server restart — DB-backed job + Postgres advisory lock + import-time watchdog. Per-template failures log+continue (fixes stop-at-N). ★★★Landmine: `@app.on_event("startup")` is dead under AgentOS lifespan → watchdog started at module import instead. BAKED `scout:latest`, rollback `scout:pre-bgtrain-fix-20260727`, E2E-verified (browser-close, server-restart, 11/11 done 0 fail, DB 15/15). UNCOMMITTED. ⚠️ OTHER `startup_sync` work (dir-create, migration check, knowledge/skills refresh) also silently dead under the lifespan — flagged, not yet fixed.
+- **Dynamic-templates release** (client feedback): setup-template filter + unbounded attendees/signatories (`repeat_regions.py`) + whole-document fill-in view (`fill_view.py`, `FillInView.tsx`) + admin Setup-group toggle. Baked into the `:8080` image (rebuilt 2026-07-27, rollback tag `scout:pre-dynamic-templates`), health 200, E2E-verified live on real data. UNCOMMITTED on `main` — not pushed. Pending refinement: `collect_slot_requests` still over-asks numbered member slots at the ask-step (output already correct).
+
+## Previous State (2026-07-25)
 
 - **EVERYTHING ON `main` (~40 commits, all feature branches deleted).** Insights restyle + streaming/typewriter + animated document panel + ask_questions cards + Task Continuity + Legal Skills engine + single sans + pixel-exact bagofwords login + admin scroll fixes. Baked into the local Docker image (:8080) and Playwright-verified live. Rollback tags kept: `pre-insights-restyle`, `pre-legal-skills`, `pre-ui-revamp`, `pre-rail-revamp`, `pre-v2-phase0`. NOT pushed to any remote.
 - **Login page** measured 1:1 against Insights `:8095/users/sign-in` (computed-style loop): h1 40px/600, form col 440px, fields 440×64 r12, buttons h-12 r11 full-width, showcase panel 677px r22. Showcase animation uses FICTIONAL companies only — no real client data pre-auth.
-- **Known LEFT items:** one full-chain E2E in a single run (card→picker→fields→preview→generate→download; prior failures were test-selector brittleness, not product); context diet for 100k+-token resumed turns (auto-nudge is mitigation); People-register backfill + `country_of_residence` migration; company page link to the ORIGINAL uploaded DICA PDF (`pdf_url` never stored on extraction — file exists on disk under `/documents/legal/uploads/`); cold-start-interview run to fill the CHL practice-profile skill.
+- **Known LEFT items:** one full-chain E2E in a single run (card→picker→fields→preview→generate→download; prior failures were test-selector brittleness, not product); context diet for 100k+-token resumed turns (auto-nudge is mitigation); ~~People-register backfill + `country_of_residence` migration~~ (BOTH DONE 2026-08-03 — `people_sync.py`, migration 015); company page link to the ORIGINAL uploaded DICA PDF (`pdf_url` never stored on extraction — file exists on disk under `/documents/legal/uploads/`); cold-start-interview run to fill the CHL practice-profile skill.
 - `FUTURE_READINESS.md` predates the restyle — its §2 tokens and phase table are superseded, but its defect list (§6) and People-register data findings (§7) remain valid.

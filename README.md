@@ -16,6 +16,9 @@ AI-powered legal document automation system for Myanmar corporate law. Generate 
 - **Document Split-View** — Generated docs render side-by-side: pixel-match PDF left, placeholder values + validation stats right
 - **Interactive Chat Cards** — clarifying questions, approvals and signer picks arrive as clickable cards in chat (Claude-style), not prose options
 - **Legal Playbook Skills** — 12 Myanmar corporate-law skills (7 adapted Apache-2.0 from anthropics/claude-for-legal + 5 native) loaded into the agent on demand; managed from Overview → Skills
+- **Dynamic template lists** — attendee lists and signing blocks grow or shrink to the real number of parties; no fixed 1/2/3 slots. Individual vs corporate signatories render differently (corporate signs "by its authorized representative")
+- **Fill-in view** — the whole document shown with each blank in place; click a blank to pick a value from the registers (directors, shareholders, People register) or type your own, then generate straight from that view
+- **New-company setup filter** — when setting up a new company, only the five setup templates (director/shareholder consent forms) are offered, not every template
 
 ---
 
@@ -391,7 +394,7 @@ User chats "Create AGM for ARCTIC SUN"
 ### AI Agent Capabilities (27+ Tools)
 - **Document Generation** — `generate_document`, `create_document`, `prepare_document`, `preview_document`, `analyze_template`
 - **Company Lookup** — `get_company`, `get_directors`, `get_shareholders`, `check_company`, `list_companies`
-- **Template Intelligence** — `list_templates`, `analyze_new_template`, `find_matching_templates`, `get_template_data`, `get_data_for_template`
+- **Template Intelligence** — `list_templates`, `analyze_new_template`, `find_matching_templates` (accepts `setup_only`), `list_new_company_setup_templates`, `get_template_data`, `get_data_for_template`
 - **Knowledge Base** — `search_knowledge` (semantic vector search), `lookup_knowledge` (fast key-value), `quick_info`
 - **Document Tracking** — `list_tracked_documents`, `get_document_info`, `get_document_stats`
 - **Interactive Questions** — `ask_questions` pauses the run and renders clickable answer cards in chat (single-pick, multi-select, free-text)
@@ -441,6 +444,8 @@ User chats "Create AGM for ARCTIC SUN"
 
 ### Document Generation
 - Auto-fill Word templates with company data
+- **Dynamic lists** — Present/attendee lists, appointed-director lists and signing-table row groups expand or contract to the actual party count at fill time (`scout/tools/repeat_regions.py`); individual vs corporate signatories are rendered differently, with the corporate representative filled in
+- **Fill-in view** (document panel → "Fill in" tab) — the entire document with clickable blanks; each blank offers register candidates + free text, then generates via `POST /api/documents/fill-generate` (`scout/tools/fill_view.py`, `GET /api/documents/fill-view`)
 - Validate filled documents (report unfilled placeholders)
 - Download generated `.docx` files
 - Document history with date filtering
@@ -598,7 +603,8 @@ CHLLegalScout/
 │   └── src/lib/                  # API client, utilities
 ├── scout/                        # AI agent
 │   ├── agent.py                  # Agent definition + system prompt (skills L1, task continuity)
-│   └── tools/                    # 18 tool modules (incl. ask_questions, legal_skills, people_picker)
+│   └── tools/                    # 20 tool modules (incl. ask_questions, legal_skills, people_picker,
+│                                 #   repeat_regions [dynamic lists], fill_view [fill-in view])
 ├── db/                           # Database
 │   ├── init.sql                  # Schema
 │   └── migration_*.sql           # Migrations
