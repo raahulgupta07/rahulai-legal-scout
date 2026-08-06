@@ -6424,6 +6424,99 @@ def _valid_skill_name(name: str) -> bool:
     return bool(name) and len(name) <= 64 and bool(_SKILL_NAME_RE.match(name))
 
 
+# Tool references inside a skill BODY, checked against the live registry.
+#
+# Skill bodies are L2 playbooks — markdown the firm's lawyers edit in this admin
+# UI — and they instruct the agent to call tools by name. A body that names a
+# tool which is not registered fails SILENTLY and in the worst possible way: the
+# model follows the instruction, finds no such tool, and simply skips that step.
+# No exception, no log line, no missing document — just a step that quietly did
+# not happen. Seven enabled skills shipped naming `preview_document` (the export
+# key; @wraps made the real name `preview_doc`) and `list_tracked_documents`.
+#
+# The startup contract audit cannot catch this: _build_legal_skills_block()
+# selects only name + description for the L1 prompt block, so bodies never pass
+# through _audit_prompt_tool_contract(). This is the only gate they get.
+#
+# WHY A PREFIX HEURISTIC AND NOT A WORD LIST:
+# a skill body is prose. Any rule that flags every unknown snake_case token
+# would reject legitimate writing — placeholder names, DB columns, file paths,
+# ordinary phrases in backticks. So a candidate is flagged only when it BOTH
+# looks like a tool call (backticked, or written with call parens) AND shares a
+# 6-character prefix with a real tool in either direction. That is precisely the
+# near-miss shape of the actual failure mode — a typo or a stale name for a tool
+# that does exist — and it ignores everything else. It is deliberately
+# incomplete: a wholly invented name sharing no prefix with anything registered
+# passes. Better a gap than a validator lawyers learn to work around.
+_SKILL_TOOL_BACKTICKED_RE = _skills_re.compile(r"`([a-z_][a-z0-9_]{3,})\(?\)?`")
+_SKILL_TOOL_CALL_RE = _skills_re.compile(r"\b([a-z_][a-z0-9_]{3,})\(\)")
+
+
+def _unknown_skill_tools(skill_body: str) -> list[str]:
+    """Names in `skill_body` that read as tool calls but are not registered.
+
+    Returns a list of ready-to-display messages, each naming the closest
+    registered match. Empty list means the body is acceptable.
+    """
+    if not skill_body:
+        return []
+    import difflib
+
+    # Same in-function import the other agent-touching helpers use
+    # (_refresh_agent_knowledge, _refresh_legal_skills, health_check) —
+    # app/main.py and scout.agent have a circular relationship, and this reads
+    # the registry LIVE rather than a copy taken at import time.
+    import scout.agent as _am
+
+    registry = _am._registered_tool_names(_am.scout.tools or [])
+    if not registry:
+        return []
+
+    candidates: list[str] = []
+    seen: set[str] = set()
+    for match in _SKILL_TOOL_BACKTICKED_RE.findall(skill_body) + _SKILL_TOOL_CALL_RE.findall(skill_body):
+        if match not in seen:
+            seen.add(match)
+            candidates.append(match)
+
+    problems: list[str] = []
+    for cand in candidates:
+        if cand in registry:
+            continue
+        near = [t for t in registry if t.startswith(cand[:6]) or cand.startswith(t[:6])]
+        if not near:
+            continue
+        # The 6-char prefix decides IF this is flagged; difflib only picks which
+        # of the near names to name in the message, so several tools sharing a
+        # prefix ('list_*') don't get suggested in alphabetical order.
+        best = difflib.get_close_matches(cand, sorted(near), n=1, cutoff=0.0)[0]
+        problems.append(f"Unknown tool '{cand}' (did you mean '{best}'?)")
+    return problems
+
+
+def _reject_unknown_skill_tools(skill_body: str, skill_name: str) -> None:
+    """Raise 400 if the body names a near-miss tool. WRITES ONLY.
+
+    Never call this on a read path or from _refresh_legal_skills(): the seeded
+    rows still carry the bad names until a migration fixes them, and validating
+    on read would make the Skills tab fail to load.
+    """
+    problems = _unknown_skill_tools(skill_body)
+    if not problems:
+        return
+    logging.getLogger("legalscout").warning(
+        f"[SKILLS] Rejected write to '{skill_name}' — {len(problems)} unregistered tool "
+        f"reference(s): {'; '.join(problems)}"
+    )
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            "This skill body names tools the agent cannot call, so those steps would be "
+            "skipped silently. " + " ".join(problems)
+        ),
+    )
+
+
 @app.get("/api/skills")
 async def list_legal_skills(request: Request):
     """List all legal skills (any authenticated role). Bodies excluded — body_chars only."""
@@ -6503,6 +6596,7 @@ async def create_legal_skill(request: Request):
             return {"success": False, "error": "Description is required."}
         if not skill_body.strip():
             return {"success": False, "error": "Body is required."}
+        _reject_unknown_skill_tools(skill_body, name)
         conn = get_db_conn()
         cur = conn.cursor()
         cur.execute("SELECT 1 FROM legal_skills WHERE name = %s", (name,))
@@ -6519,6 +6613,12 @@ async def create_legal_skill(request: Request):
         _refresh_legal_skills()
         log_activity(user.get("user_id"), user.get("email"), "create_skill", f"Created skill {name}", "")
         return {"success": True, "id": new_id, "name": name}
+    except HTTPException:
+        # Without this the validator's 400 is caught below and returned as a
+        # 200 with success:false — the status code the UI checks would be a lie.
+        if conn:
+            conn.rollback()
+        raise
     except Exception as e:
         if conn:
             conn.rollback()
@@ -6546,6 +6646,7 @@ async def update_legal_skill(name: str, request: Request):
             new_body = body.get("body") or ""
             if not new_body.strip():
                 return {"success": False, "error": "Body cannot be empty."}
+            _reject_unknown_skill_tools(new_body, name)
             fields.append("body = %s"); params.append(new_body)
         if "version" in body:
             ver = (body.get("version") or "").strip()[:16]
