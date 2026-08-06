@@ -170,6 +170,31 @@ def _members_of(company_name: str | None) -> list[dict]:
     return []
 
 
+def _board_of(company_name: str) -> list[str]:
+    """Current director names of `company_name`, cleaned for comparison.
+
+    Empty when the company is not in the register — which is NOT the same as
+    "has no directors", so callers must not treat empty as grounds to reject."""
+    try:
+        from scout.tools.slot_resolver import corporate_shareholder_directors
+        out = []
+        for c in corporate_shareholder_directors(company_name) or []:
+            name = (c.get("name") or c.get("full_name") or "") if isinstance(c, dict) else str(c)
+            name = _clean(name)
+            if name:
+                out.append(name)
+        return out
+    except Exception as e:  # noqa: BLE001
+        _log.warning(f"repeat_regions: board lookup failed for {company_name!r}: {e}")
+        return []
+
+
+def _on_board(name: str, board: list[str]) -> bool:
+    """Case- and spacing-insensitive membership test."""
+    n = " ".join(_clean(name).casefold().split())
+    return any(n == " ".join(_clean(b).casefold().split()) for b in board)
+
+
 def _corp_representative(party: dict, data: dict) -> str:
     """Resolve the authorised representative for a CORPORATE signatory.
 
@@ -177,11 +202,47 @@ def _corp_representative(party: dict, data: dict) -> str:
     picked for the corporate shareholder (carried in data) → the corporate
     member's own first director from the register. The DB-fallback member path
     supplies no representative, which left the "signed by its authorized
-    representative" row with a BLANK name (finding F4)."""
+    representative" row with a BLANK name (finding F4).
+
+    ★ Every candidate is checked against THAT COMPANY'S OWN CURRENT BOARD before
+    it is printed. A corporate member signs through one of its own directors, so
+    a name that is not on its board has no authority to bind it. Two ways this
+    went wrong in practice, both measured:
+      * a director of the SUBJECT company signed for the member company — the
+        register lists KYAW THU SOE on CITY MART's board and not on CITY
+        HOLDINGS', yet he was printed as CITY HOLDINGS' authorised director;
+      * a RESIGNED director stayed on the line, because a stale answer carried
+        in `data` outranked the register that had already ended them.
+    The board list also excludes resigned people, so this guard closes both."""
+    board = _board_of(_member_display(party) if isinstance(party, dict) else str(party))
+
+    def _vet(name: str, source: str) -> str:
+        """Return `name` only if the register does not contradict it."""
+        if not name:
+            return ""
+        if not board:
+            # The member company is not in the register, so there is nothing to
+            # check against. Refusing here would blank the line for every
+            # unregistered corporate member; fail open, but say so.
+            _log.warning(
+                "repeat_regions: cannot verify representative %r (%s) — %r is not in "
+                "the register, so its board is unknown",
+                name, source, _member_display(party) if isinstance(party, dict) else party)
+            return name
+        if _on_board(name, board):
+            return name
+        _log.warning(
+            "repeat_regions: DROPPED representative %r (%s) — not a current director of %r "
+            "(board: %s). A name off the board cannot bind the company.",
+            name, source, _member_display(party) if isinstance(party, dict) else party, board)
+        return ""
+
     if isinstance(party, dict):
         rep = _clean(party.get("representative") or party.get("representative_name") or "")
         if rep:
-            return rep
+            vetted = _vet(rep, "carried on the party")
+            if vetted:
+                return vetted
     data = data or {}
     # `corporate_shareholder_3_name` is deliberately NOT consulted: that is the
     # corporate MEMBER's own name, and a company cannot be its own authorised
@@ -216,20 +277,27 @@ def _corp_representative(party: dict, data: dict) -> str:
             candidates.append(_clean(str(v)))
     for v in candidates:
         if not default_first_director or v != default_first_director:
-            return v
+            vetted = _vet(v, "chosen / carried in data")
+            if vetted:
+                return vetted
     # Every candidate matched the default. It may genuinely be the right person;
     # what it is NOT is grounds to go guess a different one from register order.
-    if candidates:
-        return candidates[0]
-    try:
-        from scout.tools.slot_resolver import corporate_shareholder_directors
-        cands = corporate_shareholder_directors(_member_display(party)) or []
-        if cands:
-            c0 = cands[0]
-            name = c0.get("name") or c0.get("full_name") if isinstance(c0, dict) else str(c0)
-            return _clean(name or "")
-    except Exception as e:  # noqa: BLE001
-        _log.warning(f"repeat_regions: corp rep lookup failed: {e}")
+    for v in candidates:
+        vetted = _vet(v, "matches the per-company default")
+        if vetted:
+            return vetted
+    # Last resort: the member company's own first director. This is a POSITIONAL
+    # GUESS — register order, not anybody's choice — and slot_resolver was fixed
+    # to stop counting it as an answered question, so reaching it means nobody
+    # was asked. It is at least somebody with authority to bind the company,
+    # which a name off the board is not. `board` is already vetted and excludes
+    # resigned directors, so no second lookup is needed.
+    if board:
+        _log.warning(
+            "repeat_regions: falling back to register order for %r's representative (%r) — "
+            "nobody chose one",
+            _member_display(party) if isinstance(party, dict) else party, board[0])
+        return board[0]
     return ""
 
 
