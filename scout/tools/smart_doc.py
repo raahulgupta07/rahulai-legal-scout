@@ -32,6 +32,7 @@ from scout.tools.placeholders import (
     new_empty_counter,
     placeholder_name,
 )
+from scout.tools.repeat_regions import _is_corporate
 from scout.tools.slot_resolver import (
     collect_slot_requests,
     companion_identifier,
@@ -387,6 +388,33 @@ def prepare_document_data(template_name: str, company_name: str, documents_dir: 
                     if isinstance(m, dict):
                         sh_shares[m.get("name", "")] = m.get("shares", "TBD")
 
+                # Member slots used to be assigned by POSITION: slots 1-2 of the
+                # flat, comma-joined name list were assumed individual and slot 3
+                # assumed corporate. Nothing consulted member type, though the
+                # structured `shareholders_list` sitting two lines above carries
+                # it. On CITY MART HOLDING COMPANY LIMITED — whose single member
+                # is the corporate CITY HOLDINGS LIMITED — that company landed at
+                # index 0 and was written into `individual_shareholder_1_name`,
+                # so a company was rendered as an individual member. That is
+                # legally wrong: a corporate member signs through a named
+                # representative, an individual signs personally.
+                # Type comes from repeat_regions._is_corporate so this file and
+                # the list expander cannot disagree about the same member (real
+                # DICA data spells the corporate type "Company", not "corporate").
+                # Falls back to the old positional split when a row has no
+                # structured list, which older companies do not.
+                ind_split = shs_split
+                corp_split = shs_split[2:]
+                typed_members = [
+                    m for m in shareholders_list
+                    if isinstance(m, dict) and str(m.get("name") or m.get("full_name") or "").strip()
+                ]
+                if typed_members:
+                    ind_split, corp_split = [], []
+                    for m in typed_members:
+                        nm = str(m.get("name") or m.get("full_name") or "").strip()
+                        (corp_split if _is_corporate(m) else ind_split).append(nm)
+
                 companies_list.append({
                     "company_name": c.get("name", ""),
                     "company": c.get("name", ""),
@@ -401,12 +429,12 @@ def prepare_document_data(template_name: str, company_name: str, documents_dir: 
                     "director_name": dirs_split[0] if dirs_split else "TBD",
                     "authorized_director_name": dirs_split[0] if dirs_split else "TBD",
                     "authorized director_name": dirs_split[0] if dirs_split else "TBD",
-                    "individual_shareholder_1_name": shs_split[0] if len(shs_split) > 0 else "TBD",
-                    "individual_shareholder_2_name": shs_split[1] if len(shs_split) > 1 else "TBD",
-                    "individual shareholder_1_name": shs_split[0] if len(shs_split) > 0 else "TBD",
-                    "individual shareholder_2_name": shs_split[1] if len(shs_split) > 1 else "TBD",
-                    "corporate_shareholder_3_name": shs_split[2] if len(shs_split) > 2 else "TBD",
-                    "corporate shareholder_3_name": shs_split[2] if len(shs_split) > 2 else "TBD",
+                    "individual_shareholder_1_name": ind_split[0] if len(ind_split) > 0 else "TBD",
+                    "individual_shareholder_2_name": ind_split[1] if len(ind_split) > 1 else "TBD",
+                    "individual shareholder_1_name": ind_split[0] if len(ind_split) > 0 else "TBD",
+                    "individual shareholder_2_name": ind_split[1] if len(ind_split) > 1 else "TBD",
+                    "corporate_shareholder_3_name": corp_split[0] if len(corp_split) > 0 else "TBD",
+                    "corporate shareholder_3_name": corp_split[0] if len(corp_split) > 0 else "TBD",
                     "shareholder_1_name": shs_split[0] if len(shs_split) > 0 else "TBD",
                     "shareholder_2_name": shs_split[1] if len(shs_split) > 1 else "TBD",
                     "shareholder_1_shares": sh_shares.get(shs_split[0], "TBD") if shs_split else "TBD",
