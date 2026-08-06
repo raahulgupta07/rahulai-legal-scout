@@ -190,14 +190,32 @@ def decide(paused, plan):
             candidates = payload.get("candidates") or []
             purpose = str(args.get("purpose") or "")
             chosen = None
+            # `person_for` picks a DIFFERENT name per picker, matched on the
+            # purpose text. A case that must distinguish two roles in one
+            # conversation — the corporate representative and the signing
+            # directors, say — cannot express that with a single `person`.
             want = plan.get("person")
+            for needle, name in (plan.get("person_for") or {}).items():
+                if needle.lower() in purpose.lower():
+                    want = name
+                    break
             if want:
                 for c in candidates:
                     if want.lower() in str(c.get("name") or c.get("label") or "").lower():
                         chosen = c
                         break
+            # ★ The harness's own first-candidate fallback is the same bug this
+            # file exists to catch. If a case named a person and that person is
+            # not on the list, silently taking candidates[0] can hand back
+            # exactly the name the test is trying to prove absent, and the run
+            # reads as a pass. Say so instead of hiding it.
             if chosen is None and candidates:
                 chosen = candidates[0]
+                if want:
+                    described.append(
+                        f"!! wanted {want!r} for {purpose or 'picker'} but it was not "
+                        f"offered — harness fell back to {chosen.get('name') or chosen.get('label')!r}"
+                    )
             if chosen is not None:
                 answers["selected"] = json.dumps(chosen)
                 described.append(
@@ -235,6 +253,51 @@ CASES = [
         "answers": {"date": "2026-09-20"},
         "default_answer": "",
         "expect_in_doc": ["WIN WIN TINT", "CITY HOLDINGS LIMITED"],
+    },
+    {
+        # The corporate-representative regression, end to end.
+        #
+        # CITY MART HOLDING COMPANY LIMITED has exactly one member: the CORPORATE
+        # shareholder CITY HOLDINGS LIMITED. A consent given by that member is
+        # signed by CITY HOLDINGS' own board, so somebody has to say WHICH of its
+        # directors signs.
+        #
+        # Until 2026-08-06 nobody was asked. slot_resolver._corp_rep_resolvable
+        # treated repeat_regions' last-resort fallback — the member's FIRST
+        # DIRECTOR — as an already-answered question and suppressed the picker.
+        # CITY HOLDINGS' directors[0] is MIN MIN, so MIN MIN signed, silently,
+        # on all four Shareholders Resolution In Writing templates.
+        #
+        # The case therefore names a representative who is deliberately NOT the
+        # first director, and asserts three separate things: that the question
+        # was asked at all, that the chosen name is in the document, and that
+        # MIN MIN is not. The last one is the real guard — a document naming the
+        # right company and a confidently wrong signatory satisfies every
+        # positive assertion while being exactly the defect.
+        # Template choice matters. "Corporate Shareholder Consent" is the wrong
+        # one: it carries director_1_name..director_3_name, described as the
+        # existing directors SIGNING the resolution, so MIN MIN appears there
+        # legitimately and a negative assertion would fail on correct output.
+        # "Shareholders Resolution In Writing - Director Appointment" has exactly
+        # one register-sourced person slot, authorized_director_name — "an
+        # existing director authorized to execute or sign on behalf of the
+        # company" — which IS the representative slot the fix governs.
+        #
+        # ⚠ Interpreting a MIN MIN hit: MIN MIN is a director of BOTH CITY MART
+        # and CITY HOLDINGS, so presence is strong evidence but not proof of the
+        # old bug. On a FAIL here, read the document and find WHICH slot the name
+        # landed in before calling it a regression.
+        "id": "E3",
+        "prompt": ("Prepare a shareholders resolution in writing for director "
+                   "appointment for City Mart Holding Company Limited"),
+        "person": "PHYOE MIN KYAW",
+        "person_for": {"authoriz": "PHYOE MIN KYAW", "represent": "PHYOE MIN KYAW"},
+        "answers": {"date": "2026-10-01", "new director": "AUNG KYAW MOE",
+                    "identification": "NRC", "pronoun": "he"},
+        "default_answer": "",
+        "expect_ask": ["authoriz"],
+        "expect_in_doc": ["PHYOE MIN KYAW", "CITY HOLDINGS LIMITED"],
+        "forbid_in_doc": ["MIN MIN"],
     },
 ]
 
@@ -292,10 +355,37 @@ def run_case(token, user_id, case):
                 "session": session, "answered": transcript}
 
     missing = [v for v in case["expect_in_doc"] if v.lower() not in text.lower()]
+
+    # A name that must NOT be in the document. Presence alone is not proof of
+    # correctness when the failure mode is substituting a plausible person: the
+    # old corporate-representative path resolved to the member company's FIRST
+    # DIRECTOR without asking, and a document containing the right company and a
+    # confidently wrong signatory passes every positive assertion there is.
+    forbidden = [v for v in case.get("forbid_in_doc", []) if v.lower() in text.lower()]
+
+    # Some questions must actually be PUT to the user. If the agent stops asking
+    # and starts assuming again, the document can still come out looking fine.
+    joined = " | ".join(transcript).lower()
+    unasked = [v for v in case.get("expect_ask", []) if v.lower() not in joined]
+
+    # The harness announcing its own fallback means the person the case named was
+    # never offered — the run proves nothing about who gets chosen.
+    fell_back = [t for t in transcript if t.startswith("!!")]
+
+    problems = []
+    if missing:
+        problems.append(f"missing from document: {missing}")
+    if forbidden:
+        problems.append(f"FORBIDDEN name present in document: {forbidden}")
+    if unasked:
+        problems.append(f"never asked about: {unasked}")
+    if fell_back:
+        problems.append(f"harness fallback fired: {fell_back}")
+
     return {
-        "status": "PASS" if not missing else "FAIL",
-        "detail": ("all answers present in the .docx" if not missing
-                   else f"missing from document: {missing}")
+        "status": "PASS" if not problems else "FAIL",
+        "detail": ("all answers present in the .docx" if not problems
+                   else " · ".join(problems))
                   + f" · {nudges} silent stop(s) had to be nudged",
         "session": session,
         "answered": transcript,
@@ -305,9 +395,17 @@ def run_case(token, user_id, case):
 
 
 def main():
+    # Optional case-id filter: `python3 tests/tracker_layer3.py E3`. Every case
+    # is a multi-turn conversation against a paid model, so re-running the ones
+    # that already passed to reach the one under test is real money.
+    wanted = {a.upper() for a in sys.argv[1:] if not a.startswith("-")}
+    cases = [c for c in CASES if not wanted or c["id"].upper() in wanted]
+    if wanted and not cases:
+        sys.exit(f"No case matched {sorted(wanted)}; have {[c['id'] for c in CASES]}")
+
     token, user_id = login()
     rows = []
-    for case in CASES:
+    for case in cases:
         try:
             out = run_case(token, user_id, case)
         except Exception as e:
