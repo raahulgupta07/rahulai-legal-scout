@@ -51,7 +51,14 @@ _APPOINTED_RE = re.compile(r"appointed[_ ]?director|new[_ ]?director", re.I)
 _SIGN_DIR_RE = re.compile(r"^director$|^director[_ ]", re.I)
 _ROLE_TAG_RE = re.compile(r"^[\s ()/,.\-–—:]*$")  # what may remain around a slot
 _TO_SIGN_RE = re.compile(r"to\s*sign|signature|signed", re.I)
-_CORP_SIGN_RE = re.compile(r"authoris?ed\s+representative|authoriz?ed\s+representative|on\s+behalf|its\s+representative", re.I)
+_CORP_SIGN_RE = re.compile(
+    # "Represented by its authorized director" is the wording the firm's own
+    # signature blocks use; without it a corporate signatory group classified as
+    # individual and got the plain block with no representative line.
+    r"authoris?ed\s+representative|authoriz?ed\s+representative|on\s+behalf"
+    r"|its\s+representative|represented\s+by",
+    re.I,
+)
 _REP_SLOT_RE = re.compile(r"authoris?ed[_ ]?director|authoriz?ed[_ ]?director|representative", re.I)
 
 
@@ -176,12 +183,44 @@ def _corp_representative(party: dict, data: dict) -> str:
         if rep:
             return rep
     data = data or {}
+    # `corporate_shareholder_3_name` is deliberately NOT consulted: that is the
+    # corporate MEMBER's own name, and a company cannot be its own authorised
+    # director. A blank rep line is a visible gap; the member's name sitting on
+    # it reads as a real signatory.
+    #
+    # ★ The SAME slot arrives under two spellings, and either one can be the
+    # real answer:
+    #   `authorized_director_name`  — smart_doc's per-company default, seeded
+    #                                 from directors[0]; ALSO where some picker
+    #                                 answers land.
+    #   `authorized director_name`  — the raw placeholder key, which is where
+    #                                 this signatory picker's answer lands.
+    # Observed on one real run: space = 'PHYOE MIN KYAW' (chosen), underscore =
+    # 'KYAW THU SOE' (directors[0]). Reading either spelling first is wrong half
+    # the time, so pick on CONTENT: a candidate equal to `director_name` is the
+    # company default that was never answered, and a candidate that differs from
+    # it is somebody's actual choice.
+    #
+    # This is a heuristic standing in for a real fix — the two spellings should
+    # be normalised to one key where custom_data is assembled, at which point
+    # this collapses back to a plain ordered lookup.
+    default_first_director = _clean(str(data.get("director_name") or ""))
+    candidates = []
     for k in ("representative", "representative_name", "corporate_representative",
               "corporate_shareholder_representative", "authorized_director",
-              "authorised_director", "corporate_shareholder_3_name"):
+              "authorised_director", "authorized director_name",
+              "authorised director_name", "authorized_director_name",
+              "authorised_director_name"):
         v = data.get(k)
         if v and str(v).strip() and str(v).strip().upper() != "TBD":
-            return _clean(str(v))
+            candidates.append(_clean(str(v)))
+    for v in candidates:
+        if not default_first_director or v != default_first_director:
+            return v
+    # Every candidate matched the default. It may genuinely be the right person;
+    # what it is NOT is grounds to go guess a different one from register order.
+    if candidates:
+        return candidates[0]
     try:
         from scout.tools.slot_resolver import corporate_shareholder_directors
         cands = corporate_shareholder_directors(_member_display(party)) or []
@@ -359,17 +398,61 @@ def _row_group_is_corporate(trs, table) -> bool:
     return False
 
 
-def _expand_one_table(table, data, company_name, synth, counter):
+def _prev_paragraph_text(tbl, limit: int = 3) -> str:
+    """Text of the paragraphs immediately preceding a table.
+
+    Stops at the previous table so a cue never leaks in from further up."""
+    from docx.text.paragraph import Paragraph
+
+    out, el, seen = [], tbl.getprevious(), 0
+    while el is not None and seen < limit:
+        if el.tag == qn("w:tbl"):
+            break
+        if el.tag == qn("w:p"):
+            t = _clean(Paragraph(el, None).text)
+            if t:
+                out.append(t)
+                seen += 1
+        el = el.getprevious()
+    return " ".join(out)
+
+
+def _signing_rows_to_scan(table) -> range | None:
+    """Which rows may hold signatory units, or None if this is not a signature
+    table.
+
+    Two shapes exist in the firm's templates:
+      * a header row that says "…to sign…", units below it;
+      * NO header row — the "Members to sign if they agree…" line is an ordinary
+        PARAGRAPH above the table and row 0 is already a signatory unit.
+
+    Only the first was recognised, so the second was skipped whole: both slots
+    fell through to the flat per-company fill and a company with ONE corporate
+    member was rendered signing twice — once via its representative, once again
+    on the individual line."""
     rows = table.rows
     if not rows:
-        return
+        return None
     header = " ".join(c.text for c in rows[0].cells)
-    if not _TO_SIGN_RE.search(header or ""):
+    if _TO_SIGN_RE.search(header or ""):
+        return range(1, len(rows))
+    # Headerless shape. Require BOTH that row 0 is itself a unit and that a
+    # nearby preceding paragraph carries the signing cue, so this cannot claim
+    # an ordinary data table that happens to mention a shareholder.
+    if _row_family(rows[0]) and _TO_SIGN_RE.search(_prev_paragraph_text(table._tbl)):
+        return range(0, len(rows))
+    return None
+
+
+def _expand_one_table(table, data, company_name, synth, counter):
+    rows = table.rows
+    scan = _signing_rows_to_scan(table)
+    if scan is None:
         return  # only touch signature tables
 
     # anchor rows: rows whose first data cell is a list unit
     anchors = []  # (row_index, family)
-    for ri in range(1, len(rows)):
+    for ri in scan:
         fam = _row_family(rows[ri])
         if fam:
             anchors.append((ri, fam))
