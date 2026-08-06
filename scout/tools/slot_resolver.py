@@ -282,12 +282,83 @@ def normalise_mapping(mapping: dict) -> dict:
     return {key: normalise_entry(key, value) for key, value in mapping.items()}
 
 
-def slot_of(entry: dict) -> dict | None:
-    """The slot descriptor of an entry, or None when it is not a slot entry."""
+# The two kinds that mean "this slot names a MEMBER of the company", as opposed
+# to somebody acting for it. Both are in MULTI_KINDS and both are already
+# suppressed by collect_slot_requests once the register knows the member list.
+_MEMBER_KINDS = frozenset({"shareholder_list", "attendee"})
+
+# Log each correction once. This runs inside per-placeholder loops, and a line
+# per call would bury the signal it exists to raise.
+_CORRECTED_SLOTS: set[tuple[str, str]] = set()
+
+
+def _correct_member_slot(placeholder: str, slot: dict) -> dict:
+    """Override a trained classification that mistakes a MEMBER for a SIGNER.
+
+    Step 5.5 of training asks a model to map each placeholder to a slot, and it
+    labelled member-IDENTITY placeholders as people who sign:
+
+        corporate shareholder_name  ->  kind=signatory, of=document_company
+        individual shareholder_name ->  kind=signatory, of=document_company
+
+    `of=document_company` with kind=signatory routes the slot to
+    choose_director against the DOCUMENT's own company, so the picker offered
+    that company's DIRECTORS in answer to "who is the shareholder" — a category
+    error. Measured on CM FOODS, whose sole member is the company CITY MART
+    HOLDING: the picker offered CM FOODS' three directors, so no director of
+    CITY MART could be chosen at all, and the representative fell back to a
+    default. Same shape on COMMERCE ACE, where a DIRECTOR was offered to sign as
+    a MEMBER.
+
+    21 slots across 9 of the 15 templates carry a wrong label. This is the
+    fourth place stored data has told the agent something untrue — after the
+    system prompt, intents.json and the skill bodies — and like those it is
+    invisible to any source search.
+
+    The correction is in code rather than only in a migration because
+    re-training rewrites these mappings from the same prompt that produced them,
+    and a re-train is already required to repopulate legal_references. A
+    migration would be undone by it; this will not be.
+
+    Deliberately narrow: only a placeholder the pattern table reads as a member
+    is touched, and only when training did NOT already give it a member kind. So
+    the `attendee` labels on the minutes templates are left exactly as they are
+    — attendee is the right word for a member present at a meeting, and it is
+    suppressed identically.
+    """
+    if not placeholder:
+        return slot
+    kind = str(slot.get("kind") or "")
+    if kind in _MEMBER_KINDS:
+        return slot
+    if _infer_kind(placeholder, "") != "shareholder_list":
+        return slot
+
+    corrected = dict(slot)
+    corrected["kind"] = "shareholder_list"
+    corrected["of"] = _infer_of(placeholder, "", "shareholder_list")
+    signature = (placeholder, kind)
+    if signature not in _CORRECTED_SLOTS:
+        _CORRECTED_SLOTS.add(signature)
+        _logger.warning(
+            "slot_resolver: %r is trained as kind=%r of=%r, but it names a MEMBER — "
+            "reading it as kind=%r of=%r. Re-train step 5.5 to fix it at source.",
+            placeholder, kind, slot.get("of"), corrected["kind"], corrected["of"])
+    return corrected
+
+
+def slot_of(entry: dict, placeholder: str = "") -> dict | None:
+    """The slot descriptor of an entry, or None when it is not a slot entry.
+
+    Pass `placeholder` wherever it is in scope: without it a trained
+    misclassification cannot be detected (see _correct_member_slot).
+    """
     if not isinstance(entry, dict) or entry.get("source") != "slot":
         return None
     slot = entry.get("slot")
-    return slot if isinstance(slot, dict) and slot.get("kind") else None
+    if not (isinstance(slot, dict) and slot.get("kind")):
+        return None
+    return _correct_member_slot(placeholder, slot)
 
 
 def _party(name: str, identifier: str = "", party_type: str = "individual", representative: str = "") -> dict:
@@ -636,6 +707,31 @@ def _corporate_shareholder_name(data: dict, company_name: str | None) -> str:
         name = link.get("name") or link.get("company_name") or ""
         if name:
             return str(name)
+
+    # `shareholder_links` is EMPTY on every company in the register — the DICA
+    # extraction never populated it — so the loop above has never once returned
+    # a name, and this function silently answered "" for every company.
+    #
+    # "" is the scope handed to the representative picker, i.e. "you work out
+    # whose board to offer", and it falls back to the DOCUMENT's company. For
+    # CM FOODS that meant offering CM FOODS' own three directors as candidates
+    # to sign on behalf of its member CITY MART HOLDING — so no director of the
+    # company actually signing could be chosen at all.
+    #
+    # The membership is not missing, only stored elsewhere: the `members` JSONB
+    # is what repeat_regions reads, and it carries type "Company" on real DICA
+    # data. Ask the same resolver the list expander uses, so the ask step and
+    # the fill step cannot disagree about who the corporate member is.
+    try:
+        for party in _member_family_parties(data or {}, company_name):
+            if not _party_is_corporate(party):
+                continue
+            name = (party.get("name") or party.get("full_name") or "").strip() \
+                if isinstance(party, dict) else str(party).strip()
+            if name:
+                return name
+    except Exception as e:  # noqa: BLE001
+        _logger.warning(f"corporate-member fallback failed for '{company_name}': {e}")
     return ""
 
 
@@ -723,7 +819,14 @@ def resolve_slot(
     document_id: Any = None,
     blank: str = "",
 ) -> Any:
-    """Resolve a slot entry, or None when the caller must ask."""
+    """Resolve a slot entry, or None when the caller must ask.
+
+    Reads the RAW trained slot on purpose. The member correction governs what is
+    ASKED, not how an already-chosen party renders: shareholder_list is a multi
+    kind, so applying it here would change a single chosen name into a joined
+    list, and it would also read the picker log under a different slot_kind than
+    the one the selection was recorded with.
+    """
     slot = slot_of(entry)
     if not slot:
         return None
@@ -743,7 +846,7 @@ def resolve_slot(
 
 def slot_request(placeholder: str, entry: dict, data: dict, company_name: str | None = None) -> dict | None:
     """Describe an unresolved slot as a picker call, not a prose question."""
-    slot = slot_of(entry)
+    slot = slot_of(entry, placeholder)
     if not slot:
         return None
 
@@ -938,7 +1041,7 @@ def collect_slot_requests(
     corp_needs_rep = any(not _corp_rep_resolvable(p, data) for p in corp_members)
 
     for placeholder, entry in mapping.items():
-        slot = slot_of(entry)
+        slot = slot_of(entry, placeholder)
         if not slot:
             continue
         if wanted and _norm(placeholder) not in wanted:
