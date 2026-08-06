@@ -323,7 +323,8 @@ Training runs as a **server-side background job** — survives the training moda
 - Login timing-attack protection (dummy bcrypt check when user not found)
 - Minimum password length: 10 characters
 - Strong secrets enforced on startup (blocks weak JWT/admin password)
-- Auth required on all endpoints: 15 previously unprotected endpoints now require JWT (template upload/delete, training, export, company CRUD)
+- Auth required on all `/api/*` endpoints: 15 previously unprotected endpoints now require JWT (template upload/delete, training, export, company CRUD)
+- ★★★ **"All endpoints" meant `/api/*` only — and that was not the whole app.** `AuthMiddleware` returns early on any path not starting with `/api/`, so the `app.mount("/documents", StaticFiles(...))` tree — generated documents, uploaded DICA filings, the firm's templates, cached previews — was served to anyone. Measured 2026-08-06: a real AGM minutes `.docx`, HTTP 200, 29,313 bytes, no token, on a container published to `0.0.0.0`. `PUBLIC_ROUTES` held a `"/documents/legal/"` entry commented "Static file serving" that **never executed** (that list is read after the `/api/` early return), so it looked like policy while doing nothing. Now gated by `STATIC_PROTECTED_ROOTS` **above** the early return, via `_request_jwt` → header / `?token=` / `ls_session` cookie. The cookie is why `<a href>` downloads still work with no link change. Guarded by U17, which asserts ORDER — a gate below the early return is as dead as the comment was
 - Preview PDF endpoints require JWT token query param
 - User role constraint: admin, user, editor
 
@@ -573,9 +574,20 @@ All database connections use centralized `get_db_conn()` from `db/connection.py`
 
 ## Current State (2026-08-06)
 
-**Correctness + safety release. COMMITTED** — 14 commits on `main`, working tree clean, baked into `scout:latest` on `http://localhost:8080`. Rollback tag `pre-cfos-improvements` at `9491f97`; images `scout:pre-phase1-…`, `pre-approval-…`, `pre-emailgate-…`, `pre-emptystream-20260806`. Nothing pushed — still no remote.
+**Correctness + safety release. COMMITTED** — 19 commits on `main`, working tree clean, baked into `scout:latest` on `http://localhost:8080`. Rollback tag `pre-cfos-improvements` at `9491f97`; images `scout:pre-phase1-…`, `pre-approval-…`, `pre-emailgate-…`, `pre-emptystream-…`, `pre-docauth-20260806`.
 
-Suite **137 PASS** (`docker exec scout-api python3 /app/tests/test_units.py`) · Layer 1 **25/25**.
+Suite **139 PASS** (`docker exec scout-api python3 /app/tests/test_units.py`) · Layer 1 **25/25**.
+
+### ★★★ THERE ARE REMOTES, AND THEY ARE PUBLIC
+
+Earlier notes in this file said "no remote configured". That is **false** and led to a wrong recommendation (that a history rewrite was cheap because nothing had been published). Two remotes exist and both are **public GitHub repositories**:
+
+- `origin` → `github.com/raahulgupta07/CHLLegalScout`
+- `airg` → `github.com/raahulgupta07/airg-legal-scout`
+
+Commit `be8d9e4` (2026-03-29) is an ancestor of `main` on **both**, and it contains the real client filing `DICA_Extract_ARCTIC_SUN_COMPANY_LIMITED_20260327.pdf` (44,587 bytes) plus 3 of the firm's `.docx` templates. Verified anonymously retrievable via the GitHub API on 2026-08-06 — roughly four months of exposure. `.env` was NEVER committed (only `example.env`; `/.env` is 404 on both), so no credentials are out.
+
+Local `main` is 94 commits ahead of `origin` and 87 ahead of `airg`, so none of the recent work is published. **A local history rewrite does not remove anything from GitHub.** Making the repos private (or deleting them) is the only step that stops access, and it is the owner's to take. `git push` is off the table until that is settled.
 
 ### ★★★ Indian company law was hardcoded in a Myanmar product
 
@@ -688,11 +700,11 @@ Layer 2/3 failures move between cases run to run; do not treat one as a regressi
 
 **Open work:**
 - `legal_references` is empty on all 15 templates by design. Re-run training to repopulate with Myanmar/DICA citations, then have the firm's lawyers confirm them.
-- The client's DICA extract PDF is still reachable in earlier git commits. No remote is configured, so a history rewrite is cheapest now. The 6.6MB client `.docx` commit (`544d23f`) can go in the same pass.
-- Document packs: new-company setup still asks *meeting date* five times.
-- A turn that ends empty with **zero** tool calls still shows a blank bubble — `didToolWork` is false, so neither the nudge nor the out-of-retries message fires. Not seen in practice; flagged rather than guarded blind.
-- The model still sometimes ends a turn without a closing sentence. Reasoning is visible so nothing is hidden, and finished documents now close themselves, but a prompt fix is outstanding.
-- `collect_slot_requests` suppression extended but not exhaustive.
+- ⚠️ **The client's DICA extract PDF is PUBLIC ON GITHUB** — see the remotes block in Current State. This supersedes the line below, which assumed no remote existed. A local rewrite fixes nothing until the repos are private or deleted. Original note: the client's DICA extract PDF is still reachable in earlier git commits. No remote is configured, so a history rewrite is cheapest now. The 6.6MB client `.docx` commit (`544d23f`) can go in the same pass.
+- Document packs: new-company setup still asks *meeting date* once per template. **Mitigated, not fixed** (2026-08-06) — the `ask_questions` continue-instruction now tells the model its answers stay valid for the rest of the conversation. Nothing on the server remembers a non-person answer: `smart_doc` recomputes `missing_user_fields` per document from the company record alone, and `party_selections` covers PERSON slots only. A real fix needs a conversation-scoped answer store.
+- ~~A turn that ends empty with zero tool calls shows a blank bubble~~ **FIXED 2026-08-06** — told, never nudged (a nudge starts a new run with a new id, which is how the same document got generated three times). Gated on `sawReasoningRef` so a reasoning-only turn cannot trip it. Written to BOTH error state and `content`, because `AgentMessageWrapper` mounts `AgentMessage` only `{hasContent && …}` — error state alone renders nothing at all.
+- ~~The model sometimes ends a turn without a closing sentence~~ **prompt fix landed 2026-08-06** — one rule, with a turn ending in a pause (`ask_questions` / picker) as the single explicit exception so cards do not get redundant prose above them. Still worth watching in practice.
+- `collect_slot_requests`: the corporate-representative suppression was **wrong in the unsafe direction** and is fixed (2026-08-06). It counted `repeat_regions`' last-resort fallback — the corporate member's FIRST DIRECTOR from the register — as "already answered", so a resolution could be signed by whoever the register listed first with no picker shown. Measured on CITY MART HOLDING COMPANY LIMITED: resolved to MIN MIN, ask skipped on all four *Shareholders Resolution In Writing* templates. Suppression now requires a representative somebody actually CHOSE. Other slot suppression still not exhaustive.
 - Python-repr parser retained in `useArtifact.ts` — required for sessions stored before tool results became JSON.
 - "Director and Shareholder Consent Form" template does not exist; tracker case B5 blocked.
 - The client's OneDrive master copy of *Notice of AGM to Shareholders* still lacks `[director_name]` — re-uploading reintroduces a fixed bug.
