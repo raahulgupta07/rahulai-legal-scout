@@ -501,6 +501,110 @@ def test_structural_contracts():
               bool(m) and counts_stream and increments and resets >= 2,
               f"didToolWork={expr.strip()[:60]!r} increments={increments} resets={resets}")
 
+        # An empty turn after a document tool must be closed from the tool
+        # result, not by buying a second inference.
+        #
+        # Measured over ten Layer 3 case-runs: generate_document ended the turn
+        # with zero characters of content EVERY time it was the last tool. The
+        # recovery was a synthetic "continue", which re-runs inference over the
+        # whole re-injected history to obtain a sentence the tool result already
+        # contains in its `message` field. Rendering that instead removes the
+        # round trip; the nudge stays as the fallback when the result cannot be
+        # read (pre-JSON Python-repr sessions).
+        builds = re.search(r"const\s+buildClosingFromTool\s*=", src) is not None
+        captured = "closingFromToolRef.current = closing" in src
+        # The nudge and the out-of-retries branch must BOTH stand down when a
+        # closing sentence exists, or the user gets the tool's sentence AND a
+        # duplicate run.
+        guards = len(re.findall(r"!closeFromTool\s*&&", src))
+        renders = re.search(r"if\s*\(closeFromTool\)\s*\{\s*//[^\n]*\n\s*updatedContent\s*=\s*closeFromTool", src) is not None
+        cleared = len(re.findall(r"closingFromToolRef\.current\s*=\s*''", src))
+        check("U11l", "an empty turn is closed from the document tool result",
+              builds and captured and guards >= 2 and renders and cleared >= 2,
+              f"builder={builds} captured={captured} guards={guards} "
+              f"renders={renders} resets={cleared}")
+
+    # No foreign-jurisdiction statute may be cited by this product.
+    #
+    # app/main.py:_get_legal_refs_from_name() hardcoded Indian company law —
+    # "Companies Act 2013 - Section 152", "SEBI (LODR) Regulations 2015" — and
+    # picked between them by substring match on the template FILENAME. It was
+    # used whenever AI analysis fell back, which was every time: on 2026-08-06
+    # all 15 templates in the database held exactly those strings. A Myanmar law
+    # firm was being told its AGM minutes were governed by India's securities
+    # regulator. The same code block set jurisdiction = "Myanmar".
+    #
+    # Matching is on the statute NAMES, not the year alone: "2013" appears in
+    # ordinary dates and would make this fire on anything.
+    FOREIGN_STATUTES = [
+        "Companies Act 2013",
+        "Companies Act, 2013",
+        "SEBI",
+        "Companies (Management and Administration) Rules",
+        "DIN Application",
+    ]
+    # Judge code, not commentary. A docstring naming "SEBI (LODR) Regulations
+    # 2015" to explain why it was deleted is documentation; the same text in a
+    # returned list is a citation shown to a lawyer. A line-based scan cannot
+    # tell those apart and fails on its own fix, so Python is read through `ast`
+    # and every docstring is skipped, while data files are scanned by line with
+    # their comment syntax honoured.
+    import ast as _ast
+
+    def _docstring_nodes(tree):
+        out = set()
+        for node in _ast.walk(tree):
+            if not isinstance(node, (_ast.Module, _ast.FunctionDef,
+                                     _ast.AsyncFunctionDef, _ast.ClassDef)):
+                continue
+            body = getattr(node, "body", None) or []
+            if (body and isinstance(body[0], _ast.Expr)
+                    and isinstance(body[0].value, _ast.Constant)
+                    and isinstance(body[0].value.value, str)):
+                out.add(id(body[0].value))
+        return out
+
+    roots = [p for p in (REPO / "app", REPO / "scout", REPO / "db") if p.exists()]
+    hits = []
+    for root in roots:
+        for path in root.rglob("*"):
+            if path.suffix not in (".py", ".sql", ".json") or not path.is_file():
+                continue
+            try:
+                text = path.read_text(errors="replace")
+            except OSError:
+                continue
+            if path.suffix == ".py":
+                try:
+                    tree = _ast.parse(text)
+                except SyntaxError:
+                    continue
+                skip = _docstring_nodes(tree)
+                for node in _ast.walk(tree):
+                    if (not isinstance(node, _ast.Constant)
+                            or not isinstance(node.value, str)
+                            or id(node) in skip):
+                        continue
+                    for statute in FOREIGN_STATUTES:
+                        if statute in node.value:
+                            hits.append(
+                                f"{path.relative_to(REPO)}:{node.lineno} "
+                                f"{node.value[:60]!r}"
+                            )
+                continue
+            # .sql / .json — the migration that removes these has to name them.
+            if path.name.startswith("migration_018"):
+                continue
+            for lineno, line in enumerate(text.splitlines(), 1):
+                stripped = line.strip()
+                if stripped.startswith("--"):
+                    continue
+                for statute in FOREIGN_STATUTES:
+                    if statute in line:
+                        hits.append(f"{path.relative_to(REPO)}:{lineno} {stripped[:60]}")
+    check("U12", "no foreign-jurisdiction statute is cited as Myanmar law",
+          not hits, "; ".join(hits[:4]) if hits else "")
+
 
 def main():
     for fn in (

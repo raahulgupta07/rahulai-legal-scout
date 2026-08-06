@@ -73,6 +73,86 @@ const isRealContent = (c: unknown): c is string =>
  */
 const MAX_CONSECUTIVE_NUDGES = 3
 
+/**
+ * Tools that can END a turn on their own.
+ *
+ * The bar is not "the result reads well in English" — it is "there is nothing
+ * left for the agent to do". `preview_doc` and `prepare_document` are excluded
+ * deliberately: both are followed by an `ask_questions` approval card, and
+ * closing the turn on their text would leave the user holding a preview with no
+ * way to approve it. A stalled turn there still has work outstanding, so the
+ * nudge is the correct recovery.
+ */
+const CLOSABLE_DOC_TOOLS = new Set([
+  'generate_document',
+  'generate_dica_extract'
+])
+
+/**
+ * Build the closing sentence a silent turn should have written.
+ *
+ * Measured over ten Layer 3 case-runs: `generate_document` ended the turn with
+ * zero characters of content EVERY time it was the last tool, producing only
+ * 225-530 characters of invisible reasoning. The old recovery was to nudge the
+ * run with a synthetic "continue", which costs a second full inference and
+ * re-injects the entire history to obtain a sentence the tool result already
+ * contains.
+ *
+ * Returns '' when the result cannot be read, which leaves the nudge path in
+ * place as the fallback it always was.
+ */
+const buildClosingFromTool = (toolName: string, rawResult: unknown): string => {
+  if (!CLOSABLE_DOC_TOOLS.has(toolName)) return ''
+
+  let result: Record<string, unknown>
+  try {
+    result =
+      typeof rawResult === 'string'
+        ? JSON.parse(rawResult)
+        : (rawResult as Record<string, unknown>)
+  } catch {
+    // Sessions written before tool results became JSON hold Python repr, which
+    // JSON.parse cannot read. Nudging is the right answer there.
+    return ''
+  }
+  if (!result || typeof result !== 'object') return ''
+
+  const message = typeof result.message === 'string' ? result.message.trim() : ''
+  if (!message) return ''
+
+  // A generated document has a file to link. The link is what the user came
+  // for, and the markdown form is what the panel and the chat both understand.
+  const fileName = typeof result.file_name === 'string' ? result.file_name : ''
+  const downloadUrl =
+    typeof result.download_url === 'string' ? result.download_url : ''
+
+  const summary = result.validation_summary as
+    | { total_placeholders?: number; filled_from_data?: number }
+    | undefined
+  const filled = summary?.filled_from_data
+  const total = summary?.total_placeholders
+  const fillNote =
+    typeof filled === 'number' && typeof total === 'number' && total > 0
+      ? ` ${filled} of ${total} fields were filled from the register.`
+      : ''
+
+  // A finished document is the ONLY thing that may close a turn.
+  //
+  // The same tool also returns success:false with a readable message — "Choose
+  // the resigning director for CITY HOLDINGS LIMITED before generating this
+  // document." Rendering that as the final word would be worse than the blank
+  // bubble it replaces: the user would be told to choose someone while the
+  // picker card that does the choosing was never rendered, because the model
+  // stopped before calling the lookup tool. That turn has work outstanding, so
+  // it belongs to the nudge.
+  if (result.success !== true || !fileName || !downloadUrl) return ''
+
+  return `${message}.${fillNote}\n\n[${fileName}](${downloadUrl})`.replace(
+    '..',
+    '.'
+  )
+}
+
 const useAIChatStreamHandler = () => {
   const setMessages = useStore((state) => state.setMessages)
   const { addMessage, focusChatInput } = useChatActions()
@@ -196,6 +276,10 @@ const useAIChatStreamHandler = () => {
   // answer. Counting the ToolCallStarted events, the way tests/tracker_layer3.py
   // does, is what makes the guard see the tool work at all.
   const toolsThisRunRef = useRef(0)
+  // The closing sentence for the most recent document tool, kept so a turn
+  // that ends empty can be finished from the tool result rather than by paying
+  // for a second inference. Reset with toolsThisRunRef at each stream start.
+  const closingFromToolRef = useRef('')
 
   const cancelReveal = useCallback(() => {
     if (revealRafRef.current != null) {
@@ -359,6 +443,18 @@ const useAIChatStreamHandler = () => {
           chunk.event === RunEvent.TeamToolCallStarted
         ) {
           toolsThisRunRef.current += 1
+        } else {
+          // Completed: the result is here, so the closing sentence can be
+          // written now, while `chunk.tool` still carries it. RunCompleted
+          // carries no tools at all.
+          const finished = chunk.tool
+          if (finished?.tool_name) {
+            const closing = buildClosingFromTool(
+              finished.tool_name,
+              finished.result
+            )
+            if (closing) closingFromToolRef.current = closing
+          }
         }
         setMessages((prevMessages) => {
           const newMessages = [...prevMessages]
@@ -576,7 +672,20 @@ const useAIChatStreamHandler = () => {
           consecutiveNudgesRef.current = 0
         }
 
+        // The turn ended empty but a document tool already said, in English,
+        // what happened. Write that instead of nudging: the nudge costs a whole
+        // second inference with the full history re-injected, to recover a
+        // sentence that is sitting in the tool result.
+        const closeFromTool =
+          finishedEmpty && didToolWork && !waitingOnUser
+            ? closingFromToolRef.current
+            : ''
+        if (closeFromTool) {
+          consecutiveNudgesRef.current = 0
+        }
+
         if (
+          !closeFromTool &&
           finishedEmpty &&
           didToolWork &&
           !waitingOnUser &&
@@ -590,6 +699,7 @@ const useAIChatStreamHandler = () => {
             useStore.getState().setPendingMessage('continue')
           }, 400)
         } else if (
+          !closeFromTool &&
           finishedEmpty &&
           didToolWork &&
           !waitingOnUser &&
@@ -607,7 +717,10 @@ const useAIChatStreamHandler = () => {
           const newMessages = prevMessages.map((message, index) => {
             if (index === prevMessages.length - 1 && message.role === 'agent') {
               let updatedContent: string
-              if (typeof chunk.content === 'string') {
+              if (closeFromTool) {
+                // The model wrote nothing; the tool result speaks for it.
+                updatedContent = closeFromTool
+              } else if (typeof chunk.content === 'string') {
                 updatedContent = chunk.content
               } else {
                 try {
@@ -772,6 +885,7 @@ const useAIChatStreamHandler = () => {
       lastContentRef.current = ''
       streamTargetRef.current = ''
       toolsThisRunRef.current = 0
+      closingFromToolRef.current = ''
       cancelReveal()
       const controller = new AbortController()
       setAbortController(controller)
@@ -915,6 +1029,7 @@ const useAIChatStreamHandler = () => {
       lastContentRef.current = ''
       streamTargetRef.current = ''
       toolsThisRunRef.current = 0
+      closingFromToolRef.current = ''
       cancelReveal()
       newSessionIdRef.current = sessionId
       sessionLabelRef.current = (formData.get('message') as string) ?? ''
