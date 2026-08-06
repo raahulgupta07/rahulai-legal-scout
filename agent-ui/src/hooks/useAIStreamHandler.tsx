@@ -74,6 +74,26 @@ const isRealContent = (c: unknown): c is string =>
 const MAX_CONSECUTIVE_NUDGES = 3
 
 /**
+ * Shown when a turn produced literally nothing: no content, no reasoning, no
+ * tool call. Every other recovery here has something to work with — a tool
+ * result to render, or work in progress worth nudging. This one has nothing,
+ * so the only honest move is to say so.
+ *
+ * It is deliberately NOT nudged. A turn that called no tools has produced
+ * nothing to continue from, and each nudge starts a NEW run with a NEW id,
+ * which is exactly how the old unbounded guard generated the same document
+ * three times.
+ */
+const EMPTY_TURN_NOTICE =
+  'The assistant returned an empty reply — no text, no reasoning and no tool ' +
+  'calls. Nothing was generated or saved. Send the message again, or rephrase it.'
+
+/** Shown when the nudge budget above is spent and the turn is still silent. */
+const STALLED_TURN_NOTICE =
+  'The assistant stopped without replying. Send "continue" to resume, or ' +
+  'rephrase the request.'
+
+/**
  * Tools that can END a turn on their own, with nothing owed to the user.
  */
 const CLOSABLE_DOC_TOOLS = new Set([
@@ -379,6 +399,17 @@ const useAIChatStreamHandler = () => {
   // answer. Counting the ToolCallStarted events, the way tests/tracker_layer3.py
   // does, is what makes the guard see the tool work at all.
   const toolsThisRunRef = useRef(0)
+  // Reasoning captured during THIS stream, for display.
+  //
+  // gemini-3.6-flash cannot disable reasoning and streams it SEPARATELY from
+  // content, so a turn of pure reasoning and zero content is a legitimate,
+  // non-empty turn — that is what the long-standing "silent stop" actually
+  // was. The empty-turn notice below must never fire on one, so it needs to
+  // know whether reasoning arrived. Set only where the reasoning is written
+  // onto the message (RunContent) and only when it has non-whitespace text:
+  // reasoning that is never stored renders nothing, and a turn that renders
+  // nothing is the case the notice exists for.
+  const sawReasoningRef = useRef(false)
   // The closing sentence for the most recent document tool, kept so a turn
   // that ends empty can be finished from the tool result rather than by paying
   // for a second inference. Reset with toolsThisRunRef at each stream start.
@@ -580,6 +611,7 @@ const useAIChatStreamHandler = () => {
         // exactly like a stall. Stored here, shown collapsed by the message.
         if (typeof chunk.reasoning_content === 'string' && chunk.reasoning_content) {
           const reasoning = chunk.reasoning_content
+          if (reasoning.trim() !== '') sawReasoningRef.current = true
           setMessages((prev) => {
             const next = [...prev]
             const last = next[next.length - 1]
@@ -768,6 +800,10 @@ const useAIChatStreamHandler = () => {
         const waitingOnUser = (chunk.tools ?? []).some(
           (t) => t.requires_user_input === true
         )
+        // What the user must be TOLD about this turn, if anything. Set by the
+        // two dead-end branches below; rendered as the message content and as
+        // the streaming-error text.
+        let failureNotice: string | null = null
         // Real output means the agent is talking again — forget the run of
         // stalls. A `]}` tail is not the agent talking: it must leave the
         // counter alone so the retry budget survives.
@@ -811,10 +847,32 @@ const useAIChatStreamHandler = () => {
           // Out of retries. Say so, rather than leaving a blank bubble that is
           // indistinguishable from a finished answer.
           consecutiveNudgesRef.current = 0
-          setStreamingErrorMessage(
-            'The assistant stopped without replying. Send "continue" to resume, ' +
-              'or rephrase the request.'
-          )
+          failureNotice = STALLED_TURN_NOTICE
+        }
+
+        // Nothing at all: no content, no reasoning, no tool call. Both branches
+        // above are gated on didToolWork, so this turn falls through every
+        // recovery in the hook and paints an empty bubble the user cannot tell
+        // from a finished answer. It is told, not nudged — see
+        // EMPTY_TURN_NOTICE.
+        if (
+          finishedEmpty &&
+          !didToolWork &&
+          !waitingOnUser &&
+          !sawReasoningRef.current
+        ) {
+          failureNotice = EMPTY_TURN_NOTICE
+        }
+
+        // Both notices need BOTH halves. `streamingError` is what makes the
+        // transcript read it as a failure with a Retry button instead of as
+        // something the assistant said — but AgentMessageWrapper mounts
+        // AgentMessage only `{hasContent && ...}` (Messages.tsx), so a turn
+        // whose content stays empty renders nothing whatsoever, error state and
+        // all. That is why the notice is also written into `content` below.
+        if (failureNotice) {
+          updateMessagesWithErrorState()
+          setStreamingErrorMessage(failureNotice)
         }
         setMessages((prevMessages) => {
           const newMessages = prevMessages.map((message, index) => {
@@ -823,6 +881,10 @@ const useAIChatStreamHandler = () => {
               if (closeFromTool) {
                 // The model wrote nothing; the tool result speaks for it.
                 updatedContent = closeFromTool.content
+              } else if (failureNotice) {
+                // Mutually exclusive with closeFromTool: that path renders a
+                // finished document, this one renders a dead end.
+                updatedContent = failureNotice
               } else if (typeof chunk.content === 'string') {
                 updatedContent = chunk.content
               } else {
@@ -991,6 +1053,7 @@ const useAIChatStreamHandler = () => {
       lastContentRef.current = ''
       streamTargetRef.current = ''
       toolsThisRunRef.current = 0
+      sawReasoningRef.current = false
       closingFromToolRef.current = null
       cancelReveal()
       const controller = new AbortController()
@@ -1135,6 +1198,7 @@ const useAIChatStreamHandler = () => {
       lastContentRef.current = ''
       streamTargetRef.current = ''
       toolsThisRunRef.current = 0
+      sawReasoningRef.current = false
       closingFromToolRef.current = null
       cancelReveal()
       newSessionIdRef.current = sessionId
