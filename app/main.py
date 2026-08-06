@@ -3700,7 +3700,15 @@ Provide your response in this EXACT JSON format (no other text):
                         if not category or category == "General Document":
                             category = _infer_category(template_name)
                     except Exception as parse_err:
-                        print(f"JSON parse error: {parse_err}")
+                        # Not cosmetic: every field below is now a guess from the
+                        # template NAME rather than its content. All 15 templates
+                        # shipped that way without anyone noticing, because this
+                        # was a bare print to stdout.
+                        logging.getLogger("legalscout").error(
+                            "TEMPLATE ANALYSIS FELL BACK for %r — the AI response "
+                            "did not parse (%s). Every analysed field below is "
+                            "inferred from the filename.", template_name, parse_err
+                        )
                         category = _infer_category(template_name)
                         keywords = _generate_keywords(template_name, fields)
                         purpose = "Legal document template"
@@ -3730,6 +3738,11 @@ Provide your response in this EXACT JSON format (no other text):
                         estimated_time = _get_estimated_time(len(fields))
                 else:
                     # No JSON found, use template name inference
+                    logging.getLogger("legalscout").error(
+                        "TEMPLATE ANALYSIS FELL BACK for %r — no JSON object in the "
+                        "AI response. Every analysed field below is inferred from "
+                        "the filename.", template_name
+                    )
                     category = _infer_category(template_name)
                     keywords = ", ".join(fields[:10]) if fields else ""
                     purpose = "Legal document template"
@@ -3760,9 +3773,11 @@ Provide your response in this EXACT JSON format (no other text):
                     print(f"  FALLBACK SET: category={category}, purpose={purpose[:30]}")
 
             except Exception as e:
-                print(f"AI analysis error for {template_name}: {e}")
-                print(f"Fields: {fields}")
-                print(f"Template name: {template_name}")
+                logging.getLogger("legalscout").error(
+                    "TEMPLATE ANALYSIS FAILED for %r (%s: %s) — falling back to "
+                    "filename inference for every analysed field. Fields seen: %s",
+                    template_name, type(e).__name__, e, fields
+                )
                 category = _infer_category(template_name)
                 keywords = ", ".join(fields[:10]) if fields else ""
                 purpose = "Legal document template"
@@ -4145,24 +4160,57 @@ def _get_signatures_from_name(template_name: str) -> list:
 
 
 def _get_legal_refs_from_name(template_name: str) -> list:
-    """Extract legal references based on template name."""
-    name_lower = template_name.lower()
-    refs = []
+    """Return NO legal references. A citation may never be guessed from a filename.
 
-    if "agm" in name_lower or "egm" in name_lower:
-        refs = ["Companies Act 2013 - Section 100-104", "Articles of Association", "SEBI Regulations"]
-    elif "director" in name_lower:
-        refs = ["Companies Act 2013 - Section 152", "SEBI (LODR) Regulations 2015"]
-    elif "shareholder" in name_lower:
-        refs = ["Companies Act 2013 - Section 189", "Companies (Management and Administration) Rules 2014"]
-    else:
-        refs = ["Companies Act 2013"]
+    This function used to return hardcoded citations picked by substring match on
+    the template name:
 
-    return refs
+        "agm"/"egm"   -> Companies Act 2013 - Section 100-104, SEBI Regulations
+        "director"    -> Companies Act 2013 - Section 152, SEBI (LODR) 2015
+        "shareholder" -> Companies Act 2013 - Section 189, Companies
+                         (Management and Administration) Rules 2014
+        otherwise     -> Companies Act 2013
+
+    Every one of those is INDIAN law. The Companies Act 2013 is India's, and SEBI
+    is India's securities regulator, which has no jurisdiction in Myanmar. This
+    product drafts under the Myanmar Companies Law 2017 and files with DICA — the
+    same code block that produced these strings set `jurisdiction = "Myanmar"`
+    three lines later.
+
+    It was not a stray default. Measured 2026-08-06, all 15 templates in the
+    database held exactly these strings, which means the AI extraction step never
+    once succeeded and this fallback supplied the citation every single time,
+    silently. A lawyer reading the template register was told their Myanmar AGM
+    minutes were governed by SEBI (LODR) Regulations 2015.
+
+    The correct references come from the deep-training legal step, which already
+    prompts for Myanmar Companies Law sections and DICA filing obligations. When
+    that step fails the honest answer is nothing at all: an empty citation list
+    is visibly incomplete, while a plausible wrong one is not. Guessing Myanmar
+    section numbers here to replace the Indian ones would repeat the bug in a
+    harder-to-spot form.
+    """
+    logging.getLogger("legalscout").error(
+        "LEGAL REFERENCE EXTRACTION FAILED for %r — storing no citations. "
+        "The deep-training legal step (Myanmar Companies Law 2017 / DICA) did not "
+        "produce a result, and citations are never inferred from a template name. "
+        "Re-run training for this template; until then its legal_references stays "
+        "empty by design.",
+        template_name,
+    )
+    return []
 
 
 def _get_related_from_name(template_name: str) -> list:
-    """Extract related documents based on template name."""
+    """Suggest related documents from the template name.
+
+    These are workflow hints, not citations, so a wrong one is a bad suggestion
+    rather than bad law — which is why this fallback survives while the legal
+    reference one does not. One entry did carry the same Indian assumption:
+    "DIN Application", a Director Identification Number filing under Indian
+    company law. Myanmar directors are recorded with DICA, so the DICA director
+    particulars filing takes its place.
+    """
     name_lower = template_name.lower()
     docs = []
 
@@ -4171,7 +4219,7 @@ def _get_related_from_name(template_name: str) -> list:
     elif "egm" in name_lower:
         docs = ["Notice of EGM", "Proxy Form", "Board Resolution"]
     elif "director consent" in name_lower:
-        docs = ["Board Resolution", "Appointment Letter", "DIN Application"]
+        docs = ["Board Resolution", "Appointment Letter", "DICA Director Particulars Filing"]
     elif "shareholder" in name_lower:
         docs = ["Share Certificate", "Register of Members", "Board Resolution"]
     else:
