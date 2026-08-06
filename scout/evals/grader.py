@@ -21,8 +21,9 @@ class GradeResult:
 
 
 GRADER_SYSTEM_PROMPT = """\
-You are an evaluation grader for a document search agent. Your job is to determine if the agent's
-response correctly answers the user's question based on enterprise documents.
+You are an evaluation grader for Legal Scout, an agent that answers Myanmar corporate-law questions
+and generates legal documents from Word templates and a company register. Your job is to determine
+if the agent's response correctly answers the user's question.
 
 You will be given:
 1. The user's question
