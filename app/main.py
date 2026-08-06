@@ -28,6 +28,7 @@ from app.model_config import (get_model, get_all_models, save_models, clear_cach
 from db.connection import get_db_conn
 from app.s3_storage import s3_upload_async, s3_delete_async, s3_download, s3_test, s3_sync_all, s3_list, is_s3_enabled, save_s3_config, _get_s3_config, _local_to_s3_key
 from app.slot_contract import normalise_mapping, sanitise_mapping
+from app import training_jobs
 
 # ---------------------------------------------------------------------------
 # Production-safe host configuration
@@ -175,9 +176,20 @@ app.add_middleware(SecurityHeadersMiddleware)
 # ---------------------------------------------------------------------------
 # Startup: Auto-sync templates + cleanup stale knowledge
 # ---------------------------------------------------------------------------
-@app.on_event("startup")  # TODO: migrate to lifespan context manager when upgrading to FastAPI 1.0
-async def startup_sync():
-    """On startup: validate config, sync templates, clean KB, rebuild agent knowledge."""
+def startup_sync():
+    """Validate config, ensure directories, rebuild agent knowledge, resume training.
+
+    ★ NOT registered with @app.on_event("startup"). `app = agent_os.get_app()`
+    installs an Agno lifespan, and Starlette SILENTLY IGNORES every on_event
+    handler once a lifespan exists — so this function never ran. Directory
+    creation, the migration check, the template-knowledge and legal-skills
+    refreshes and the training-job resume were all dead on arrival.
+
+    It is invoked at module-import time instead (bottom of this file), the same
+    pattern training_jobs.py already uses for its watchdog. The body is
+    deliberately synchronous and every step is individually guarded, because an
+    import-time failure here would take the whole app down.
+    """
     # Ensure all required document directories exist (defense-in-depth beyond Docker)
     import logging as _log
     for _d in [
@@ -234,6 +246,14 @@ async def startup_sync():
         _refresh_legal_skills()
     except Exception as e:
         print(f"[STARTUP] Legal skills refresh warning: {e}")
+
+    # Resume any server-side template-training job left running/queued.
+    # The advisory lock inside training_jobs guarantees only ONE of the 2
+    # uvicorn workers actually runs it; never block startup on failure.
+    try:
+        training_jobs.resume_incomplete()
+    except Exception as e:
+        print(f"[STARTUP] Training-job resume warning: {e}")
 
 
 def _refresh_agent_knowledge():
@@ -313,7 +333,14 @@ Return ONLY a JSON array of 3 short follow-up questions (no markdown, no explana
         resp = httpx.post(
             f"{OPENROUTER_BASE_URL}/chat/completions",
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json={"model": get_model("chat"), "messages": [{"role": "user", "content": prompt}], "max_tokens": 200, "temperature": 0.3},
+            # max_tokens must cover the model's REASONING as well as its answer.
+            # gemini-3.6-flash cannot have reasoning disabled ("Reasoning is
+            # mandatory for this endpoint"), and `exclude` only hides it from the
+            # response — the tokens are still spent. At 200 the reasoning ate the
+            # whole budget, content came back as `[\n  "`, json.loads threw, and
+            # the bare except below returned an empty list. Follow-ups were dead
+            # from the moment the chat model changed, silently. 800 leaves room.
+            json={"model": get_model("chat"), "messages": [{"role": "user", "content": prompt}], "max_tokens": 800, "temperature": 0.3},
             timeout=10,
         )
         resp.raise_for_status()
@@ -321,7 +348,11 @@ Return ONLY a JSON array of 3 short follow-up questions (no markdown, no explana
         content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
         suggestions = json.loads(content.strip().strip("`").strip())
         return {"suggestions": suggestions[:3] if isinstance(suggestions, list) else []}
-    except Exception:
+    except Exception as e:
+        # Logged, not swallowed: this returning [] silently is exactly why the
+        # follow-ups sat on their hardcoded fallback for so long without anyone
+        # being able to see why.
+        logger.warning(f"[FOLLOWUPS] suggestion generation failed: {e}")
         return {"suggestions": []}
 
 
@@ -578,6 +609,7 @@ from fastapi import Request, HTTPException
 # Routes that don't require authentication
 PUBLIC_ROUTES = [
     "/api/auth/login",
+    "/api/auth/logout",      # clearing your own cookie needs no token
     "/api/version",
     # PDF preview endpoints validate token via query param themselves
     "/api/templates/preview-pdf/",
@@ -588,13 +620,72 @@ PUBLIC_ROUTES = [
     "/chat",
     "/dashboard",
     "/documents/legal/",     # Static file serving
-    "/agents/",              # AgentOS endpoints (have their own auth)
-    "/sessions/",
-    "/teams/",
-    "/workflows/",
-    "/eval-runs",
-    "/schedules/",
 ]
+
+# ---------------------------------------------------------------------------
+# AgentOS (Agno-mounted) route protection
+# ---------------------------------------------------------------------------
+# `app = agent_os.get_app()` mounts Agno's own routers at the ROOT of the app
+# (/agents, /sessions, /teams, ...). They never went behind the JWT check —
+# PUBLIC_ROUTES used to list them with the comment "have their own auth". They
+# do not. `GET /sessions` returned every session id, title and timestamp with
+# no Authorization header, and a session title is the user's literal first
+# message, i.e. real company and director names.
+#
+# Matched on the FIRST PATH SEGMENT only, so a frontend route that merely
+# starts with the same letters can never be caught by accident. Everything not
+# listed here keeps its current behaviour — in particular `/`, `/health`,
+# `/login`, `/admin/*`, `/_next/*`, `/favicon.ico` and every other static
+# frontend path fall through untouched, so a logged-out user can still render
+# the login page.
+AGENTOS_PROTECTED_ROOTS = frozenset({
+    "agents",               # incl. /agents/{id}/runs and .../continue (chat + HITL resume)
+    "sessions",             # leaks chat history — the reason this block exists
+    "teams",
+    "workflows",
+    "eval-runs",
+    "evals",
+    "schedules",
+    "approvals",
+    "components",
+    "config",               # AgentOS config dump (agent ids, models, db ids)
+    "registry",
+    "models",
+    "memories",
+    "memory",
+    "memory_topics",
+    "optimize-memories",
+    "user_memory_stats",
+    "traces",               # full agent run traces incl. tool arguments
+    "trace_session_stats",
+    "knowledge",            # bare /knowledge is Agno's; ours is /api/knowledge/*
+    "databases",            # /databases/{id}/migrate
+    "metrics",              # Agno usage metrics + the Prometheus scrape endpoint
+})
+
+# The JWT is also issued as an HttpOnly cookie at login so that same-origin
+# requests carry it automatically. See `auth_login` for why.
+SESSION_COOKIE_NAME = "ls_session"
+
+
+def _request_jwt(request: Request) -> str:
+    """The raw JWT off a request, from any transport the app already uses.
+
+    Header first (what /api/* uses), then `?token=` (what the PDF/DOCX viewers
+    use because an <img>/canvas fetch cannot set headers), then the session
+    cookie (set at login, sent automatically on same-origin requests).
+    """
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Bearer "):
+        return auth[7:].strip()
+    qp = request.query_params.get("token", "")
+    if qp:
+        return qp.strip()
+    try:
+        return (request.cookies.get(SESSION_COOKIE_NAME) or "").strip()
+    except Exception:
+        return ""
+
 
 class AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
@@ -604,6 +695,20 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
         # Skip for OPTIONS (CORS preflight)
         if request.method == "OPTIONS":
+            return await call_next(request)
+
+        # AgentOS routes mounted at the app root — gate on the first segment.
+        root = path.split("/", 2)[1] if path.startswith("/") else ""
+        if root in AGENTOS_PROTECTED_ROOTS:
+            token = _request_jwt(request)
+            if not token:
+                return JSONResponse(status_code=401, content={"detail": "Authentication required"})
+            try:
+                jwt.decode(token, getenv("JWT_SECRET_KEY", ""), algorithms=["HS256"])
+            except jwt.ExpiredSignatureError:
+                return JSONResponse(status_code=401, content={"detail": "Token expired. Please login again."})
+            except jwt.InvalidTokenError:
+                return JSONResponse(status_code=401, content={"detail": "Invalid token."})
             return await call_next(request)
 
         # Skip for non-API routes
@@ -988,6 +1093,16 @@ async def admin_test_email(request: Request):
         return {"success": False, "error": str(e)}
 
 
+def _login_failure(error: str) -> JSONResponse:
+    """Failed login → HTTP 401, same JSON body shape as before.
+
+    Every credential path returns 401 with the same status, including a
+    disabled account: a distinct 403 there would re-open the account
+    enumeration the dummy-bcrypt check below exists to prevent.
+    """
+    return JSONResponse(status_code=401, content={"success": False, "error": error})
+
+
 @app.post("/api/auth/login")
 async def auth_login(request: Request):
     try:
@@ -995,11 +1110,11 @@ async def auth_login(request: Request):
         email = sanitize_string(body.get("email", ""), 255).lower()
         password = body.get("password", "")
         if not email or not password:
-            return {"success": False, "error": "Email and password required"}
+            return _login_failure("Email and password required")
         if not validate_email(email):
-            return {"success": False, "error": "Invalid email format"}
+            return _login_failure("Invalid email format")
         if len(password) < 3 or len(password) > 200:
-            return {"success": False, "error": "Invalid password"}
+            return _login_failure("Invalid password")
 
         import os
         from psycopg import connect
@@ -1012,18 +1127,51 @@ async def auth_login(request: Request):
         if not row:
             # Always hash-check to prevent timing attack (email enumeration)
             bcrypt.checkpw(b"dummy", b"$2b$12$LJ3m4ys3Gn/0FWpfKMNbIeDjQJz2GnnKTjPVTqJjLYKmWFjGEQ3ya")
-            return {"success": False, "error": "Invalid email or password"}
+            return _login_failure("Invalid email or password")
         if not row[5]:
-            return {"success": False, "error": "Account is disabled"}
+            return _login_failure("Account is disabled")
         if not verify_password(password, row[2]):
-            return {"success": False, "error": "Invalid email or password"}
+            return _login_failure("Invalid email or password")
 
         token = create_token(row[0], row[1], row[4])
         log_activity(row[0], row[1], "login", "User logged in", request.client.host if request.client else "")
 
-        return {"success": True, "token": token, "user": {"id": row[0], "email": row[1], "name": row[3], "role": row[4]}}
+        resp = JSONResponse(content={
+            "success": True,
+            "token": token,
+            "user": {"id": row[0], "email": row[1], "name": row[3], "role": row[4]},
+        })
+        # Same token, second transport. The frontend keeps reading `token` out
+        # of this body into localStorage exactly as before; the cookie exists
+        # because the AgentOS routes (/agents, /sessions, ...) are called by
+        # code that does not attach an Authorization header. Same-origin fetch
+        # sends this automatically, so gating those routes does not black out
+        # chat. SameSite=Lax blocks the cross-site CSRF vector.
+        resp.set_cookie(
+            SESSION_COOKIE_NAME,
+            token,
+            max_age=JWT_EXPIRY_HOURS * 3600,
+            httponly=True,
+            samesite="lax",
+            secure=(request.url.scheme == "https"),
+            path="/",
+        )
+        return resp
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        log_error("auth_login", e)
+        return JSONResponse(status_code=500, content={"success": False, "error": "Login failed"})
+
+
+@app.post("/api/auth/logout")
+async def auth_logout():
+    """Clears the session cookie.
+
+    The frontend sign-out handlers currently only wipe localStorage, so until
+    they call this the cookie outlives sign-out (up to JWT_EXPIRY_HOURS).
+    """
+    resp = JSONResponse(content={"success": True})
+    resp.delete_cookie(SESSION_COOKIE_NAME, path="/")
+    return resp
 
 
 @app.get("/api/auth/me")
@@ -1165,7 +1313,8 @@ PEOPLE_PAGE_LIMIT = 100
 # Column list shared by every people SELECT so row unpacking stays in sync.
 _PEOPLE_COLS = (
     "id, full_name, nationality, nrc_passport_no, gender, date_of_birth, "
-    "phone, email, residential_address, created_by_email, created_at, updated_at"
+    "phone, email, residential_address, business_occupation, country_of_residence, "
+    "father_name, created_by_email, created_at, updated_at"
 )
 
 
@@ -1200,9 +1349,12 @@ def _person_row(r):
         "phone": r[6],
         "email": r[7],
         "residential_address": r[8],
-        "created_by_email": r[9],
-        "created_at": r[10].isoformat() if r[10] else None,
-        "updated_at": r[11].isoformat() if r[11] else None,
+        "business_occupation": r[9],
+        "country_of_residence": r[10],
+        "father_name": r[11],
+        "created_by_email": r[12],
+        "created_at": r[13].isoformat() if r[13] else None,
+        "updated_at": r[14].isoformat() if r[14] else None,
     }
 
 
@@ -1306,8 +1458,9 @@ async def create_person(request: Request):
         cur = conn.cursor()
         cur.execute(
             "INSERT INTO people (full_name, nationality, nrc_passport_no, gender, "
-            "date_of_birth, phone, email, residential_address, created_by_email) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+            "date_of_birth, phone, email, residential_address, business_occupation, "
+            "country_of_residence, father_name, created_by_email) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
             (
                 full_name,
                 _nullable_text(body.get("nationality"), 100),
@@ -1317,6 +1470,9 @@ async def create_person(request: Request):
                 _nullable_text(body.get("phone"), 50),
                 email,
                 _nullable_text(body.get("residential_address"), 2000),
+                _nullable_text(body.get("business_occupation"), 255),
+                _nullable_text(body.get("country_of_residence"), 100),
+                _nullable_text(body.get("father_name"), 500),
                 admin.get("email"),
             ),
         )
@@ -1334,6 +1490,41 @@ async def create_person(request: Request):
             logger.info(f"[PEOPLE] duplicate NRC rejected: {e}")
             raise HTTPException(status_code=409, detail="A person with this NRC/passport number already exists")
         logger.warning(f"[PEOPLE] create failed: {e}")
+        return {"success": False, "error": str(e)}
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.post("/api/people/sync-from-companies")
+async def sync_people_from_companies(request: Request):
+    """Backfill the People register from every stored company. Admin only.
+
+    New companies sync themselves on save; this replays the projection over
+    records that predate the sync (or that were edited straight in the DB).
+    Idempotent — existing person fields are filled, never overwritten.
+    Declared above /api/people/{person_id} so the literal path wins the match.
+    """
+    admin = require_admin(request)
+    conn = None
+    try:
+        from scout.tools.people_sync import sync_all_companies
+
+        conn = get_db_conn()
+        totals = sync_all_companies(conn, admin.get("email"))
+        conn.commit()
+
+        log_activity(
+            admin.get("user_id"), admin.get("email"), "sync_people",
+            f"Synced People from {totals['companies']} companies: "
+            f"{totals['created']} created, {totals['updated']} updated, {totals['linked']} linked",
+            "",
+        )
+        return {"success": True, **totals}
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        logger.warning(f"[PEOPLE] sync from companies failed: {e}")
         return {"success": False, "error": str(e)}
     finally:
         if conn:
@@ -1396,6 +1587,8 @@ async def update_person(person_id: int, request: Request):
                 return {"success": False, "error": "Invalid email format"}
             updates.append("email = %s"); params.append(email)
         for field, max_len in (("nationality", 100), ("nrc_passport_no", 100),
+                               ("business_occupation", 255), ("country_of_residence", 100),
+                               ("father_name", 500),
                                ("gender", 20), ("phone", 50),
                                ("residential_address", 2000)):
             if field in body:
@@ -1828,6 +2021,23 @@ async def set_template_category(request: dict):
         json.dump(data, f, indent=2)
 
     return {"success": True}
+
+
+@app.post("/api/templates/group")
+async def set_template_group_endpoint(request: Request, body: dict):
+    """Tag a template with a group (e.g. 'new_company_setup') or clear it with null.
+
+    Lets admins add newly uploaded consent forms to the new-company setup set, so
+    the agent offers only setup documents when a new company is being set up.
+    """
+    require_admin(request)
+    name = body.get("template_name") or body.get("name")
+    group = body.get("template_group") or body.get("group")  # None/"" clears the tag
+    if not name:
+        return {"success": False, "error": "Template name required"}
+    from scout.tools.template_analyzer import set_template_group
+    ok = set_template_group(name, group or None)
+    return {"success": ok, "template_name": name, "template_group": group or None}
 
 
 @app.post("/api/templates/upload")
@@ -3004,7 +3214,7 @@ Return ONLY a JSON object where keys are placeholder names."""
             # ── Deep Training Steps 9–15 ──────────────────────────
 
             _openrouter_key = getenv("OPENROUTER_API_KEY", "")
-            _training_model = get_model("training") if 'get_model' in dir() else "google/gemini-3-flash-preview"
+            _training_model = get_model("training") if 'get_model' in dir() else "google/gemini-3.6-flash"
 
             # Step 9: Field-level deep analysis
             yield _sse("field_deep_start", "Analyzing each field in detail...")
@@ -3371,15 +3581,15 @@ Provide your response in this EXACT JSON format (no other text):
     "sections": ["Main section 1", "Main section 2", "Main section 3"],
     "signatures": [{{"name": "Who signs", "role": "Their role"}}],
     "deadlines": ["Any deadlines or timelines"],
-    "legal_references": ["Companies Act 2016 Section X", "SSM Regulations"],
+    "legal_references": ["Myanmar Companies Law 2017 Section X", "DICA directives"],
     "related_documents": ["Other documents typically needed/related"],
     "tips": ["Tip 1", "Tip 2", "Tip 3"],
     "prerequisites": ["What is needed before starting this document"],
     "filing_deadline": "Any filing deadline (e.g., Within 30 days)",
-    "fees": "Any fees (e.g., RM 30 to SSM)",
+    "fees": "Any fees (e.g., DICA online filing fee)",
     "validity_period": "How long is this document valid?",
     "approval_chain": ["Who approves this in order"],
-    "required_attachments": ["Required attachments like NRIC, Proof"],
+    "required_attachments": ["Required attachments like NRC copy, proof of address"],
     "common_mistakes": ["Common mistake 1", "Common mistake 2"],
     "jurisdiction": "Country (e.g., Myanmar)",
     "industry_tags": ["Industry 1", "Industry 2"],
@@ -3707,7 +3917,22 @@ Provide your response in this EXACT JSON format (no other text):
                     _ccur.execute("SELECT fields FROM templates WHERE name = %s", (template_file.name,))
                     _crow = _ccur.fetchone()
                     _cfields_raw = _crow[0] if _crow else {}
-                    _cfields = _cfields_raw if isinstance(_cfields_raw, list) else list(_cfields_raw.keys()) if isinstance(_cfields_raw, dict) else []
+                    # The raw placeholder list to classify. When `fields` is
+                    # already a classification dict (a re-train), its KEYS are
+                    # bucket names, NOT placeholders — feeding list(dict.keys())
+                    # to classify_template_fields corrupts the result. Recover the
+                    # real placeholders from the prior classification's own lists.
+                    if isinstance(_cfields_raw, list):
+                        _cfields = _cfields_raw
+                    elif isinstance(_cfields_raw, dict):
+                        if _cfields_raw.get("all_fields"):
+                            _cfields = _cfields_raw["all_fields"]
+                        elif _cfields_raw.get("db_fields") is not None or _cfields_raw.get("user_input_fields") is not None:
+                            _cfields = list(_cfields_raw.get("db_fields") or []) + list(_cfields_raw.get("user_input_fields") or [])
+                        else:
+                            _cfields = list(_cfields_raw.keys())
+                    else:
+                        _cfields = []
                     _classification = classify_template_fields(_ccontent, _cfields)
                     if _classification:
                         _ccur.execute("UPDATE templates SET fields = %s WHERE name = %s",
@@ -3758,26 +3983,111 @@ Provide your response in this EXACT JSON format (no other text):
         return {"success": False, "error": str(e)}
 
 
-def _infer_category(template_name: str) -> str:
-    """Infer document category from template name."""
-    name_lower = template_name.lower()
+# ---------------------------------------------------------------------------
+# Server-side background template training (survives tab/browser close)
+# ---------------------------------------------------------------------------
+@app.post("/api/knowledge/train-start")
+async def train_start(request: Request):
+    """Start (or attach to) a server-side training job.
 
-    if "agm" in name_lower or "annual general meeting" in name_lower:
-        return "AGM - Annual General Meeting"
-    elif "egm" in name_lower or "extraordinary" in name_lower:
-        return "EGM - Extraordinary General Meeting"
-    elif "director consent" in name_lower or "director appointment" in name_lower:
-        if "group" in name_lower:
-            return "Director Consent - Group Company"
-        return "Director Consent - Non-Group"
-    elif "shareholder" in name_lower:
-        return "Shareholder Resolution"
-    elif "minutes" in name_lower:
+    Body may contain `{"templates": [...]}` (explicit names) or
+    `{"retrain_all": bool}`. With neither, only UNTRAINED templates are queued.
+    Returns the job (with id + queue), or the already-active job, or
+    `{"status": "nothing_to_train"}` when the queue would be empty.
+    """
+    require_admin(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    body = body or {}
+
+    names = body.get("templates")
+    if not names:
+        retrain_all = bool(body.get("retrain_all"))
+        from scout.tools.template_analyzer import get_db_connection as _gdb
+        conn = _gdb()
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT name, ai_trained FROM templates ORDER BY name")
+            rows = cur.fetchall()
+        finally:
+            conn.close()
+        if retrain_all:
+            names = [r[0] for r in rows]
+        else:
+            names = [r[0] for r in rows if not r[1]]
+
+    names = [n for n in (names or []) if n]
+    if not names:
+        return {"status": "nothing_to_train"}
+
+    return training_jobs.start_job(names)
+
+
+@app.get("/api/knowledge/train-job")
+async def train_job(request: Request):
+    """Return the most recent training job (logs capped to last 200)."""
+    require_admin(request)
+    job = training_jobs.get_latest_job()
+    if job is None:
+        return {"status": "idle"}
+    return job
+
+
+@app.post("/api/knowledge/train-cancel")
+async def train_cancel(request: Request):
+    """Flag the active training job cancelled (worker stops between templates)."""
+    require_admin(request)
+    return {"cancelled": training_jobs.cancel_active()}
+
+
+def _infer_category(template_name: str) -> str:
+    """Group a template by the TASK it serves, from its name.
+
+    Grouped by task, not document form, because that is how the question
+    arrives — "appoint a director", "hold the AGM" — not "give me a resolution".
+
+    Two bugs lived here. `"group" in name` also matched "Non-Group", filing the
+    non-group consent under Group Company; and a broad "shareholder" test above
+    the specific ones swept unrelated templates into "Shareholder Resolution".
+    Specific tests now come first, and "non-group" is checked before "group".
+    """
+    n = template_name.lower()
+
+    appointing = "appointment" in n or "appoint" in n
+    resigning = "resignation" in n or "resign" in n
+
+    # Consents are named by who gives them, so test those before the generic
+    # appointment/resignation words that also appear in their titles.
+    if "corporate shareholder consent" in n:
+        return "Shareholder Consent - Corporate"
+    if "individual shareholder consent" in n:
+        return "Shareholder Consent - Individual"
+    if "director consent" in n:
+        # "Non-Group" contains "group" — always test the negative first.
+        if "non-group" in n:
+            return "Director Appointment - Non-Group"
+        if "group" in n:
+            return "Director Appointment - Group Company"
+        return "Director Appointment"
+
+    if resigning and appointing:
+        return "Director Resignation & Appointment"
+    if resigning:
+        return "Director Resignation"
+    if appointing:
+        return "Director Appointment"
+
+    if "annual general meeting" in n or "agm" in n:
+        return "Annual General Meeting"
+    if "extraordinary" in n or "egm" in n:
+        return "Extraordinary General Meeting"
+    if "minutes" in n:
         return "Meeting Minutes"
-    elif "consent" in name_lower:
-        return "Consent Form"
-    else:
-        return "General Document"
+    if "resolution" in n:
+        return "Resolution"
+    return "Other"
 
 
 def _get_sections_from_name(template_name: str) -> list:
@@ -4043,11 +4353,15 @@ from db.connection import get_db_conn
 # ---------------------------------------------------------------------------
 @app.get("/api/dashboard/data")
 async def get_dashboard_data():
-    """Get all data for dashboard visualization."""
-    cache_key = "dashboard_data"
-    cached = cached_response(cache_key)
-    if cached:
-        return cached
+    """Get all data for dashboard visualization.
+
+    NOT cached. `_cache` lives in process memory and we run `--workers 2`, so a
+    mutation handled by one worker cannot invalidate the other worker's copy.
+    That produced a deleted company that kept reappearing in the admin list for
+    up to CACHE_TTL_SECONDS — and a second delete attempt on the phantom row
+    then failed with "Company not found". An admin list of a few dozen rows is
+    cheap to read; correctness wins over the 30-second saving.
+    """
     try:
         from scout.tools.template_analyzer import list_analyzed_templates
 
@@ -4166,9 +4480,7 @@ async def get_dashboard_data():
         # Sort by date and limit to 50
         documents = sorted(documents, key=lambda x: x.get("created_at", ""), reverse=True)[:50]
 
-        result = {"companies": companies, "templates": templates, "documents": documents}
-        set_cache(cache_key, result)
-        return result
+        return {"companies": companies, "templates": templates, "documents": documents}
     except Exception as e:
         return {"error": str(e)}
 
@@ -4689,6 +5001,50 @@ async def bulk_generate_documents(request: Request):
 
 
 
+@app.get("/api/documents/fill-view")
+async def documents_fill_view(request: Request, template: str, company: str):
+    """Render a template as fill-in blocks: the whole document with each blank
+    shown in place and click-to-pick candidates from the registers."""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    try:
+        from scout.tools.fill_view import build_fill_view
+        return build_fill_view(template, company, "/documents")
+    except Exception as e:
+        logging.getLogger("legalscout").warning(f"fill-view failed: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/documents/fill-generate")
+async def documents_fill_generate(request: Request):
+    """Generate a document straight from the fill-in view's chosen values."""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    try:
+        body = await request.json()
+        template_name = (body.get("template") or body.get("template_name") or "").strip()
+        company_name = (body.get("company") or body.get("company_name") or "").strip()
+        custom_data = body.get("custom_data") or {}
+        if not template_name or not company_name:
+            return {"success": False, "error": "template and company are required"}
+        if not isinstance(custom_data, dict):
+            return {"success": False, "error": "custom_data must be an object"}
+        from scout.tools.smart_doc import create_smart_document_tool
+        tools = create_smart_document_tool("/documents", host=API_HOST)
+        result = tools["generate_document"](
+            template_name=template_name, company_name=company_name, custom_data=custom_data
+        )
+        if result.get("success"):
+            log_activity(user.get("user_id"), user.get("email"), "fill_generate",
+                         f"Generated {template_name} for {company_name} from fill-view", "")
+        return result
+    except Exception as e:
+        logging.getLogger("legalscout").warning(f"fill-generate failed: {e}")
+        return {"success": False, "error": str(e)}
+
+
 @app.post("/api/dashboard/add/company")
 async def add_dashboard_company(request: Request):
     """Add a single company manually."""
@@ -4750,6 +5106,17 @@ async def delete_dashboard_company(request: Request, company_name: str):
             try: cur.execute("DELETE FROM scout_knowledge_contents WHERE content ILIKE %s", (f"%{company_name}%",))
             except Exception: pass
 
+        # The company_people links went with the row (ON DELETE CASCADE), which
+        # can leave sync-created people on the register belonging to nobody.
+        pruned = 0
+        if deleted:
+            try:
+                from scout.tools.people_sync import prune_orphan_people
+
+                pruned = prune_orphan_people(conn)["removed"]
+            except Exception as e:
+                logger.warning(f"[COMPANY DELETE] orphan prune skipped: {e}")
+
         cur.close()
         conn.close()
 
@@ -4761,8 +5128,22 @@ async def delete_dashboard_company(request: Request, company_name: str):
                 from scout.agent import _build_template_knowledge
                 _refresh_agent_knowledge()
             except Exception: pass
-            return {"success": True, "message": f"Company '{company_name}' deleted. Re-training recommended.", "training_invalidated": True}
-        return {"success": False, "error": "Company not found"}
+            msg = f"Company '{company_name}' deleted. Re-training recommended."
+            if pruned:
+                msg = (f"Company '{company_name}' deleted, plus {pruned} "
+                       f"{'person' if pruned == 1 else 'people'} left with no company. "
+                       "Re-training recommended.")
+            return {"success": True, "message": msg, "training_invalidated": True,
+                    "people_removed": pruned}
+
+        # Already gone — treat as done rather than an error. Deleting a row that
+        # does not exist has the outcome the caller asked for, and reporting it
+        # as a failure only confuses an admin whose list was a moment stale.
+        return {
+            "success": True,
+            "message": f"Company '{company_name}' is no longer on file.",
+            "already_absent": True,
+        }
     except Exception as e:
         return {"success": False, "error": str(e)}
 
@@ -4996,11 +5377,15 @@ async def get_document_pdf(request: Request, doc_name: str, token: str = ""):
     doc_name = urllib.parse.unquote(doc_name)
     output_base = Path("/documents/legal/output").resolve()
     docx_path = (output_base / doc_name).resolve()
+    # Error responses MUST carry the right HTTP status, not a 200 with a JSON
+    # body. The FE PdfViewer hands the response bytes straight to pdf.js; a
+    # 200+JSON error was parsed as a PDF and surfaced the cryptic "Invalid PDF
+    # structure" instead of a real reason. 4xx/5xx let the viewer show the cause.
     if not str(docx_path).startswith(str(output_base)):
-        return {"error": "Invalid filename"}
+        return JSONResponse(status_code=400, content={"error": "Invalid filename"})
 
     if not docx_path.exists():
-        return {"error": "Document not found"}
+        return JSONResponse(status_code=404, content={"error": "Source document file not found"})
 
     pdf_dir = Path("/documents/legal/previews")
     pdf_dir.mkdir(parents=True, exist_ok=True)
@@ -5013,14 +5398,14 @@ async def get_document_pdf(request: Request, doc_name: str, token: str = ""):
                 ["libreoffice", "--headless", "--convert-to", "pdf", "--outdir", str(pdf_dir), str(docx_path)],
                 capture_output=True, text=True, timeout=30
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logging.getLogger("legalscout").warning(f"preview-pdf convert failed for '{doc_name}': {e}")
 
     if pdf_path.exists():
         from starlette.responses import Response
         pdf_bytes = pdf_path.read_bytes()
         return Response(content=pdf_bytes, media_type="application/pdf", headers={"Content-Disposition": "inline"})
-    return {"error": "PDF not available"}
+    return JSONResponse(status_code=502, content={"error": "Preview could not be generated for this document"})
 
 
 # ---------------------------------------------------------------------------
@@ -5130,7 +5515,18 @@ async def extract_company_from_pdf_stream(file: UploadFile = File(...)):
                 "directors[] items: {name, type, date_of_appointment, date_of_birth, nationality, "
                 "nrc_passport, gender, business_occupation}. members[] items: {type, name, "
                 "registration_number, jurisdiction, share_quantity, amount_paid, amount_unpaid, "
-                "share_class}. filing_history[]: {form_type, effective_date}. "
+                "share_class, nrc_passport, date_of_birth, gender, nationality}. "
+                # The member table lists individuals with their full identity, exactly
+                # like the officer table. Omitting those fields threw that identity
+                # away and made the same human look like two people on the register.
+                "For members[]: set type to \"Individual\" for a natural person or "
+                "\"Company\" for a body corporate — never leave type null. A member "
+                "with a registration_number is a Company; a member with an "
+                "N.R.C./Passport, date of birth or gender is an Individual, and you "
+                "MUST copy those identity fields across exactly as printed. "
+                "Copy every N.R.C./Passport character-for-character; do not correct "
+                "or normalise the township code even if it looks misspelt. "
+                "filing_history[]: {form_type, effective_date}. "
                 "Use null when unknown. Set company_name_myanmar to null. No markdown.\n\n"
                 f"DOCUMENT:\n{full_text[:8000]}"
             )
@@ -5313,7 +5709,9 @@ async def test_model(request: Request):
             res = httpx.post(
                 f"{OPENROUTER_BASE_URL}/chat/completions",
                 headers={"Authorization": f"Bearer {openrouter_key}", "Content-Type": "application/json"},
-                json={"model": model, "messages": [{"role": "user", "content": "Say OK"}], "max_tokens": 20, "temperature": 0},
+                # 20 tokens cannot cover a reasoning model's thinking, so the
+                # probe reported "(empty response)" for a perfectly healthy model.
+                json={"model": model, "messages": [{"role": "user", "content": "Say OK"}], "max_tokens": 400, "temperature": 0},
                 timeout=15,
             )
             res.raise_for_status()
@@ -6116,25 +6514,51 @@ if __name__ == "__main__":
 
 
 def _get_when_to_use(template_name: str) -> str:
-    """Generate when_to_use description based on template name."""
-    name_lower = template_name.lower()
+    """Describe when a template applies, from its name.
 
-    if "director consent" in name_lower:
-        if "group" in name_lower:
+    Order matters and used to be wrong: a broad "shareholder" test sat above the
+    specific ones, so nine differently-purposed templates all collapsed onto
+    "When shareholders need to pass a resolution on specific matters" — useless
+    for choosing between them. The distinguishing words (resignation,
+    appointment, consent, notice) are now tested first, broad words last.
+    """
+    n = template_name.lower()
+
+    appointing = "appointment" in n or "appoint" in n
+    resigning = "resignation" in n or "resign" in n
+
+    if "corporate shareholder consent" in n:
+        return ("When a corporate shareholder must consent — signed by that shareholder "
+                "company's OWN directors, never the new company's board")
+    if "individual shareholder consent" in n:
+        return "When an individual shareholder must give written consent in their own name"
+    if "director consent" in n:
+        if "non-group" in n:
+            return "When appointing a director who is NOT from a group company"
+        if "group" in n:
             return "When appointing a director from a group company to the board"
-        return "When appointing a new director who is not from a group company"
-    elif "agm" in name_lower:
-        return "For annual general meetings required by company law - to record meeting proceedings and resolutions"
-    elif "egm" in name_lower:
-        return "For extraordinary general meetings to address urgent matters requiring shareholder approval"
-    elif "shareholder" in name_lower:
-        return "When shareholders need to pass a resolution on specific matters"
-    elif "minutes" in name_lower:
-        return "To record proceedings and decisions of board or general meetings"
-    elif "resolution" in name_lower:
-        return "When formal decisions need to be documented and approved"
-    else:
-        return "When this type of legal document is required for company compliance"
+        return "When a proposed director consents to act"
+    if "resignation letter" in n:
+        return "When a director resigns — their own letter of resignation to the company"
+    if "notice of calling" in n:
+        return "To call an annual general meeting — the internal notice convening it"
+    if "notice of annual general meeting" in n:
+        return "To give shareholders formal notice that an AGM will be held"
+    if resigning and appointing:
+        return "When a director resigns and a replacement is appointed in the same decision"
+    if resigning:
+        return "When a director resigns and the company records the departure"
+    if appointing:
+        return "When a new director is appointed to the board"
+    if "annual general meeting" in n or "agm" in n:
+        return "For the annual general meeting — recording its proceedings and resolutions"
+    if "egm" in n:
+        return "For an extraordinary general meeting on urgent matters needing shareholder approval"
+    if "minutes" in n:
+        return "To record the proceedings and decisions of a meeting"
+    if "resolution" in n:
+        return "When a formal decision must be documented and approved"
+    return ""
 
 
 def _get_how_to_use(template_name: str) -> list:
@@ -6143,11 +6567,11 @@ def _get_how_to_use(template_name: str) -> list:
 
     if "director consent" in name_lower:
         return [
-            "Fill in director's personal details (name, NRIC, address)",
+            "Fill in director's personal details (name, NRC / passport, address)",
             "Enter appointment terms and position",
             "Obtain director's signature",
             "Get witness signature (Company Secretary)",
-            "Submit to Companies Commission (SSM) within 30 days",
+            "File the change of director with DICA via the MyCO online registry within 21 days",
         ]
     elif "agm" in name_lower or "egm" in name_lower:
         return [
@@ -6156,7 +6580,7 @@ def _get_how_to_use(template_name: str) -> list:
             "Conduct meeting with quorum present",
             "Record minutes of proceedings",
             "Document resolutions passed",
-            "File any required forms with SSM",
+            "File any required forms with DICA via MyCO",
         ]
     elif "shareholder" in name_lower:
         return [
@@ -6191,7 +6615,7 @@ def _get_prerequisites(template_name: str) -> list:
 
     if "director consent" in name_lower:
         return [
-            "Director's NRIC (certified true copy)",
+            "Director's NRC / passport (certified true copy)",
             "Address proof (utility bill < 3 months)",
             "Passport (for foreign director)",
             "Board resolution appointing director",
@@ -6215,13 +6639,13 @@ def _get_filing_deadline(template_name: str) -> str:
     name_lower = template_name.lower()
 
     if "director consent" in name_lower:
-        return "Within 30 days of appointment (Section 152, Companies Act 2016)"
+        return "Within 21 days of appointment (Myanmar Companies Law 2017, filed with DICA)"
     elif "agm" in name_lower:
         return "Within 30 days of meeting date"
     elif "form 24" in name_lower or "notice of appointment" in name_lower:
         return "Within 30 days of appointment"
     elif "form 8" in name_lower or "annual return" in name_lower:
-        return "Within 60 days of AGM"
+        return "Annual return filed with DICA within 2 months of the AGM"
     else:
         return "As required by law or company policy"
 
@@ -6231,11 +6655,11 @@ def _get_fees(template_name: str) -> str:
     name_lower = template_name.lower()
 
     if "director consent" in name_lower:
-        return "RM 30 (Standard), RM 50 (Late filing)"
+        return "DICA online filing fee; late filing attracts a penalty"
     elif "agm" in name_lower:
         return "No fee for meeting, may have costs for venue/catering"
     elif "form" in name_lower:
-        return "RM 30 per form (SSM fees)"
+        return "DICA online filing fee per form"
     else:
         return "Varies by document type and filing authority"
 
@@ -6261,7 +6685,7 @@ def _get_approval_chain(template_name: str) -> list:
     name_lower = template_name.lower()
 
     if "director consent" in name_lower:
-        return ["Board of Directors (approval)", "Company Secretary (witness)", "SSM (filing)"]
+        return ["Board of Directors (approval)", "Company Secretary (witness)", "DICA (filing)"]
     elif "agm" in name_lower or "shareholder" in name_lower:
         return [
             "Board of Directors (convene meeting)",
@@ -6280,7 +6704,7 @@ def _get_required_attachments(template_name: str) -> list:
     name_lower = template_name.lower()
 
     if "director consent" in name_lower:
-        return ["NRIC copy (certified true copy)", "Address proof", "Passport (foreigners)", "Photo"]
+        return ["NRC copy (certified true copy)", "Address proof", "Passport (foreign directors)", "Photo"]
     elif "agm" in name_lower:
         return ["Financial Statements", "Auditor's Report", "Notice of AGM", "Proxy Forms"]
     elif "shareholder" in name_lower:
@@ -6295,8 +6719,8 @@ def _get_common_mistakes(template_name: str) -> list:
 
     if "director consent" in name_lower:
         return [
-            "Missing certified NRIC copy",
-            "Address doesn't match NRIC",
+            "Missing certified NRC / passport copy",
+            "Address doesn't match the NRC",
             "Signature not witnessed by valid witness",
             "Filed after 30-day deadline",
             "Missing board resolution",
@@ -6656,3 +7080,14 @@ async def send_document_email(request: Request):
         except Exception as e2:
             logging.getLogger("legalscout").warning(f"Email error log failed: {e2}")
         return {"success": False, "error": str(e)}
+
+
+# ---------------------------------------------------------------------------
+# Import-time startup
+# ---------------------------------------------------------------------------
+# Runs here rather than via @app.on_event("startup"), which Starlette ignores
+# because AgentOS installs a lifespan. See startup_sync's docstring.
+try:
+    startup_sync()
+except Exception as _startup_err:  # noqa: BLE001 — never take the app down on boot
+    logger.error(f"[STARTUP] startup_sync failed: {_startup_err}")

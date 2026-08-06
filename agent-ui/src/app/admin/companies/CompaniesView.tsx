@@ -31,6 +31,7 @@ import {
   EmptyState,
   IconButton,
   LoadingScreen,
+  Modal,
   Notice,
   Page,
   PageBody,
@@ -47,6 +48,7 @@ import {
   formatNumber,
 } from "@/components/ui/kit"
 import { TrainingLogPanel, type TrainingLogLine } from "../components/TrainingLogPanel"
+import { useImportQueue } from "@/hooks/useImportQueue"
 
 // ─── Types ──────────────────────────────────────────────────────────
 interface Director {
@@ -172,7 +174,9 @@ function CompanyForm({ data, onChange, onSave, onCancel, saving, extracting, isE
 
   return (
     <>
-      <div className="flex-1 overflow-y-auto px-4">
+      {/* Own scroller — `overscroll-contain` keeps a wheel that bottoms out here
+          from continuing into the PDF pane beside it. */}
+      <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-4">
         <Section title="Company information" icon={<Building className="w-3.5 h-3.5" />}>
           <div className={grid}>
             <TextField label="Company name (English)" value={data.company_name_english} onChange={(v) => set("company_name_english", v)} required wide />
@@ -446,15 +450,20 @@ function SplitView({
         title={isEdit ? "Edit company" : "New company from PDF"}
         meta={formData.company_name_english ? <Badge tone="accent">{formData.company_name_english}</Badge> : undefined}
       />
-      <div className="flex flex-1 min-h-0 split-view-mobile">
-        <div className="w-1/2 flex flex-col min-w-0 border-r border-[var(--border)]">
+      {/* Two independent scroll panes. `overflow-hidden` here stops the split
+          from growing past the tab band, which is what used to make the whole
+          screen scroll as one — dragging the form along with the PDF. */}
+      <div className="flex flex-1 min-h-0 overflow-hidden split-view-mobile">
+        <div className="w-1/2 flex flex-col min-w-0 min-h-0 border-r border-[var(--border)]">
           <div className="flex items-center justify-between gap-2 px-4 py-2 border-b border-[var(--border)] bg-[var(--surface)]">
             <span className="flex items-center gap-2 text-[length:var(--text-xs)] font-medium text-[var(--text-secondary)]">
               <FileText className="w-3.5 h-3.5" /> Source PDF
             </span>
+            {/* Extraction now starts by itself on upload; this is the retry
+                path for when it failed and the form is still empty. */}
             {pdfReady && onExtract && !extracting && !formData.company_name_english && (
-              <Button variant="primary" size="sm" onClick={onExtract} icon={<Sparkles className="w-3.5 h-3.5" />}>
-                Extract with AI
+              <Button variant="primary" size="sm" onClick={() => onExtract()} icon={<Sparkles className="w-3.5 h-3.5" />}>
+                Retry extraction
               </Button>
             )}
             {extracting && (
@@ -464,7 +473,11 @@ function SplitView({
             )}
           </div>
           {pdfUrl ? (
-            <DocViewer url={`${process.env.NEXT_PUBLIC_API_URL || ""}${pdfUrl}`} className="flex-1 w-full" />
+            // PdfViewer renders at natural height by design, so the scroller
+            // lives here — the PDF scrolls without touching the form.
+            <div className="flex-1 min-h-0 overflow-auto overscroll-contain">
+              <DocViewer url={`${process.env.NEXT_PUBLIC_API_URL || ""}${pdfUrl}`} className="w-full" />
+            </div>
           ) : (
             <div className="flex-1 grid place-items-center text-[length:var(--text-sm)] text-[var(--text-muted)]">
               No PDF available
@@ -472,7 +485,7 @@ function SplitView({
           )}
         </div>
 
-        <div className="w-1/2 flex flex-col min-w-0">
+        <div className="w-1/2 flex flex-col min-w-0 min-h-0">
           <div className="flex items-center gap-2 px-4 py-2 border-b border-[var(--border)] bg-[var(--surface)]">
             <Building className="w-3.5 h-3.5 text-[var(--text-muted)]" />
             <span className="text-[length:var(--text-xs)] font-medium text-[var(--text-secondary)]">
@@ -489,9 +502,12 @@ function SplitView({
             <div className="flex-1 grid place-items-center px-8">
               <div className="text-center max-w-xs">
                 <Sparkles className="w-8 h-8 mx-auto text-[var(--text-muted)]" />
-                <p className="mt-3 text-[length:var(--text-sm)] font-medium text-[var(--text)]">PDF uploaded</p>
+                <p className="mt-3 text-[length:var(--text-sm)] font-medium text-[var(--text)]">
+                  Nothing was read from this PDF
+                </p>
                 <p className="mt-1 text-[length:var(--text-xs)] text-[var(--text-muted)]">
-                  Choose <strong>Extract with AI</strong> above the PDF to read it and fill this form automatically.
+                  Extraction runs automatically on upload. Use <strong>Retry extraction</strong> above the PDF, or go
+                  back and enter the company by hand.
                 </p>
               </div>
             </div>
@@ -507,50 +523,105 @@ function SplitView({
   )
 }
 
-// ─── Create choice ──────────────────────────────────────────────────
-function CreateChoiceScreen({ onUploadPdf, onManual, onCancel }: {
-  onUploadPdf: () => void; onManual: () => void; onCancel: () => void
+// ─── Create choice (modal body) ─────────────────────────────────────
+/**
+ * Body content for the "Create a company" modal. The Modal primitive owns the
+ * title bar, ✕ and backdrop — this renders only the dropzone + manual link.
+ */
+function CreateCompanyChoice({ onFiles, onBrowse, onManual }: {
+  onFiles: (files: File[]) => void; onBrowse: () => void; onManual: () => void
 }) {
-  const tile =
-    "flex-1 flex flex-col items-start gap-3 p-5 text-left bg-[var(--surface)] border border-[var(--border)] rounded-[var(--radius-sm)] hover:border-[var(--border-strong)] transition-colors"
-  return (
-    <Page>
-      <PageHeader
-        back={<IconButton aria-label="Back to companies" onClick={onCancel} icon={<ArrowLeft className="w-4 h-4" />} />}
-        title="Create a company"
-        description="Start from a DICA Company Extract, or enter the details by hand."
-      />
-      <PageBody>
-        <div className="flex flex-col sm:flex-row gap-3 max-w-3xl mx-auto mt-6">
-          <button onClick={onUploadPdf} className={cn(tile, focusRing)}>
-            <span className="w-9 h-9 grid place-items-center bg-[var(--bg-secondary)] border border-[var(--border)] rounded-[var(--radius-sm)]">
-              <FileUp className="w-4 h-4 text-[var(--text-secondary)]" />
-            </span>
-            <span>
-              <span className="flex items-center gap-2">
-                <span className="text-[length:var(--text-sm)] font-medium text-[var(--text)]">Upload DICA PDF</span>
-                <Badge tone="accent">Recommended</Badge>
-              </span>
-              <span className="block mt-1 text-[length:var(--text-xs)] text-[var(--text-muted)]">
-                AI reads the Company Extract and fills every field, including directors and members. You review before saving.
-              </span>
-            </span>
-          </button>
+  const [dragging, setDragging] = useState(false)
 
-          <button onClick={onManual} className={cn(tile, focusRing)}>
-            <span className="w-9 h-9 grid place-items-center bg-[var(--bg-secondary)] border border-[var(--border)] rounded-[var(--radius-sm)]">
-              <Pencil className="w-4 h-4 text-[var(--text-secondary)]" />
+  const isPdf = (f: File) =>
+    f.type === "application/pdf" || f.name.toLowerCase().endsWith(".pdf")
+
+  return (
+    <div className="space-y-4">
+      {/* PRIMARY: dropzone */}
+      <div
+        onDragOver={(e) => {
+          e.preventDefault()
+          setDragging(true)
+        }}
+        onDragLeave={() => setDragging(false)}
+        onDrop={(e) => {
+          e.preventDefault()
+          setDragging(false)
+          // Multi-file drop: everything that is a PDF goes into the import
+          // queue, and non-PDFs are reported once rather than per file.
+          const dropped = Array.from(e.dataTransfer.files || [])
+          if (dropped.length === 0) return
+          const pdfs = dropped.filter(isPdf)
+          const rejected = dropped.length - pdfs.length
+          if (rejected > 0) toast.error(`${rejected} file${rejected === 1 ? "" : "s"} skipped — PDFs only`)
+          if (pdfs.length > 0) onFiles(pdfs)
+        }}
+        className={cn(
+          "flex flex-col items-center gap-3 px-6 py-10 text-center rounded-[var(--radius-sm)]",
+          "border-2 border-dashed transition-colors"
+        )}
+        style={{
+          borderColor: dragging ? "var(--accent)" : "var(--border-strong)",
+          backgroundColor: dragging
+            ? "color-mix(in srgb, var(--accent) 8%, transparent)"
+            : "transparent",
+        }}
+      >
+        <span className="w-10 h-10 grid place-items-center bg-[var(--bg-secondary)] border border-[var(--border)] rounded-[var(--radius-sm)]">
+          <FileUp className="w-4 h-4 text-[var(--text-secondary)]" />
+        </span>
+        <span>
+          <span className="flex items-center justify-center gap-2">
+            <span className="text-[length:var(--text-sm)] font-medium text-[var(--text)]">
+              Drop DICA Company Extracts here
             </span>
-            <span>
-              <span className="text-[length:var(--text-sm)] font-medium text-[var(--text)]">Fill manually</span>
-              <span className="block mt-1 text-[length:var(--text-xs)] text-[var(--text-muted)]">
-                Enter company information by hand. Use this when you have no extract PDF to work from.
-              </span>
-            </span>
-          </button>
-        </div>
-      </PageBody>
-    </Page>
+            <Badge tone="accent">Recommended</Badge>
+          </span>
+          <span className="block mt-1 text-[length:var(--text-xs)] text-[var(--text-muted)]">
+            or{" "}
+            <button
+              type="button"
+              onClick={onBrowse}
+              className={cn(
+                "font-medium text-[var(--brand)] underline underline-offset-2 hover:opacity-80 transition-opacity rounded-[var(--radius-sm)]",
+                focusRing
+              )}
+            >
+              browse files
+            </button>
+          </span>
+        </span>
+        <span className="block max-w-sm text-[length:var(--text-xs)] text-[var(--text-muted)]">
+          Drop one or many. Each is read and saved automatically; anything ambiguous waits for you in
+          the import tray.
+        </span>
+        <span className="text-[length:var(--text-2xs)] uppercase tracking-[var(--tracking-tag)] text-[var(--text-muted)]">
+          PDF · English extract
+        </span>
+      </div>
+
+      {/* DIVIDER */}
+      <div className="flex items-center gap-3 text-[length:var(--text-2xs)] uppercase tracking-[var(--tracking-tag)] text-[var(--text-muted)]">
+        <span className="flex-1 h-px bg-[var(--border)]" />
+        or
+        <span className="flex-1 h-px bg-[var(--border)]" />
+      </div>
+
+      {/* SECONDARY: manual link */}
+      <div className="text-center">
+        <button
+          type="button"
+          onClick={onManual}
+          className={cn(
+            "text-[length:var(--text-sm)] text-[var(--text-secondary)] hover:text-[var(--text)] transition-colors rounded-[var(--radius-sm)] px-2 py-1",
+            focusRing
+          )}
+        >
+          Have no PDF? Fill in manually
+        </button>
+      </div>
+    </div>
   )
 }
 
@@ -580,6 +651,12 @@ export default function CompaniesView() {
   const [trainingLogs, setTrainingLogs] = useState<TrainingLogLine[]>([])
 
   const pdfInputRef = useRef<HTMLInputElement>(null)
+
+  // Bulk PDF import runs in the globally-mounted tray, not on this page, so it
+  // survives navigating away. `savedTick` fires whenever the queue writes a
+  // company, which is our cue to refresh the table underneath it.
+  const enqueueImport = useImportQueue((s) => s.enqueue)
+  const importSavedTick = useImportQueue((s) => s.savedTick)
   const abortControllerRef = useRef<AbortController | null>(null)
 
   useEffect(() => {
@@ -589,6 +666,13 @@ export default function CompaniesView() {
     return () => abortControllerRef.current?.abort()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // The import tray writes companies straight to the register; pull the table
+  // back into step each time it does. Skipped on first mount (tick 0).
+  useEffect(() => {
+    if (importSavedTick > 0) fetchCompanies()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [importSavedTick])
 
   const fetchRegistry = async () => {
     try {
@@ -655,36 +739,68 @@ export default function CompaniesView() {
   const handleChoosePdf = () => pdfInputRef.current?.click()
   const handleChooseManual = () => { resetState(); setView("manual") }
 
-  const handlePdfUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (!file) return
-
-    resetState()
-    setPdfFile(file)
-    setView("pdf")
-
-    const fd = new FormData()
-    fd.append("file", file)
+  /**
+   * The import tray parks anything it could not save on its own and sends the
+   * operator here with the extracted record in sessionStorage. We drop it into
+   * the normal review screen rather than building a second form.
+   */
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    const params = new URLSearchParams(window.location.search)
+    if (params.get("review") !== "1") return
     try {
-      const res = await authFetch(apiClient.uploadCompanyPdf(), { method: "POST", body: fd })
-      await ensureOk(res, "Upload failed")
-      const data = await res.json()
-      setPdfUrl(data.pdf_url)
-      setPdfReady(true)
-    } catch (err: any) {
-      console.error("PDF upload error:", err)
-      toast.error(err?.message || "Failed to upload PDF")
+      const raw = sessionStorage.getItem("ls_import_review")
+      sessionStorage.removeItem("ls_import_review")
+      if (!raw) return
+      const d = JSON.parse(raw)
+      resetState()
+      setFormData({ ...EMPTY, ...d })
+      if (d.pdf_url) {
+        setPdfUrl(d.pdf_url)
+        setPdfReady(true)
+      }
+      setView("pdf")
+    } catch (e) {
+      console.error("Could not open the queued import for review:", e)
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
-    if (pdfInputRef.current) pdfInputRef.current.value = ""
+  /**
+   * Every PDF — one or fifty — goes to the background import queue. The old
+   * behaviour opened a split review screen per file, which is exactly the
+   * per-file babysitting the team asked us to remove. The tray reports what
+   * happened to each, and only the ambiguous ones ever need opening.
+   */
+  const importPdfs = (files: File[]) => {
+    if (files.length === 0) return
+    enqueueImport(files)
+    // view "choice" IS the modal, so returning to the list closes it.
+    resetState()
+    setView("list")
+    toast.success(
+      `${files.length} file${files.length === 1 ? "" : "s"} queued — watch progress in the import tray`
+    )
   }
 
-  const handleExtract = async () => {
-    if (!pdfFile) return
+  const handlePdfUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const picked = Array.from(e.target.files || [])
+    if (pdfInputRef.current) pdfInputRef.current.value = ""
+    importPdfs(picked)
+  }
+
+  /**
+   * `file` is passed explicitly by the auto-run in startPdf: that call happens
+   * in the same tick as setPdfFile, so the `pdfFile` state here would still be
+   * null. Manual retries from the button pass nothing and use state.
+   */
+  const handleExtract = async (file?: File) => {
+    const source = file || pdfFile
+    if (!source) return
     setExtracting(true)
     setExtractLogs([])
     const fd = new FormData()
-    fd.append("file", pdfFile)
+    fd.append("file", source)
     try {
       const res = await authFetch(apiClient.extractCompanyPdfStream(), { method: "POST", body: fd })
       if (!res.ok || !res.body) throw new Error(await errorMessage(res, "Extraction failed"))
@@ -807,8 +923,10 @@ export default function CompaniesView() {
     try {
       const res = await authFetch(apiClient.deleteCompany(name), { method: "DELETE" })
       if (!res.ok) throw new Error(await errorMessage(res, "Failed to delete company"))
-      await assertSuccess(res, "Failed to delete company")
-      toast.success(`"${name}" deleted`)
+      const body = await res.json()
+      if (!body?.success) throw new Error(body?.error || "Failed to delete company")
+      // Server message carries the count of people removed with the company.
+      toast.success(body.message || `"${name}" deleted`)
       await fetchCompanies()
     } catch (e: any) {
       console.error("Delete error:", e)
@@ -935,17 +1053,8 @@ export default function CompaniesView() {
   if (loading) return <LoadingScreen label="Loading companies" />
 
   const hiddenPdfInput = (
-    <input ref={pdfInputRef} type="file" accept=".pdf" onChange={handlePdfUpload} className="hidden" />
+    <input ref={pdfInputRef} type="file" accept=".pdf" multiple onChange={handlePdfUpload} className="hidden" />
   )
-
-  if (view === "choice") {
-    return (
-      <>
-        {hiddenPdfInput}
-        <CreateChoiceScreen onUploadPdf={handleChoosePdf} onManual={handleChooseManual} onCancel={handleBack} />
-      </>
-    )
-  }
 
   if (view === "pdf") {
     return (
@@ -1106,6 +1215,23 @@ export default function CompaniesView() {
   return (
     <>
       {hiddenPdfInput}
+
+      <Modal
+        open={view === "choice"}
+        onOpenChange={(o) => {
+          if (!o) handleBack()
+        }}
+        title="Create a company"
+        description="Start from a DICA Company Extract, or enter the details by hand."
+        size="md"
+      >
+        <CreateCompanyChoice
+          onFiles={importPdfs}
+          onBrowse={handleChoosePdf}
+          onManual={handleChooseManual}
+        />
+      </Modal>
+
       <Page>
         <PageHeader
           title="Companies"

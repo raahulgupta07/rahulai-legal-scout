@@ -77,7 +77,10 @@ interface Template {
   ai_analyzed?: boolean
   uploaded_by_email?: string
   training_confidence?: number
+  template_group?: string | null
 }
+
+const SETUP_GROUP = "new_company_setup"
 
 interface TerminalLine {
   id: number
@@ -143,13 +146,19 @@ export default function TemplatesView() {
 
   const terminalRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
-  const logIdRef = useRef(0)
-  const abortControllerRef = useRef<AbortController | null>(null)
+  // Training now runs server-side. These only drive POLLING of the job — the
+  // timer may be cleared freely; that stops polling but NEVER the server job.
+  const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const pollingRef = useRef(false)
+  const lastStatusRef = useRef<string>("")
 
   useEffect(() => {
     fetchTemplates()
     checkTrainingStatus()
-    return () => abortControllerRef.current?.abort()
+    attachIfActive()
+    // Clearing the poll timer on unmount only stops us watching — the
+    // server-side job keeps running regardless.
+    return () => stopPolling()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -189,11 +198,6 @@ export default function TemplatesView() {
     }
   }
 
-  const addLog = (text: string, type: TerminalLine["type"] = "info") => {
-    const timestamp = new Date().toLocaleTimeString("en-US", { hour12: false })
-    setTerminalLogs((prev) => [...prev, { id: logIdRef.current++, text, type, timestamp }])
-  }
-
   const fetchTemplates = async () => {
     try {
       setError(null)
@@ -209,167 +213,181 @@ export default function TemplatesView() {
     }
   }
 
-  const untrained = useMemo(() => templates.filter((t) => !isTrained(t)), [templates])
-
-  const startTraining = async (trainAll = false) => {
-    if (templates.length === 0) return
-    const toTrain = trainAll ? templates : untrained
-    if (toTrain.length === 0) {
-      toast.info("Every template is already trained. Use Retrain all to run them again.")
-      return
-    }
-
-    const token = localStorage.getItem("ls_token")
-    if (!token) {
-      toast.error("Please sign in again")
-      return
-    }
-
-    setIsTraining(true)
-    setTrainingComplete(false)
-    setTerminalLogs([])
-    setShowLogModal(true)
-    setQueuePos({ index: 0, total: toTrain.length })
-
-    const controller = new AbortController()
-    abortControllerRef.current = controller
-    const API_BASE = process.env.NEXT_PUBLIC_API_URL || ""
-
-    const skipped = templates.length - toTrain.length
-    addLog(`Training ${toTrain.length} template(s)${skipped > 0 ? ` — ${skipped} already trained, skipped` : ""}`, "info")
-
+  // Tag / untag a template as part of the new-company setup set, so the chat
+  // agent offers ONLY these when a new company is being set up.
+  const toggleSetupGroup = async (t: Template) => {
+    const nextGroup = t.template_group === SETUP_GROUP ? null : SETUP_GROUP
+    // optimistic update
+    setTemplates((prev) =>
+      prev.map((x) => (x.name === t.name ? { ...x, template_group: nextGroup } : x)),
+    )
     try {
-      let successCount = 0
-
-      for (let i = 0; i < toTrain.length; i++) {
-        const t = toTrain[i]
-        setCurrentTemplate(t.name)
-        setQueuePos({ index: i + 1, total: toTrain.length })
-        setSteps(freshSteps())
-        addLog(`[${i + 1}/${toTrain.length}] ${t.name}`, "ai")
-
-        try {
-          const res = await fetch(`${API_BASE}/api/knowledge/train-stream/${encodeURIComponent(t.name)}`, {
-            headers: { Authorization: `Bearer ${token}` },
-            signal: controller.signal,
-          })
-
-          if (!res.ok || !res.body) {
-            const msg = await errorMessage(res, "Training request failed")
-            addLog(msg, "error")
-            continue
-          }
-
-          const reader = res.body.getReader()
-          const decoder = new TextDecoder()
-          let buffer = ""
-          let templateDone = false
-
-          while (true) {
-            const { value, done } = await reader.read()
-            if (done) break
-            buffer += decoder.decode(value, { stream: true })
-            const lines = buffer.split("\n")
-            buffer = lines.pop() || ""
-
-            for (const line of lines) {
-              if (!line.startsWith("data: ")) continue
-              try {
-                const step = JSON.parse(line.slice(6))
-                const s: string = step.step
-                const m: string = step.msg
-
-                // Drive the visual pipeline…
-                setSteps((prev) => applyStepEvent(prev, s, m))
-
-                // …and keep the full transcript for the detail underneath.
-                if (s === "done") {
-                  templateDone = true
-                } else if (s === "error" || s?.endsWith("_warn")) {
-                  addLog(m, "error")
-                } else if (s?.endsWith("_start")) {
-                  addLog(m, "processing")
-                } else if (s === "extract") {
-                  addLog(m, "success")
-                  if (step.fields?.length > 0) {
-                    addLog(`Fields: ${step.fields.slice(0, 8).join(", ")}${step.fields.length > 8 ? "…" : ""}`, "info")
-                  }
-                } else if (s === "ai_analysis") {
-                  addLog(m, "ai")
-                  if (step.purpose) addLog(`Purpose: ${step.purpose}`, "success")
-                  if (step.legal_refs?.length > 0) addLog(`Legal: ${step.legal_refs.join(", ")}`, "info")
-                  if (step.required > 0) addLog(`Required fields: ${step.required}`, "info")
-                  if (step.optional > 0) addLog(`Optional fields: ${step.optional}`, "info")
-                } else if (s === "classify") {
-                  addLog(m, "ai")
-                  if (step.db_fields) addLog(`Auto-fill (${step.db_fields.length}): ${step.db_fields.join(", ")}`, "success")
-                  if (step.user_input_fields) {
-                    addLog(`User input (${step.user_input_fields.length}): ${step.user_input_fields.join(", ")}`, "ai")
-                  }
-                } else if (s === "field_detail") {
-                  addLog(
-                    `${step.field} (${step.detail?.data_type || "text"}) ${step.detail?.required ? "required" : "optional"}`,
-                    "ai"
-                  )
-                } else if (s === "field_found") {
-                  addLog(step.field, "info")
-                } else {
-                  addLog(m, "success")
-                }
-              } catch (e) {
-                console.error("SSE parse error:", e)
-              }
-            }
-          }
-
-          if (templateDone) {
-            successCount++
-            addLog(`${t.name} — done`, "success")
-          } else {
-            addLog(`${t.name} — failed`, "error")
-          }
-        } catch (e: any) {
-          if (e?.name === "AbortError") throw e
-          console.error("Template training error:", e)
-          addLog(`${t.name} — connection error`, "error")
-        }
-      }
-
-      addLog("Refreshing agent knowledge…", "processing")
-      try {
-        const dtRes = await authFetch(`${API_BASE}/api/knowledge/deep-train`, { method: "POST" })
-        await ensureOk(dtRes, "Deep train failed")
-        addLog("Agent knowledge updated", "success")
-      } catch (e: any) {
-        console.error("Deep train error:", e)
-        addLog(e?.message || "Agent knowledge refresh failed", "error")
-      }
-
-      addLog(
-        `Training complete — ${successCount}/${toTrain.length} template(s)${skipped > 0 ? `, ${skipped} skipped` : ""}`,
-        "success"
-      )
-
-      setTrainingComplete(true)
-      setTrainingStale(false)
-      setLastTrained(new Date().toLocaleString())
-      await fetchTemplates()
-    } catch (e: any) {
-      if (e?.name !== "AbortError") {
-        console.error("Process error:", e)
-        addLog("Training failed", "error")
-      }
-    } finally {
-      abortControllerRef.current = null
-      setIsTraining(false)
+      const res = await authFetch(`${process.env.NEXT_PUBLIC_API_URL || ""}/api/templates/group`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ template_name: t.name, template_group: nextGroup }),
+      })
+      await ensureOk(res, "Failed to update template group")
+    } catch (e) {
+      console.error("Failed to toggle setup group:", e)
+      await fetchTemplates() // revert to server truth
     }
   }
 
-  const stopTraining = () => {
-    abortControllerRef.current?.abort()
-    abortControllerRef.current = null
-    setIsTraining(false)
-    addLog("Training stopped by the operator", "error")
+  const untrained = useMemo(() => templates.filter((t) => !isTrained(t)), [templates])
+
+  // ── Server-side training: start + poll ────────────────────────────────
+  // The whole run lives on the server now. The FE only starts a job and then
+  // polls its state; closing the modal, the tab, or the browser no longer
+  // affects the run. Reopening the page re-attaches to the live job.
+
+  const LEVEL_TO_TYPE: Record<string, TerminalLine["type"]> = {
+    success: "success",
+    error: "error",
+    processing: "processing",
+    ai: "ai",
+    info: "info",
+  }
+
+  /** Fold a polled job into the visual pipeline + transcript + progress. */
+  const syncFromJob = (job: any) => {
+    const status: string = job?.status || "idle"
+    if (status === "idle") {
+      setIsTraining(false)
+      lastStatusRef.current = "idle"
+      return
+    }
+
+    const logs: any[] = Array.isArray(job.logs) ? job.logs : []
+
+    // Rebuild the visual pipeline exactly as the old SSE loop did: reset on
+    // each template boundary, then fold every real pipeline event in.
+    let pipe = freshSteps()
+    for (const e of logs) {
+      if (e?.step === "template_start") pipe = freshSteps()
+      else pipe = applyStepEvent(pipe, e?.step || "", e?.msg || "")
+    }
+    setSteps(pipe)
+
+    // Rebuild the transcript from the job's logs (stable index ids).
+    setTerminalLogs(
+      logs.map((e, i) => ({
+        id: i,
+        text: e?.msg || e?.step || "",
+        type: LEVEL_TO_TYPE[e?.level] || "info",
+        timestamp: e?.ts ? new Date(e.ts).toLocaleTimeString("en-US", { hour12: false }) : "",
+      })),
+    )
+
+    setCurrentTemplate(job.current_template || "")
+    const total: number = job.total || 0
+    const pos = status === "done" ? total : Math.min((job.current_index || 0) + 1, total)
+    setQueuePos({ index: pos, total })
+
+    const active = status === "running" || status === "queued"
+    setIsTraining(active)
+
+    const prev = lastStatusRef.current
+    lastStatusRef.current = status
+
+    if (!active) {
+      stopPolling()
+      const justFinished = prev === "running" || prev === "queued"
+      if (status === "done") {
+        setTrainingComplete(true)
+        setTrainingStale(false)
+        if (justFinished) {
+          setLastTrained(new Date().toLocaleString())
+          fetchTemplates()
+          toast.success(
+            `Training complete — ${job.done_count}/${total} trained${
+              job.fail_count ? `, ${job.fail_count} failed` : ""
+            }`,
+          )
+        }
+      } else if (status === "error" && justFinished) {
+        toast.error(job.error || "Training failed")
+      } else if (status === "cancelled" && justFinished) {
+        toast.info("Training cancelled")
+      }
+    }
+  }
+
+  const stopPolling = () => {
+    pollingRef.current = false
+    if (pollTimerRef.current) {
+      clearTimeout(pollTimerRef.current)
+      pollTimerRef.current = null
+    }
+  }
+
+  const startPolling = () => {
+    if (pollingRef.current) return // never run two pollers at once
+    pollingRef.current = true
+    const tick = async () => {
+      if (!pollingRef.current) return
+      try {
+        const res = await authFetch(apiClient.trainJob())
+        if (res.ok) syncFromJob(await res.json())
+      } catch (e) {
+        console.error("Training poll error:", e)
+      }
+      if (pollingRef.current) pollTimerRef.current = setTimeout(tick, 1500)
+    }
+    tick()
+  }
+
+  /** On mount / on opening the log: show the live-or-most-recent job. */
+  const attachIfActive = async () => {
+    try {
+      const res = await authFetch(apiClient.trainJob())
+      if (!res.ok) return
+      const job = await res.json()
+      if (!job || job.status === "idle") return
+      syncFromJob(job)
+      if (job.status === "running" || job.status === "queued") startPolling()
+    } catch (e) {
+      console.error("Training attach error:", e)
+    }
+  }
+
+  const startTraining = async (trainAll = false) => {
+    setTrainingComplete(false)
+    setShowLogModal(true)
+    lastStatusRef.current = ""
+    try {
+      const res = await authFetch(apiClient.trainStart(), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ retrain_all: trainAll }),
+      })
+      if (!res.ok) {
+        toast.error(await errorMessage(res, "Could not start training"))
+        return
+      }
+      const data = await res.json()
+      if (data?.status === "nothing_to_train") {
+        toast.info("Every template is already trained. Use Retrain all to run them again.")
+        return
+      }
+      setIsTraining(true)
+      setQueuePos({ index: 0, total: data?.total || 0 })
+      startPolling()
+    } catch (e: any) {
+      console.error("Start training error:", e)
+      toast.error(e?.message || "Could not start training")
+    }
+  }
+
+  // Cancels the SERVER job (worker stops between templates). Does not tear
+  // down anything locally — the poll reflects the cancelled state.
+  const stopTraining = async () => {
+    try {
+      await authFetch(apiClient.trainCancel(), { method: "POST" })
+      toast.info("Cancelling — training stops after the current template")
+    } catch (e) {
+      console.error("Cancel training error:", e)
+    }
   }
 
   const deleteTemplate = async (template: Template) => {
@@ -396,6 +414,7 @@ export default function TemplatesView() {
     if (!files || files.length === 0) return
 
     setUploading(true)
+    let uploaded = 0
     try {
       for (const file of Array.from(files)) {
         if (!/\.(doc|docx|pdf)$/i.test(file.name)) {
@@ -414,10 +433,20 @@ export default function TemplatesView() {
             toast.error(data.error || "Upload failed")
           }
         } else {
-          toast.success(`"${file.name}" uploaded — train it to make the agent aware of it`)
+          uploaded += 1
         }
       }
       await fetchTemplates()
+
+      // An untrained template is invisible to the agent, so uploading without
+      // training is never what anyone wants. Kick off the background job for
+      // whatever is still untrained — it survives closing this tab.
+      if (uploaded > 0) {
+        toast.success(
+          `${uploaded} template${uploaded === 1 ? "" : "s"} uploaded — training started`
+        )
+        await startTraining(false)
+      }
     } catch (err: any) {
       console.error("Failed to upload:", err)
       toast.error(err?.message || "Failed to upload template")
@@ -554,10 +583,16 @@ export default function TemplatesView() {
         fields = []
       }
     }
-    const classified = fields && !Array.isArray(fields) && fields?.db_fields
+    // Classified when the object carries either field bucket. (An empty
+    // db_fields array is truthy in JS, so also accept user_input_fields.)
+    const classified =
+      !!fields && !Array.isArray(fields) &&
+      (Array.isArray(fields.db_fields) || Array.isArray(fields.user_input_fields))
     const dbFields: string[] = classified ? fields.db_fields || [] : []
     const userFields: string[] = classified ? fields.user_input_fields || [] : []
-    const rawFields: any[] = Array.isArray(fields) ? fields : fields?.all_fields || []
+    const rawFields: any[] = Array.isArray(fields)
+      ? fields
+      : fields?.all_fields || fields?.fields || []
     const deepAnalysis = (t as any).field_deep_analysis || {}
     const workflow = (t as any).document_workflow
     const relations: any[] = (t as any).cross_template_relationships || []
@@ -606,9 +641,12 @@ export default function TemplatesView() {
             }
           />
 
-          <div className="flex flex-1 min-h-0 split-view-mobile">
+          {/* ONE scroll region for the whole detail — the preview no longer has
+              its own overflow box, so the wheel scrolls the page as a unit. The
+              metadata panel sticks to the top while the (taller) PDF scrolls. */}
+          <div className="flex flex-1 min-h-0 overflow-y-auto split-view-mobile">
             <div className="w-1/2 flex flex-col min-w-0 border-r border-[var(--border)]">
-              <div className="flex items-center gap-2 px-4 py-2 border-b border-[var(--border)] bg-[var(--surface)]">
+              <div className="sticky top-0 z-10 flex items-center gap-2 px-4 py-2 border-b border-[var(--border)] bg-[var(--surface)]">
                 <Eye className="w-3.5 h-3.5 text-[var(--text-muted)]" />
                 <span className="text-[length:var(--text-xs)] font-medium text-[var(--text-secondary)]">
                   Preview — placeholders highlighted
@@ -619,11 +657,11 @@ export default function TemplatesView() {
                   typeof window !== "undefined" ? localStorage.getItem("ls_token") || "" : ""
                 }`}
                 forceFormat="pdf"
-                className="flex-1 w-full"
+                className="w-full"
               />
             </div>
 
-            <div className="w-1/2 flex flex-col min-w-0 overflow-y-auto bg-[var(--bg-secondary)]">
+            <div className="w-1/2 flex flex-col min-w-0 bg-[var(--bg-secondary)]">
               <div className="p-4 space-y-3">
                 <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5">
                   {[
@@ -955,6 +993,32 @@ export default function TemplatesView() {
         ),
     },
     {
+      key: "template_group",
+      header: "Setup set",
+      stopClickPropagation: true,
+      sortValue: (t) => (t.template_group === SETUP_GROUP ? 1 : 0),
+      render: (t) => (
+        <button
+          type="button"
+          onClick={() => toggleSetupGroup(t)}
+          title={
+            t.template_group === SETUP_GROUP
+              ? "In the new-company setup set — click to remove"
+              : "Add to the new-company setup set (agent shows only these when setting up a new company)"
+          }
+          className="cursor-pointer"
+        >
+          {t.template_group === SETUP_GROUP ? (
+            <Badge tone="accent" dot>
+              Setup
+            </Badge>
+          ) : (
+            <Badge tone="neutral">+ Add</Badge>
+          )}
+        </button>
+      ),
+    },
+    {
       key: "training_confidence",
       header: "Confidence",
       align: "right",
@@ -1014,7 +1078,13 @@ export default function TemplatesView() {
           description="Word templates the agent fills. Training reads each one through a fifteen-step pipeline so the agent knows what it is for and which fields it needs."
           actions={
             <>
-              <Button onClick={() => setShowLogModal(true)} icon={<Terminal className="w-4 h-4" />}>
+              <Button
+                onClick={() => {
+                  setShowLogModal(true)
+                  attachIfActive()
+                }}
+                icon={<Terminal className="w-4 h-4" />}
+              >
                 {isTraining ? "View progress" : "Training log"}
               </Button>
               <Button

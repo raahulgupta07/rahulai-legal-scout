@@ -247,18 +247,34 @@ export default function DocumentsView() {
                 />
               </Card>
 
-              {validation?.total_placeholders !== undefined && (
-                <StatRow>
-                  <StatTile label="Placeholders" value={validation.total_placeholders ?? "—"} />
-                  <StatTile label="Filled" value={validation.filled_from_data ?? "—"} tone="ok" />
-                  <StatTile
-                    label="Unfilled"
-                    value={validation.unfilled ?? "—"}
-                    tone={validation.unfilled > 0 ? "warn" : undefined}
-                  />
-                  <StatTile label="Status" value={validation.validation_status ?? "—"} />
-                </StatRow>
-              )}
+              {validation?.total_placeholders !== undefined && (() => {
+                // The stored validation_result uses total_filled / total_unfilled
+                // / is_valid; a derived summary (if ever stored) uses
+                // filled_from_data / unfilled / validation_status. Read either,
+                // so old and new records both populate — before this the cards
+                // read only the summary keys and showed "—".
+                const filled = validation.filled_from_data ?? validation.total_filled
+                const unfilled = validation.unfilled ?? validation.total_unfilled
+                const status =
+                  validation.validation_status ??
+                  (validation.is_valid === true
+                    ? "Complete"
+                    : validation.is_valid === false
+                      ? "Partial"
+                      : undefined)
+                return (
+                  <StatRow>
+                    <StatTile label="Placeholders" value={validation.total_placeholders ?? "—"} />
+                    <StatTile label="Filled" value={filled ?? "—"} tone="ok" />
+                    <StatTile
+                      label="Unfilled"
+                      value={unfilled ?? "—"}
+                      tone={typeof unfilled === "number" && unfilled > 0 ? "warn" : undefined}
+                    />
+                    <StatTile label="Status" value={status ?? "—"} />
+                  </StatRow>
+                )
+              })()}
 
               <Card
                 title="Placeholder values"

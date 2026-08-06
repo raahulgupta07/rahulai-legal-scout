@@ -7,7 +7,7 @@ Falls back to defaults if not configured.
 
 Usage:
     from app.model_config import get_model
-    model = get_model("chat")  # → "openai/gpt-5.4-mini"
+    model = get_model("chat")  # → "google/gemini-3.6-flash"
 """
 
 import os
@@ -19,9 +19,9 @@ OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/ap
 
 # Defaults — used when DB has no config
 DEFAULTS = {
-    "chat": "openai/gpt-5.4-mini",
-    "training": "google/gemini-3-flash-preview",
-    "classification": "google/gemini-3.1-flash-lite-preview",
+    "chat": "google/gemini-3.6-flash",
+    "training": "google/gemini-3.6-flash",
+    "classification": "google/gemini-3.6-flash",
     "embedding": "openai/text-embedding-3-small",
 }
 
