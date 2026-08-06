@@ -88,3 +88,10 @@ LegalScout_*.xlsx
 .env.bak*
 *.env.local.bak*
 **/.env*.bak*
+
+# =========================
+# Local backup snapshots
+# =========================
+# `.baks/` holds full pre-change copies taken before risky edits (57MB across
+# 5 snapshots as of 2026-08-06). Useful locally, never useful in history.
+.baks/
