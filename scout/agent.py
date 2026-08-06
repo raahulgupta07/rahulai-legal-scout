@@ -176,10 +176,27 @@ def send_email_tool(to_email: str, subject: str, message: str, attachment_path: 
 
 
 generate_document = smart_doc["generate_document"]
-create_document = smart_doc.get("create_document")
 analyze_template = smart_doc["analyze_template"]
 prepare_document = smart_doc["prepare_document"]
-preview_document = smart_doc.get("preview_document")
+# The export key is "preview_document" but the underlying function is
+# `preview_doc`, and _as_json uses @wraps — so agno registers the tool under the
+# name `preview_doc`. The prompt said `preview_document(...)` in three places,
+# naming a tool that does not exist. Same class of bug as `list_companies`,
+# missed by _audit_prompt_tool_contract because its regex only matched a
+# backticked name immediately followed by "(". Bound to the real name here so
+# the prompt and the registry agree on one spelling.
+preview_doc = smart_doc.get("preview_document")
+
+# `create_document` is deliberately NOT bound or registered.
+#
+# It was a third door into the same room: smart_doc defines it as
+# `return _generate_document(template_name, company_name, custom_data)` — byte
+# for byte what `generate_document` does. `prepare_document` is a strict prefix
+# of the same call, since _generate_document starts by calling
+# prepare_document_data itself. Three interchangeable entry points is chain
+# variance for nothing: across six measured baseline conversations the model
+# took the two-call path five times and a five-call path once, calling
+# generate_document twice in that outlier.
 
 # Don't define _tools_to_add here - it will be defined after all tools are loaded
 
@@ -209,10 +226,9 @@ list_new_company_setup_templates = clarification["list_new_company_setup_templat
 # Build tools list, filtering out None values
 _tools_to_add = [
     generate_document,
-    create_document,
     analyze_template,
     prepare_document,
-    preview_document,
+    preview_doc,
     get_clarification_info,
     check_company,
     list_companies,
@@ -896,7 +912,7 @@ When user asks to create a document (e.g., "Create AGM for CityHolding"):
 - If user types "1" → select first company (handled automatically)
 
 **Step 3: PREVIEW FIRST (Required!)**
-- Use preview_document(template_name="X.docx", company_name="Y") to show preview
+- Use preview_doc(template_name="X.docx", company_name="Y") to show preview
 - After showing preview, ask for approval with the `ask_questions` tool — ONE
   question, exactly two options ("Yes, generate it" / "No, modify the data
   first"). NEVER write the approval as prose or lettered a)/b) lines.
@@ -947,7 +963,7 @@ When `ask_questions` returns `"status": "answered"`:
 2. Each field is free-form UNLESS its values are enumerable — then give
    `options` (add `"allow_other": true` so the user can still type their own).
 3. Read the answers from the `"answered"` result and pass them into
-   `preview_document` / `generate_document` via `custom_data`.
+   `preview_doc` / `generate_document` via `custom_data`.
 4. Then show the preview and ask for approval (also via `ask_questions`).
 
 Never list missing fields as a plain-text "director_name: ?" prompt and never
@@ -985,8 +1001,8 @@ ask_questions(questions_json='[{{"id": "meeting_date", "text": "Meeting date?", 
     the document."
   - After an approval: "Generated *Shareholders Meeting Minutes* for CITY
     HOLDINGS — the download link is above. Tell me if any detail needs changing."
-- **After any document tool returns** — `generate_document`, `preview_document`,
-  `prepare_document`, `create_document`, `generate_dica_extract` — report the
+- **After any document tool returns** — `generate_document`, `preview_doc`,
+  `prepare_document`, `generate_dica_extract` — report the
   outcome in that same turn: what was produced, for which company, and the
   download link or the next step. Never let the turn end on the tool call.
 - A bare "Done." or a dump of raw tool JSON does not count as a closing
@@ -1156,7 +1172,10 @@ If clarification_needed=True (multiple matches):
 
 **⚠️ CRITICAL: ALWAYS confirm data with user before generating!**
 
-**After finding the template and company, call `prepare_document(template, company)` to see what data is available.**
+**After finding the template and company, call `preview_doc(template, company)` to see what data is available.**
+
+One tool, not two. `prepare_document` returns the same field analysis but no
+rendered preview, so calling both spends an extra turn to learn nothing new.
 
 Then show the user:
 
@@ -1339,8 +1358,9 @@ Download: [Annual_General_Meeting_Minutes.docx]({API_HOST}/documents/legal/outpu
 User asks: "Create AGM for CityHolding"
 
 1. find_matching_templates("AGM") → finds "Annual General Meeting Minutes.docx"
-2. prepare_document("Annual General Meeting Minutes.docx", "CityHolding") → shows available/missing data
-3. Show user: ✅ found fields + ❌ missing fields + options a/b/c
+2. preview_doc("Annual General Meeting Minutes.docx", "CityHolding") → shows available/missing data
+3. Show user: ✅ found fields + ❌ missing fields, then ONE `ask_questions` call
+   for the approval. Never a lettered a)/b)/c) menu in prose.
 4. User confirms → generate_document with custom_data
 5. Return: Document + download link + validation results
 
@@ -1481,7 +1501,7 @@ When user asks to send/email a document:
 ## Keep It Simple
 
 - For simple questions → use quick_info (fastest)
-- For document creation → use prepare_document + generate_document
+- For document creation → use preview_doc + generate_document
 - For searching docs → use search_content
 - Don't overthink - just use the right tool
 
@@ -1581,9 +1601,17 @@ def _audit_prompt_tool_contract() -> list[str]:
     This is a silent, expensive failure: the model follows the instruction,
     finds no such tool, and ends the turn with nothing to say. It looks exactly
     like a stall, and no test catches it unless that specific request is tried.
-    Two real cases shipped this way — `generate_dica_extract` was never added to
-    the tool list, and `list_companies` was registered under a different
-    __name__ than the prompt used.
+    Three real cases shipped this way — `generate_dica_extract` was never added
+    to the tool list, `list_companies` was registered under a different __name__
+    than the prompt used, and `preview_document` was the export-dict key while
+    @wraps made the registered name `preview_doc`.
+
+    The third one slipped past this check for weeks. The old patterns only
+    matched a name in BACKTICKS immediately followed by "(", and the prompt
+    spelled it two ways that neither pattern saw: bare in a sentence
+    ("Use preview_document(template_name=...)") and backticked with no call
+    parentheses at all ("`preview_document` / `generate_document`"). Both are
+    covered below.
     """
     import re as _re
 
@@ -1594,18 +1622,56 @@ def _audit_prompt_tool_contract() -> list[str]:
     except Exception:  # noqa: BLE001
         return []
 
-    named = set(_re.findall(r"`([a-z_][a-z0-9_]{3,})\(", instructions))
-    named |= set(_re.findall(r"→\s*([a-z_][a-z0-9_]{3,})\(", instructions))
-
     registered = set()
     for tool in scout.tools or []:
         name = getattr(tool, "__name__", None) or getattr(tool, "name", None)
         if name:
             registered.add(str(name))
+        # A Toolkit (FileTools, MCPTools) is ONE entry in scout.tools but
+        # registers several callables with the model. Reading only its own name
+        # hides every function inside it, which made the prompt's legitimate
+        # `save_file(...)` look like a missing tool.
+        functions = getattr(tool, "functions", None)
+        if isinstance(functions, dict):
+            registered.update(str(k) for k in functions)
+
+    # Anything that reads as a call, backticked or bare.
+    #
+    # The paren must touch the name, and what follows it must look like an
+    # argument list — a quoted value, a keyword argument, or nothing. Allowing a
+    # space before the paren, or any content after it, turns this into a match
+    # on ordinary English: "advice (see below)", "the approval (step 4)" and
+    # about thirty other words all reported as missing tools on the first run.
+    named = set(_re.findall(
+        r"\b([a-z_][a-z0-9_]{3,})\((?=[\"']|[a-z_][a-z0-9_]*\s*=|\))",
+        instructions,
+    ))
+
+    # A backticked identifier with no parentheses is usually a field name, not a
+    # tool, so flagging every one of them would drown the signal in
+    # `custom_data`, `auditor_name` and friends. But a backticked name that is
+    # one edit away from a REGISTERED tool — sharing a long prefix with it — is
+    # almost certainly that tool spelled wrong. That is exactly the shape of
+    # `preview_document` next to `preview_doc`.
+    def _shared_prefix(a: str, b: str) -> int:
+        n = 0
+        for x, y in zip(a, b):
+            if x != y:
+                break
+            n += 1
+        return n
+
+    for word in set(_re.findall(r"`([a-z_][a-z0-9_]{3,})`", instructions)):
+        if word in registered:
+            continue
+        if any(_shared_prefix(word, real) >= 8 for real in registered):
+            named.add(word)
 
     # Python builtins and helpers that look like calls in prose.
     noise = {"get", "set", "str", "int", "len", "print", "format", "join",
-             "append", "dict", "list", "json", "loads", "dumps", "name"}
+             "append", "dict", "list", "json", "loads", "dumps", "name",
+             "type", "range", "sorted", "items", "keys", "values", "split",
+             "strip", "lower", "upper", "replace", "example", "note"}
     missing = sorted(n for n in named - registered if n not in noise)
 
     if missing:

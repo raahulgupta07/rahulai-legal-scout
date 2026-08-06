@@ -86,7 +86,7 @@
     {
       "intent": "Create legal document",
       "keywords": ["create", "generate", "prepare", "draft", "make", "agm", "poa", "notice", "meeting", "board", "resolution", "legal", "document"],
-      "primary_source": "generate_document_tool",
+      "primary_source": "generate_document",
       "fallback_sources": [],
       "reasoning": "Use generate_document tool with template from documents/legal/templates and company data from documents/legal/data",
       "known_locations": ["documents/legal/templates/", "documents/legal/data/"]
