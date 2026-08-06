@@ -1,56 +1,53 @@
 {
-  "source_name": "Local Files",
+  "_comment": "★ Reaches the SYSTEM PROMPT as DATA via scout/context/source_registry.py -> SOURCE_REGISTRY_STR, interpolated in scout/agent.py under '## SOURCE REGISTRY'. Only these keys are rendered: source_name, source_type, description, directories (when source_type is 'files'), common_locations, the first 4 capabilities and the first 2 search_tips. Every directory listed here MUST actually exist on disk -- this file previously advertised company-docs, engineering-docs and data-exports, none of which have ever existed in this product.",
+
+  "source_name": "Document Files",
   "source_type": "files",
-  "description": "Local documents directory for enterprise content, exports, and knowledge bases. Primary source for enterprise content.",
+  "description": "The Word templates the firm uploads and the documents generated from them. This is a document store only -- company particulars, directors, members and the People register live in PostgreSQL and are reached through the company and register tools, not here.",
   "content_types": [
-    "Markdown documents",
-    "PDF files",
-    "JSON/YAML configuration",
-    "CSV/data exports",
-    "Text files"
+    "Word templates (.docx)",
+    "Generated legal documents (.docx)",
+    "DICA filing PDFs uploaded for extraction",
+    "Cached PDF previews"
   ],
   "capabilities": [
-    "List directories and files",
-    "Grep-like search across file contents",
-    "Read full documents (not chunks)",
-    "Write and update files",
-    "Hierarchical folder navigation"
+    "List the templates available to draft from",
+    "Read a generated document back",
+    "Search across document text",
+    "Read a specific file in full"
   ],
   "limitations": [
-    "Binary files need specialized handling",
-    "Very large files may need pagination",
-    "Local storage only (no real-time collaboration)"
+    "Holds no company, director or member data -- that is in the database",
+    "Templates are only usable once they have been trained",
+    "A .docx must be read through the document tools, not as plain text",
+    "Previews and extracts are derived artefacts and are not authoritative"
   ],
   "common_locations": {
-    "policies": "company-docs/policies/",
-    "engineering_docs": "engineering-docs/",
-    "runbooks": "engineering-docs/runbooks/",
-    "architecture": "engineering-docs/architecture/",
-    "okrs": "company-docs/planning/",
-    "hr_docs": "company-docs/hr/",
-    "data_exports": "data-exports/reports/"
+    "templates": "documents/legal/templates/",
+    "generated_documents": "documents/legal/output/",
+    "uploaded_dica_filings": "documents/legal/uploads/",
+    "dica_extracts": "documents/legal/extracts/",
+    "cached_pdf_previews": "documents/legal/previews/"
   },
   "search_tips": [
-    "Use search_content for grep-like content search",
-    "Specify directory to narrow search scope",
-    "Use read_file to read full documents",
-    "Check multiple directories for cross-functional topics"
+    "Prefer the template and company tools; reach for raw files only when the answer is in the wording of a specific .docx",
+    "Search document text when you need the exact clause rather than a field value"
   ],
   "directories": [
     {
-      "name": "company-docs",
-      "description": "Company policies, HR docs, planning documents",
-      "contains": ["policies", "hr", "planning", "strategy"]
+      "name": "documents/legal/templates",
+      "description": "Word templates uploaded from the admin panel and trained before use",
+      "contains": ["AGM and EGM notices and minutes", "board and shareholder resolutions", "director and shareholder consents", "the new-company setup forms"]
     },
     {
-      "name": "engineering-docs",
-      "description": "Technical docs, runbooks, architecture, RFCs",
-      "contains": ["runbooks", "architecture", "guides", "rfcs"]
+      "name": "documents/legal/output",
+      "description": "Documents already generated for a company, tracked in the documents table",
+      "contains": ["filled .docx documents"]
     },
     {
-      "name": "data-exports",
-      "description": "Reports, metrics, data exports",
-      "contains": ["reports", "exports", "analytics"]
+      "name": "documents/legal/uploads",
+      "description": "DICA filing PDFs uploaded so their particulars can be extracted into a company record",
+      "contains": ["DICA extract PDFs"]
     }
   ]
 }

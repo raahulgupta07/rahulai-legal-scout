@@ -1,124 +1,153 @@
 {
+  "_comment": "★ This file reaches the SYSTEM PROMPT as DATA via scout/context/intent_routing.py -> INTENT_ROUTING_CONTEXT, interpolated in scout/agent.py. A wrong tool name here is invisible to any source search: generate_document_tool sat in this file for weeks as the primary source for 'Create legal document'. Every primary_source and fallback_sources value MUST be a really-registered tool name -- _audit_prompt_tool_contract raises at import otherwise. NOTE: the formatter renders only intent, primary_source, fallback_sources and reasoning; keywords and known_locations are NOT read.",
+
   "intent_mappings": [
     {
-      "intent": "Find policies or handbooks",
-      "keywords": ["policy", "handbook", "guideline", "rule", "compliance", "hr", "pto", "vacation", "time off"],
-      "primary_source": "files",
-      "fallback_sources": [],
-      "reasoning": "Policies live in company-docs directory",
-      "known_locations": ["company-docs/policies/", "company-docs/hr/"]
+      "intent": "Create or draft a legal document",
+      "keywords": ["create", "generate", "prepare", "draft", "make", "agm", "egm", "notice", "minutes", "resolution", "consent", "poa", "legal", "document"],
+      "primary_source": "preview_doc",
+      "fallback_sources": ["find_matching_templates", "generate_document"],
+      "reasoning": "Preview first so the user sees the filled draft and the fields still missing, then generate once they approve. Never generate straight from the request."
     },
     {
-      "intent": "Find OKRs or goals",
-      "keywords": ["okr", "okrs", "objectives", "key results", "goals", "targets", "kpis", "planning"],
-      "primary_source": "files",
-      "fallback_sources": [],
-      "reasoning": "OKRs are in planning folder",
-      "known_locations": ["company-docs/planning/"]
+      "intent": "Set up a brand-new company",
+      "keywords": ["new company", "incorporate", "incorporation", "setup", "set up", "register a company", "first board", "initial"],
+      "primary_source": "list_new_company_setup_templates",
+      "fallback_sources": ["get_company"],
+      "reasoning": "Only the templates tagged as the new-company setup group apply here. Offering the full template list buries the five that matter."
     },
     {
-      "intent": "Find runbooks or procedures",
-      "keywords": ["runbook", "playbook", "procedure", "how to", "steps", "guide", "sop", "deploy", "incident"],
-      "primary_source": "files",
-      "fallback_sources": [],
-      "reasoning": "Runbooks are in engineering-docs",
-      "known_locations": ["engineering-docs/runbooks/"]
+      "intent": "Find the right template for a request",
+      "keywords": ["which template", "what form", "what document do i need", "template", "form"],
+      "primary_source": "find_matching_templates",
+      "fallback_sources": ["list_templates", "get_clarification_info"],
+      "reasoning": "Match against trained template metadata. If two or more match closely, ask the user to choose rather than picking one."
     },
     {
-      "intent": "Find technical documentation",
-      "keywords": ["docs", "documentation", "api", "architecture", "design doc", "rfc", "spec", "system"],
-      "primary_source": "files",
-      "fallback_sources": [],
-      "reasoning": "Architecture and RFCs are in engineering-docs",
-      "known_locations": ["engineering-docs/architecture/", "engineering-docs/rfcs/"]
+      "intent": "Company particulars",
+      "keywords": ["company", "registration number", "registered office", "incorporation date", "financial year", "auditor", "details"],
+      "primary_source": "get_company",
+      "fallback_sources": ["check_company", "list_companies"],
+      "reasoning": "Company records live in PostgreSQL, entered from the admin panel or extracted from a DICA filing. They are the authoritative source for company facts."
     },
     {
-      "intent": "Find data retention or compliance info",
-      "keywords": ["retention", "compliance", "gdpr", "ccpa", "data", "security", "audit"],
-      "primary_source": "files",
-      "fallback_sources": [],
-      "reasoning": "Compliance policies are in company-docs/policies",
-      "known_locations": ["company-docs/policies/data-retention.md", "company-docs/policies/security-policy.md"]
+      "intent": "Directors of a company",
+      "keywords": ["director", "directors", "board", "board member", "resigning director", "appointed director"],
+      "primary_source": "get_directors",
+      "fallback_sources": ["lookup_director_candidates", "get_company"],
+      "reasoning": "Read the register. Do not infer a director from a previous document or from an earlier conversation."
     },
     {
-      "intent": "Find discussions or decisions",
-      "keywords": ["discussion", "decision", "decided", "agreed", "consensus", "debate", "context"],
-      "primary_source": "files",
-      "fallback_sources": [],
-      "reasoning": "Search documents for recorded decisions; check planning and architecture docs"
+      "intent": "Shareholders or members of a company",
+      "keywords": ["shareholder", "shareholders", "member", "members", "holding", "shares", "subscriber"],
+      "primary_source": "get_shareholders",
+      "fallback_sources": ["get_company"],
+      "reasoning": "Members may be individuals or corporate bodies, and the two are treated differently when signing. Check the type before drafting."
     },
     {
-      "intent": "Find meeting notes",
-      "keywords": ["meeting", "notes", "minutes", "standup", "sync", "1:1", "all-hands"],
-      "primary_source": "files",
-      "fallback_sources": [],
-      "reasoning": "Meeting notes may be stored as documents in company-docs"
+      "intent": "Choose who signs or attends",
+      "keywords": ["who signs", "signatory", "signer", "attendee", "present", "chairperson", "representative", "select", "choose"],
+      "primary_source": "lookup_register_candidates",
+      "fallback_sources": ["choose_person_from_register", "choose_attendees", "choose_director"],
+      "reasoning": "Always present a picker and let the user choose. A signer must never be guessed, and the choice must record the role it was made for."
     },
     {
-      "intent": "Find project information",
-      "keywords": ["project", "status", "update", "timeline", "roadmap", "milestone"],
-      "primary_source": "files",
-      "fallback_sources": [],
-      "reasoning": "Project info may be in planning docs or engineering-docs"
+      "intent": "Which fields a template needs",
+      "keywords": ["fields", "placeholders", "what information", "what do you need", "missing", "blanks"],
+      "primary_source": "get_data_for_template",
+      "fallback_sources": ["analyze_template_tool", "get_template_data"],
+      "reasoning": "Maps company data onto the template placeholders and shows what is still unfilled, so only the genuinely missing values get asked for."
     },
     {
-      "intent": "Find contact or team information",
-      "keywords": ["who", "contact", "team", "owner", "responsible", "lead", "manager"],
-      "primary_source": "files",
-      "fallback_sources": [],
-      "reasoning": "Team info may be in HR docs or organizational documents"
+      "intent": "Myanmar corporate-law procedure or drafting practice",
+      "keywords": ["procedure", "requirement", "law", "section", "compliance", "how should", "practice", "rule", "dica", "filing"],
+      "primary_source": "list_skills",
+      "fallback_sources": ["load_skill", "search"],
+      "reasoning": "Load the relevant playbook before advising on procedure. This is a Myanmar practice; do not reason from any other country's company law."
     },
     {
-      "intent": "Find announcements",
-      "keywords": ["announcement", "news", "update", "change", "launch", "release"],
-      "primary_source": "files",
-      "fallback_sources": [],
-      "reasoning": "Announcements may be archived in company-docs"
+      "intent": "Look something up in the knowledge base",
+      "keywords": ["what is", "explain", "definition", "meaning", "background", "knowledge"],
+      "primary_source": "search",
+      "fallback_sources": ["lookup", "quick_info"],
+      "reasoning": "Semantic search over trained template and company knowledge. Prefer it over answering from memory."
     },
     {
-      "intent": "Find reports or metrics",
-      "keywords": ["report", "metrics", "data", "numbers", "analysis", "export", "quarterly"],
-      "primary_source": "files",
-      "fallback_sources": [],
-      "reasoning": "Data exports and reports are in data-exports directory",
-      "known_locations": ["data-exports/reports/"]
+      "intent": "Documents already generated",
+      "keywords": ["previous", "already", "history", "generated", "past documents", "download again", "list documents"],
+      "primary_source": "list_documents",
+      "fallback_sources": ["get_document", "get_stats"],
+      "reasoning": "Every generated document is tracked with the company and template it came from, so an earlier draft can be found rather than regenerated."
     },
     {
-      "intent": "Create legal document",
-      "keywords": ["create", "generate", "prepare", "draft", "make", "agm", "poa", "notice", "meeting", "board", "resolution", "legal", "document"],
-      "primary_source": "generate_document",
+      "intent": "Send a document by email",
+      "keywords": ["email", "send", "mail", "forward", "share"],
+      "primary_source": "send_email_tool",
       "fallback_sources": [],
-      "reasoning": "Use generate_document tool with template from documents/legal/templates and company data from documents/legal/data",
-      "known_locations": ["documents/legal/templates/", "documents/legal/data/"]
+      "reasoning": "This QUEUES an email for the user to approve and send. It does not deliver anything. Tell the user the email is waiting for their approval; you cannot approve it yourself."
+    },
+    {
+      "intent": "Anything not about Myanmar corporate documents",
+      "keywords": ["weather", "news", "code", "recipe", "general knowledge"],
+      "primary_source": "get_clarification_info",
+      "fallback_sources": [],
+      "reasoning": "Out of scope. Say so plainly and offer what this system does handle."
     }
   ],
+
   "source_preferences": [
     {
-      "source": "files",
-      "best_for": ["policies", "runbooks", "architecture docs", "RFCs", "data exports", "compliance docs", "meeting notes", "project tracking"],
-      "search_first_when": ["looking for authoritative documents", "need full document content", "looking for technical docs"]
+      "source": "PostgreSQL registers (companies, people, templates, documents)",
+      "best_for": ["company particulars", "directors and members", "the People register", "trained template metadata", "generated-document history"],
+      "search_first_when": ["any question about a specific company or person", "deciding who signs a document", "checking whether a template exists"]
+    },
+    {
+      "source": "Legal skills (playbooks)",
+      "best_for": ["Myanmar corporate procedure", "drafting conventions", "signing rules", "the firm's own practice profile"],
+      "search_first_when": ["advising on procedure rather than filling a form", "unsure who is entitled to sign something"]
+    },
+    {
+      "source": "Document files",
+      "best_for": ["reading an uploaded template", "reading a generated document back"],
+      "search_first_when": ["the answer is in the wording of a specific .docx and not in the database"]
     }
   ],
+
   "common_gotchas": [
     {
-      "issue": "PTO policy location",
-      "description": "PTO info is in the Employee Handbook, not a standalone document",
-      "solution": "Search for 'PTO' in employee-handbook.md, Section 4"
+      "issue": "This is Myanmar law, not any other jurisdiction",
+      "description": "The applicable statute is the Myanmar Companies Law 2017 and the regulator is DICA. No other country's company law, securities regulator or filing regime applies, however familiar it may seem. Reciting a neighbouring jurisdiction's provisions here has already caused real defects in this product.",
+      "solution": "Cite a provision only when you can source it to Myanmar law. If you cannot, say so and cite nothing at all -- a borrowed or invented citation is worse than none."
     },
     {
-      "issue": "API docs may be stale",
-      "description": "Architecture docs may be outdated; check modified dates",
-      "solution": "Prefer engineering-docs for architecture; check modified dates"
+      "issue": "Company data is in the database, not in files",
+      "description": "There is no folder of company data to search. Company particulars, directors, members and the People register are PostgreSQL tables.",
+      "solution": "Use the company and register tools. Do not go looking for a data directory."
     },
     {
-      "issue": "Naming inconsistencies",
-      "description": "Same concept may have different names (e.g., 'Q4 Goals' vs 'Q4 OKRs' vs 'Q4 Objectives')",
-      "solution": "Try multiple search terms; use synonyms and variations"
+      "issue": "DICA extracts do not contain contact details",
+      "description": "A DICA filing publishes name, NRC, the company address and business occupation. It never carries a person's phone number, email address or residential address.",
+      "solution": "Ask for those. Never infer them, and never copy them from another company's record."
     },
     {
-      "issue": "Information in parent documents",
-      "description": "Specific info may be a section of a larger doc rather than its own file",
-      "solution": "If search fails, check broader documents like the employee handbook or system overview"
+      "issue": "A corporate shareholder signs through its own board",
+      "description": "A consent given by a corporate shareholder is signed by that shareholder company's own directors, not by the directors of the company being incorporated.",
+      "solution": "Identify whose board is signing before drafting, and confirm the signer through a picker."
+    },
+    {
+      "issue": "Fixed numbered slots do not mean fixed party counts",
+      "description": "Templates hard-code slots such as shareholder_1 to shareholder_3 and director_1 to director_3. These are template artefacts, not a limit on the real number of parties, and the document expands or shrinks to the actual list at fill time.",
+      "solution": "Work from the company's real member and director lists. Do not ask the user to fill a numbered slot that has no corresponding party."
+    },
+    {
+      "issue": "Some particulars are hand-entered and are often blank",
+      "description": "A person's father's name and country of residence are required for Myanmar drafting but are not published in a DICA extract, so they are frequently missing from the register.",
+      "solution": "Ask the user for them when a template needs them. A blank here is a missing fact, not a value of zero."
+    },
+    {
+      "issue": "Never guess a name, a date or a figure",
+      "description": "A plausible-looking wrong value in an executed legal document is far more damaging than an unanswered question. This system's worst defects have all been confident substitutions.",
+      "solution": "Ask. A clarify card costs the user a click; a wrong director on a filed resolution costs them a correction filing."
     }
   ]
 }

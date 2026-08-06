@@ -754,6 +754,109 @@ def test_structural_contracts():
     check("U12", "no foreign-jurisdiction statute is cited as Myanmar law",
           not hits, "; ".join(hits[:4]) if hits else "")
 
+    # The routing data files describe THIS product, and their tool names are real.
+    #
+    # scout/knowledge/routing/intents.json and scout/knowledge/sources/files.json
+    # are interpolated into the system prompt as DATA (via INTENT_ROUTING_CONTEXT
+    # and SOURCE_REGISTRY_STR). Nothing in them is code, so nothing in them is
+    # reachable by searching source for a symbol — which is exactly how
+    # `generate_document_tool` survived for weeks as the primary source for
+    # "Create legal document".
+    #
+    # On 2026-08-06 both files were still the generic enterprise-docs boilerplate
+    # they shipped from: 11 of 12 intents were about OKRs, RFCs, runbooks and PTO,
+    # the source registry advertised company-docs/, engineering-docs/ and
+    # data-exports/ — none of which have ever existed here — and a gotcha told the
+    # model that PTO sits in "employee-handbook.md, Section 4". 3.5k characters of
+    # a different product's map, in the prompt of a Myanmar legal drafting agent.
+    #
+    # The import-time audit does NOT cover this. It flags a backticked word only
+    # when that word shares an 8-character prefix with a registered tool, so a
+    # plainly wrong name passes it. This check closes that gap directly.
+    routing = REPO / "scout" / "knowledge" / "routing" / "intents.json"
+    sources = REPO / "scout" / "knowledge" / "sources" / "files.json"
+    if not routing.exists() or not sources.exists():
+        check("U16", "prompt routing data names real tools and real directories",
+              True, "SKIPPED — knowledge data files not present")
+    else:
+        import json as _json
+        intents = _json.loads(routing.read_text())
+        filesrc = _json.loads(sources.read_text())
+
+        named = set()
+        for m in intents.get("intent_mappings", []):
+            if m.get("primary_source"):
+                named.add(m["primary_source"])
+            named.update(m.get("fallback_sources", []))
+
+        # Compare against the LIVE registry. Skipped rather than failed when the
+        # agent cannot be imported, so this stays runnable outside the container.
+        try:
+            import app.main  # noqa: F401 — breaks the scout/app circular import
+            from scout.agent import scout as _scout
+            registered = set()
+            for t in _scout.tools or []:
+                n = getattr(t, "__name__", None) or getattr(t, "name", None)
+                if n:
+                    registered.add(str(n))
+                fns = getattr(t, "functions", None)
+                if isinstance(fns, dict):
+                    registered.update(str(k) for k in fns)
+        except Exception:  # noqa: BLE001
+            registered = set()
+
+        unregistered = sorted(named - registered) if registered else []
+
+        # Every directory the prompt advertises must exist. Telling the model
+        # about a folder that is not there is the file-system twin of naming a
+        # tool that is not registered: it tries, finds nothing, and says nothing.
+        try:
+            from scout.paths import DOCUMENTS_DIR as _DOCS
+            docs_root = Path(_DOCS)
+        except Exception:  # noqa: BLE001
+            docs_root = REPO / "documents"
+
+        def _resolve(p: str) -> Path:
+            p = p.strip().rstrip("/")
+            if p.startswith("documents/"):
+                return docs_root / p[len("documents/"):]
+            return REPO / p
+
+        advertised = [d["name"] for d in filesrc.get("directories", []) if d.get("name")]
+        advertised += list(filesrc.get("common_locations", {}).values())
+        ghosts = sorted({p for p in advertised if not _resolve(p).is_dir()})
+
+        # Vocabulary from the product this boilerplate came from. None of it
+        # describes anything in Legal Scout.
+        FOREIGN_VOCAB = [
+            "company-docs", "engineering-docs", "data-exports",
+            "employee-handbook", "Employee Handbook", "OKR", "PTO", "runbook",
+        ]
+
+        # Judge what RENDERS, not the commentary — the same rule U12 applies by
+        # skipping docstrings. A `_comment` key recording that these directories
+        # never existed is documentation; the formatter reads no key beginning
+        # with an underscore, so none of it can reach the model. Scanning raw
+        # text instead would make this check fail on its own fix.
+        def _rendered(node):
+            if isinstance(node, dict):
+                return " ".join(
+                    _rendered(v) for k, v in node.items() if not str(k).startswith("_")
+                )
+            if isinstance(node, list):
+                return " ".join(_rendered(v) for v in node)
+            return str(node)
+
+        blob = _rendered(intents) + " " + _rendered(filesrc)
+        stowaways = sorted({v for v in FOREIGN_VOCAB if v in blob})
+
+        check("U16", "prompt routing data names real tools and real directories",
+              not unregistered and not ghosts and not stowaways,
+              f"unregistered_tools={unregistered or 'none'} "
+              f"nonexistent_dirs={ghosts or 'none'} "
+              f"foreign_vocab={stowaways or 'none'} "
+              f"(registry_{'loaded' if registered else 'UNAVAILABLE—tool check skipped'})")
+
 
 def main():
     for fn in (
