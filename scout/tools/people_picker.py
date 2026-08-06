@@ -18,7 +18,10 @@ picker.
 """
 
 import json
-from typing import Any, Dict, List, Optional
+import logging
+import re
+from datetime import date
+from typing import Any, Dict, List, Optional, Tuple
 
 from agno.run import RunContext
 from agno.tools import tool
@@ -182,7 +185,18 @@ def _registered_people(cur, company_id: int, roles: tuple) -> List[Dict]:
         JOIN people p ON p.id = cp.person_id
         WHERE cp.company_id = %s
           AND cp.role = ANY(%s)
-          AND cp.resigned_date IS NULL
+          -- A resignation dated in the FUTURE has not happened yet. The old
+          -- `resigned_date IS NULL` dropped anyone carrying ANY date, so a
+          -- director whose 1 Dec 2026 resignation had already been recorded
+          -- vanished from every picker while still lawfully in office today —
+          -- and a name that is never shown cannot be chosen, whereas a name
+          -- shown in error can simply be declined.
+          --
+          -- KNOWN LIMIT: this is relative to TODAY, not to the DOCUMENT's date,
+          -- so minutes backdated before a resignation still omit that director.
+          -- The fix is to pass the document date down and compare against it;
+          -- that date does not reach this call today.
+          AND (cp.resigned_date IS NULL OR cp.resigned_date > CURRENT_DATE)
         ORDER BY p.full_name ASC
         """,
         (company_id, list(roles)),
@@ -210,12 +224,78 @@ def _registered_people(cur, company_id: int, roles: tuple) -> List[Dict]:
     return candidates
 
 
+# How a DICA filing spells "this officer has gone". people_sync.py reads
+# `date_of_cessation` first and falls back to `resigned_date` (people_sync.py:163);
+# the two lists must stay identical or the register and this fallback would
+# disagree about who holds office at the very same company.
+_CESSATION_KEYS = ("date_of_cessation", "resigned_date")
+
+# people_sync only trusts an unambiguous ISO date (its `_DATE_RE`): "01/12/2024"
+# is day-first in one filing and month-first in the next, and a half-parsed date
+# is worse than none.
+_ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+# What a DICA filing writes when it means "blank" (people_sync `_EMPTY_MARKERS`).
+# Without these a literal "-" in the cessation column reads as a resignation and
+# silently removes a sitting director from every picker.
+_EMPTY_DATE_MARKERS = frozenset({"", "-", "--", "n/a", "na", "none", "null", "nil"})
+
+
+def _cessation_status(entry: Dict[str, Any]) -> Tuple[bool, str]:
+    """Whether a legacy officer has already left office, and how that should read.
+
+    `_registered_people` filters cessations in SQL, but this fallback used to read
+    only name / position / appointed_date / shares — it never looked at cessation
+    at all. A company that was never synced into the People register therefore
+    offered its RESIGNED directors as if they were current, which is how a person
+    with no authority reaches a signature block.
+
+    Returns `(drop_this_person, subtitle_note)`. Only a cessation dated on or
+    before today drops anyone; everything else is offered WITH a note, because the
+    user can decline a name they can see and can do nothing about one they cannot:
+
+    * a future date is a resignation that has not taken effect — that person is
+      still lawfully in office today (same rule as the SQL filter above);
+    * an unreadable or blank date is a data-quality problem, not evidence that
+      anybody left.
+    """
+    unreadable = ""
+    for key in _CESSATION_KEYS:
+        text = str(entry.get(key) or "").strip()
+        if not text or text.lower() in _EMPTY_DATE_MARKERS:
+            continue
+        # An unreadable value does not end the search: people_sync takes the first
+        # PARSEABLE key (`_clean_date(date_of_cessation) or _clean_date(resigned_date)`),
+        # so a garbled `date_of_cessation` beside a clean `resigned_date` must
+        # resolve the same way here or one list would show a departed director the
+        # other had already removed.
+        try:
+            ceased = date.fromisoformat(text) if _ISO_DATE_RE.match(text) else None
+        except ValueError:  # regex matched, so only an impossible day (2026-02-31) lands here
+            ceased = None
+        if ceased is None:
+            logging.getLogger("legalscout").warning(
+                f"Unreadable {key} '{text}' on legacy officer "
+                f"'{entry.get('name') or entry.get('full_name') or '?'}' — offering them "
+                "anyway; check whether they have in fact resigned."
+            )
+            unreadable = unreadable or f"cessation recorded ({text})"
+            continue
+        if ceased <= date.today():
+            return True, ""
+        return False, f"resigns {text}"
+    return False, unreadable
+
+
 def _legacy_people(entries: List[Dict], role_label: str) -> List[Dict]:
     """Fallback candidates from the legacy companies.directors / members JSONB."""
     candidates = []
     for entry in entries:
         name = entry.get("name") or entry.get("full_name") or ""
         if not name:
+            continue
+        ceased, cessation_note = _cessation_status(entry)
+        if ceased:
             continue
         bits = [entry.get("position") or role_label]
         if entry.get("appointed_date"):
@@ -224,6 +304,10 @@ def _legacy_people(entries: List[Dict], role_label: str) -> List[Dict]:
             bits.append(f"{entry.get('shares') or entry.get('number_of_shares')} shares")
         if entry.get("percentage"):
             bits.append(f"{entry['percentage']}%")
+        # Shown, not hidden — but the user must be able to SEE that a departure is
+        # on file before they put this person's name on a signature block.
+        if cessation_note:
+            bits.append(cessation_note)
         candidates.append(
             _candidate(
                 person_id=None,
