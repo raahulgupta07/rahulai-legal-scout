@@ -10,12 +10,18 @@ Complete workflow for legal document generation:
 5. Generate final document
 """
 
+import hashlib
+import json as _json
 import logging
 import re
+import threading
+import time
 from datetime import datetime
+from functools import wraps
 from pathlib import Path
 from typing import Any
 
+from agno.run import RunContext
 from docx import Document
 
 from scout.tools.document_tracker import record_document
@@ -28,12 +34,92 @@ from scout.tools.placeholders import (
 )
 from scout.tools.slot_resolver import (
     collect_slot_requests,
+    companion_identifier,
     normalise_mapping,
     resolve_slot,
+    session_scope,
     slot_of,
 )
 
 LEFT_BLANK = ""
+
+
+def _session_of(run_context: Any) -> str:
+    """The conversation a document tool was called in.
+
+    agno injects `run_context` into any tool declaring it and strips it from the
+    schema the model sees, so this identifier cannot be forged by the model. It
+    scopes the picker-selection read-back in slot_resolver: without it, a person
+    chosen in one chat is reused in another chat for the same company.
+
+    Empty for non-chat callers (the Fill-in view), which is correct — they pass
+    their values explicitly and must not inherit any conversation's picks.
+    """
+    return str(getattr(run_context, "session_id", "") or "").strip()
+
+# --- Duplicate-generation guard -------------------------------------------
+# generate_document had no idea it had just run. Three things re-fire it with
+# identical inputs: the frontend's auto-"continue" nudge re-running the tool on
+# a silently-stopped run, a user double-clicking Generate, and browser retries.
+# Production produced the same Shareholders Resolution twice 19 seconds apart —
+# two near-identical .docx files, neither marked authoritative, for a legal
+# filing. So a successful generation is remembered briefly and an identical
+# repeat returns the SAME file instead of writing a new one.
+#
+# 120s covers the realistic accidental-repeat window (a resumed run, a retry, an
+# impatient second click) while staying far below any legitimate "regenerate the
+# same document again" request, which a user only makes minutes later and which
+# almost always carries changed data anyway.
+_DUPLICATE_WINDOW_SECONDS = 120
+# Bounded so a long-lived worker cannot accumulate entries forever; the oldest
+# entry is evicted once the cap is hit. Well above the number of documents any
+# one session generates inside a 2-minute window.
+_DUPLICATE_CACHE_MAX = 64
+# key -> (monotonic timestamp, previous successful result dict)
+_recent_generations: dict[str, tuple[float, dict[str, Any]]] = {}
+# Tool calls arrive on Agno's worker threads, so the dict is touched
+# concurrently.
+_recent_generations_lock = threading.Lock()
+
+
+def _generation_key(template_name: str, company_name: str, data: dict[str, Any]) -> str:
+    """Identity of a generation: template + company + the data actually filled in.
+
+    Hashing the resolved `data` (DB values already merged with custom_data) —
+    not the raw custom_data argument — is what makes this safe: any genuinely
+    different input, including a single changed signer, produces a different key
+    and therefore always writes a new document. sort_keys makes dict ordering
+    irrelevant; default=str keeps dates/Decimals from raising here.
+    """
+    try:
+        blob = _json.dumps(data, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        # Un-hashable data means we cannot prove two calls are identical, so
+        # fall back to a unique key — i.e. never suppress the generation.
+        blob = repr(object())
+    digest = hashlib.sha256(blob.encode("utf-8", "replace")).hexdigest()
+    return f"{template_name}|{company_name}|{digest}"
+
+
+def _lookup_recent_generation(key: str) -> dict[str, Any] | None:
+    """Return the previous result for `key` if it is still inside the window."""
+    now = time.monotonic()
+    with _recent_generations_lock:
+        # Drop anything expired while we hold the lock — keeps the cache from
+        # holding stale results and doubles as cheap maintenance.
+        for stale in [k for k, (ts, _) in _recent_generations.items() if now - ts > _DUPLICATE_WINDOW_SECONDS]:
+            del _recent_generations[stale]
+        entry = _recent_generations.get(key)
+        return dict(entry[1]) if entry else None
+
+
+def _remember_generation(key: str, result: dict[str, Any]) -> None:
+    """Cache a SUCCESSFUL generation only — a failure must always be retryable."""
+    with _recent_generations_lock:
+        if len(_recent_generations) >= _DUPLICATE_CACHE_MAX and key not in _recent_generations:
+            oldest = min(_recent_generations, key=lambda k: _recent_generations[k][0])
+            del _recent_generations[oldest]
+        _recent_generations[key] = (time.monotonic(), dict(result))
 
 
 def extract_placeholders_from_template(template_path: Path) -> dict[str, Any]:
@@ -141,6 +227,81 @@ def validate_data_vs_template(required_fields: list, company_data: dict) -> dict
         "missing_fields": missing_fields,
         "available_columns": available_columns,
         "is_complete": len(missing_fields) == 0,
+    }
+
+
+# --- Declared document state ----------------------------------------------
+# The document panel used to RECONSTRUCT its state by parsing six different
+# result keys and inferring status from `success`/`ready_to_generate`/
+# `file_name`. Every tool that shaped its result differently became a panel bug
+# (three were hand-fixed downstream before this). The tools know the answer, so
+# they now say it: one `document_state` key, identical in shape everywhere,
+# built by the single helper below so the shape cannot drift between tools.
+#
+# Nothing here queries or recomputes — every argument is something the caller
+# already had in hand.
+
+_TBD_VALUE_RE = re.compile(r"^\s*(tbd|\[tbd[^\]]*\]|n/?a|-{1,2})\s*$", re.IGNORECASE)
+
+
+def _norm_key(key: Any) -> str:
+    return str(key).strip().lower().replace(" ", "_").replace("-", "_")
+
+
+def _document_state(
+    template: str | None,
+    company: str | None,
+    required_fields: list | None,
+    values: dict[str, Any] | None,
+    status: str,
+    outstanding: list | None = None,
+    file_name: str | None = None,
+    download_url: str | None = None,
+) -> dict[str, Any]:
+    """Build the panel's whole state from data the caller already computed.
+
+    `outstanding` names fields a tool has DECLARED unresolved (missing fields,
+    unanswered slots, unfilled placeholders after a fill). That verdict beats a
+    value we happen to hold — but a held value is still worth showing as an
+    unconfirmed candidate, so it degrades to "tbd" rather than hiding behind
+    "pending".
+    """
+    normalised = {_norm_key(k): v for k, v in (values or {}).items()}
+    unresolved = {_norm_key(f) for f in (outstanding or [])}
+
+    fields: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw in required_fields or []:
+        key = str(raw).strip()
+        norm = _norm_key(key)
+        if not norm or norm in seen:
+            continue
+        seen.add(norm)
+
+        value = normalised.get(norm)
+        text = str(value).strip() if value not in (None, "") else ""
+
+        if norm in unresolved:
+            state = "tbd" if text else "pending"
+        elif not text:
+            state = "pending"
+        elif _TBD_VALUE_RE.match(text):
+            state = "tbd"
+        else:
+            state = "filled"
+
+        fields.append({"key": key, "value": text or None, "state": state})
+
+    filled = sum(1 for f in fields if f["state"] == "filled")
+    return {
+        "template": template,
+        "company": company,
+        "fields": fields,
+        "filled": filled,
+        "total": len(fields),
+        "status": status,
+        "file_name": file_name,
+        "download_url": download_url,
     }
 
 
@@ -307,11 +468,27 @@ def prepare_document_data(template_name: str, company_name: str, documents_dir: 
         company_name=company_name,
     )
 
+    outstanding = list(validation.get("missing_fields", [])) + [
+        r["placeholder"] for r in slot_requests
+    ]
+    ready = validation["is_complete"] and not slot_requests
+
     return {
         "success": True,
         "step": "complete",
         "slot_requests": slot_requests,
         "unresolved_slots": [r["placeholder"] for r in slot_requests],
+        "document_state": _document_state(
+            template=template_name,
+            company=company_name,
+            required_fields=required_fields,
+            values=normalized_company_data,
+            # A slot the user has not picked, or a field the template needs and
+            # the record does not carry, is input we are waiting on — not an
+            # error and not "ready".
+            status="ready" if ready else "awaiting-input",
+            outstanding=outstanding,
+        ),
         "template_analysis": {
             "template": template_name,
             "required_fields": required_fields,
@@ -321,7 +498,7 @@ def prepare_document_data(template_name: str, company_name: str, documents_dir: 
         "company_data": company_data,
         "normalized_data": normalized_company_data,
         "validation": validation,
-        "ready_to_generate": validation["is_complete"] and not slot_requests,
+        "ready_to_generate": ready,
         "message": _prepare_message(validation, slot_requests),
     }
 
@@ -410,12 +587,24 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
         """Analyze a template to see what fields are required."""
         return analyze_template(template_name, documents_dir)
 
-    def prepare_document(template_name: str, company_name: str) -> dict[str, Any]:
+    def prepare_document(
+        template_name: str, company_name: str, run_context: RunContext = None
+    ) -> dict[str, Any]:
         """Complete workflow: analyze, validate, prepare data."""
-        return prepare_document_data(template_name, company_name, documents_dir)
+        with session_scope(_session_of(run_context)):
+            return prepare_document_data(template_name, company_name, documents_dir)
 
-    def generate_document(template_name: str, company_name: str, custom_data: dict = None) -> dict[str, Any]:
+    def generate_document(
+        template_name: str,
+        company_name: str,
+        custom_data: dict = None,
+        run_context: RunContext = None,
+    ) -> dict[str, Any]:
         """Generate document with validation workflow."""
+        with session_scope(_session_of(run_context)):
+            return _generate_document(template_name, company_name, custom_data)
+
+    def _generate_document(template_name: str, company_name: str, custom_data: dict = None) -> dict[str, Any]:
         result = prepare_document_data(template_name, company_name, documents_dir)
 
         if not result.get("success"):
@@ -458,9 +647,23 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
                 "error": "Need party selection for role slots",
                 "slot_requests": slot_requests,
                 "unresolved_slots": [r["placeholder"] for r in slot_requests],
-                "message": "Waiting for you to choose the "
+                # success=False here means "waiting on the user", not "failed".
+                # Declaring the state is what stops the panel inferring an error
+                # pane from the flag alone.
+                "document_state": _document_state(
+                    template=template_name,
+                    company=company_name,
+                    required_fields=result.get("template_analysis", {}).get("required_fields", []),
+                    values=slot_data,
+                    status="awaiting-input",
+                    outstanding=[r["placeholder"] for r in slot_requests],
+                ),
+                # Deliberately does not name a place ("the card in the chat"):
+                # the same result is shown in the chat picker AND in the Fill-in
+                # panel, and naming the wrong one reads as a broken instruction.
+                "message": "Choose the "
                 + ", ".join(_role(r) for r in slot_requests)
-                + " from the card in the chat.",
+                + " before generating this document.",
                 "agent_instruction": "ACT NOW, IN THIS SAME TURN — do not end your turn empty. Call the first lookup tool immediately, then its picker: "
                 + ", ".join(
                     f"{r['lookup_tool']} → {r['picker']} for {r['kind']}"
@@ -547,6 +750,17 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
                     "db_fields_filled": db_fields_filled,
                     "static_text_warnings": field_classification.get("static_text_warnings", []),
                     "message": "These fields need your input (company data is already filled)",
+                    "document_state": _document_state(
+                        template=template_name,
+                        company=company_name,
+                        required_fields=result.get("template_analysis", {}).get("required_fields", []),
+                        # The smart defaults are candidates, not answers: they
+                        # show as "tbd" because every one of these keys is also
+                        # listed as outstanding.
+                        values={**normalized_data, **field_defaults},
+                        status="awaiting-input",
+                        outstanding=missing_user_fields,
+                    ),
                 }
 
         # Auto-generate defaults for missing fields
@@ -565,14 +779,51 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
             return {"success": False, "error": "Template not found"}
 
         data = result.get("normalized_data", {})
+        # Company-identity scalars the model must never overwrite via custom_data.
         PROTECTED_FIELDS = {
             "company_registration_number", "company_name", "company_name_english",
-            "directors", "members", "shareholders", "status", "company_type",
-            "registered_office", "registered_office_address",
+            "status", "company_type", "registered_office", "registered_office_address",
         }
+        # Party lists (directors/members/shareholders) ARE legitimate custom_data —
+        # repeat_regions expands the "Present:" list and signing blocks from them
+        # (repeat_regions.py:_parties_for_family). Blanket-stripping them was
+        # dropping the caller's attendee/member selection and forcing a silent DB
+        # fallback (finding F3). Only block a SCALAR overwrite of these company
+        # lists; a real list passes through untouched.
+        PROTECTED_UNLESS_LIST = {"directors", "members", "shareholders"}
         if custom_data:
-            safe_custom = {k: v for k, v in custom_data.items() if k.lower() not in PROTECTED_FIELDS}
+            safe_custom = {}
+            for k, v in custom_data.items():
+                kl = k.lower()
+                if kl in PROTECTED_FIELDS:
+                    continue
+                if kl in PROTECTED_UNLESS_LIST and not isinstance(v, list):
+                    continue
+                safe_custom[k] = v
             data.update(safe_custom)
+
+        # Idempotency check sits here, after `data` is fully resolved and before
+        # anything is written: this is the last point where the inputs are known
+        # and the first side effect (saving the .docx, S3 upload, record_document)
+        # has not happened yet.
+        #
+        # LIMITATION: the cache is per-process, and the API runs under
+        # `uvicorn --workers 2`. A duplicate that lands on the other worker is
+        # NOT caught. This is a mitigation for the common case (same session,
+        # same worker, retry/double-click), not a distributed lock — a real
+        # guarantee needs a DB uniqueness constraint or advisory lock.
+        dedupe_key = _generation_key(template_name, company_name, data)
+        previous = _lookup_recent_generation(dedupe_key)
+        if previous:
+            previous["reused"] = True
+            previous["message"] = (
+                f"A matching {template_name} for {company_name} with identical data was just "
+                f"generated (within the last {_DUPLICATE_WINDOW_SECONDS} seconds), so the existing "
+                f"file {previous.get('file_name', '')} is returned instead of creating a duplicate. "
+                "Tell the user this is the same document, not a new one. Change the data if a "
+                "different version is needed."
+            )
+            return previous
 
         filled_doc = fill_template_with_validation(template_path, data, template_name=template_name, company_name=company_name)
 
@@ -639,15 +890,29 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
             custom_data=data,
         )
 
-        return {
+        payload = {
             "success": True,
             "step": "generated",
+            "reused": False,
             "file_name": output_filename,
             "file_path": str(output_path),
             "download_url": doc_url,
             "validation": validation,
             "preview": preview,
             "message": f"Document created successfully for {company_name}",
+            # Same numbers the validation_summary reports, expressed per field:
+            # every template placeholder, the value it received, and whether the
+            # filled .docx still shows it unresolved.
+            "document_state": _document_state(
+                template=template_name,
+                company=company_name,
+                required_fields=all_template_placeholders,
+                values=data,
+                status="generated",
+                outstanding=validation.get("unfilled_names", []),
+                file_name=output_filename,
+                download_url=doc_url,
+            ),
             "warnings": validation.get("unfilled_placeholders", []) if not validation.get("is_valid") else [],
             # Validation summary for user
             "validation_summary": {
@@ -663,10 +928,44 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
                 "when_to_use": result.get("template_analysis", {}).get("when_to_use", ""),
                 "how_to_use": result.get("template_analysis", {}).get("how_to_use", []),
             },
+            # Told to the model, never shown to the user.
+            #
+            # This is the single most common place the agent goes quiet. Measured
+            # on the live app: the document is written, the tool returns, and the
+            # turn ends with 0 characters of visible text and ~200 characters of
+            # invisible reasoning ("I've received confirmation to proceed and am
+            # now preparing to call the document generator…"). The user sees an
+            # empty bubble; the frontend covers it by sending "continue", which
+            # costs a whole extra model round-trip.
+            #
+            # A rule in the system prompt was not enough — this is the text the
+            # model reads immediately before deciding whether to stop, so the
+            # demand belongs here.
+            "agent_instruction": (
+                "The document EXISTS now. Do not call this tool again. "
+                "Reply to the user IN THIS SAME TURN — ending the turn without text "
+                "is a bug, not brevity. One or two sentences: what was generated, for "
+                f"which company, and the download link `{doc_url}` on a single line. "
+                + (
+                    "Then name the fields still unfilled and ask whether to fill them: "
+                    + ", ".join(validation.get("unfilled_names", [])[:6])
+                    if validation.get("unfilled_names")
+                    else "Then offer the obvious next step — emailing it, or the companion document."
+                )
+            ),
         }
 
+        # Only successes are remembered — a failed run must stay retryable.
+        _remember_generation(dedupe_key, payload)
+        return payload
+
     # Combined tool: Analyze + Prepare + Generate in one call
-    def create_document(template_name: str, company_name: str, custom_data: dict = None) -> dict:
+    def create_document(
+        template_name: str,
+        company_name: str,
+        custom_data: dict = None,
+        run_context: RunContext = None,
+    ) -> dict:
         """
         Complete document creation in one call.
         Combines analyze, prepare, and generate.
@@ -679,11 +978,20 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
         Returns:
             Full result with download URL and validation summary
         """
-        return generate_document(template_name, company_name, custom_data)
+        with session_scope(_session_of(run_context)):
+            return _generate_document(template_name, company_name, custom_data)
 
-    def preview_doc(template_name: str, company_name: str, custom_data: dict = None) -> dict[str, Any]:
+    def preview_doc(
+        template_name: str,
+        company_name: str,
+        custom_data: dict = None,
+        run_context: RunContext = None,
+    ) -> dict[str, Any]:
         """Preview document - shows what will be filled without saving."""
+        with session_scope(_session_of(run_context)):
+            return _preview_doc(template_name, company_name, custom_data)
 
+    def _preview_doc(template_name: str, company_name: str, custom_data: dict = None) -> dict[str, Any]:
         result = prepare_document_data(template_name, company_name, documents_dir)
 
         if not result.get("success"):
@@ -760,17 +1068,13 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
 
         preview_lines.append("")
         preview_lines.append("---")
-        preview_lines.append("")
-        preview_lines.append("**Ready to proceed?**")
-        preview_lines.append("")
-        # Extract short template name for button
+        # The lettered a)/b) menu that used to live here was the very grammar the
+        # system prompt bans — and it came from tool output, so no amount of
+        # prompt discipline could suppress it. The choice is now handed to
+        # `ask_questions`, which renders clickable chips.
         short_name = template_name.replace(".docx", "").replace("_", " ")
         if len(short_name) > 40:
             short_name = short_name[:37] + "..."
-        preview_lines.append(f"a) ✅ Generate \"{short_name}\" for {company_name}")
-        preview_lines.append("b) ❌ Cancel and modify data")
-        preview_lines.append("")
-        preview_lines.append("What would you like to do?")
 
         return {
             "success": True,
@@ -781,15 +1085,75 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
             "matched_fields": validation.get("available_fields", []),  # Use correct key
             "missing_fields": validation.get("missing_fields", []),
             "data": preview_data,
+            "document_state": _document_state(
+                template=template_name,
+                company=company_name,
+                required_fields=result.get("template_analysis", {}).get("required_fields", []),
+                values=preview_data,
+                # A preview that still has missing fields or unpicked parties is
+                # waiting on the user; otherwise it is ready to generate.
+                status="ready"
+                if result.get("ready_to_generate")
+                else "awaiting-input",
+                outstanding=list(validation.get("missing_fields", []))
+                + list(result.get("unresolved_slots", [])),
+            ),
             "needs_approval": True,
+            # Told to the model, not shown to the user: how to ask for approval.
+            #
+            # "Show the preview" was being read as optional. Measured on the live
+            # app, this tool returned and the turn ended with 0 characters of
+            # visible text and 268 characters of invisible reasoning — the user
+            # got an empty bubble where the preview should have been, and the
+            # frontend had to nudge the run forward with a synthetic "continue".
+            # So the demand for text is now explicit and first.
+            "agent_instruction": (
+                "WRITE THE PREVIEW OUT TO THE USER NOW, IN THIS SAME TURN. A turn that "
+                "ends here with no text is a bug — the user is left looking at an empty "
+                "reply while waiting to approve. Summarise what will be filled and what "
+                "is still missing, THEN call ask_questions with ONE question — "
+                f"\"Generate {short_name} for {company_name} now?\" — and the options "
+                "[\"Yes, generate it\", \"No, change the data first\"]. "
+                "Never write a lettered a)/b) menu in prose."
+            ),
         }
 
+    def _as_json(fn):
+        """Return the tool's result as a JSON string rather than a dict.
+
+        Agno stringifies a dict return with `str()`, which produces Python repr
+        — single quotes, True/False/None. The browser then has to parse Python,
+        and a value containing an apostrophe or a curly quote breaks the parse
+        and blanks the document panel. The generate_document preview text
+        contains all three.
+
+        JSON is also what the model reads back, so this makes the tool result
+        unambiguous on both sides. `default=str` keeps dates and Decimals from
+        raising mid-serialisation.
+        """
+        @wraps(fn)
+        def wrapper(*args, **kwargs):
+            result = fn(*args, **kwargs)
+            if isinstance(result, str):
+                return result  # already serialised by the callee
+            try:
+                return _json.dumps(result, default=str)
+            except (TypeError, ValueError) as e:
+                logging.getLogger("legalscout").warning(
+                    f"[SMART_DOC] {fn.__name__} result not JSON-serialisable: {e}"
+                )
+                return _json.dumps({"success": False, "error": f"Result could not be serialised: {e}"})
+
+        return wrapper
+
+    # Only the tools whose results the document panel reads are wrapped. The
+    # rest are unchanged so this cannot ripple through the agent's tool surface.
     return {
         "analyze_template": analyze_template_tool,
-        "prepare_document": prepare_document,
-        "generate_document": generate_document,
-        "create_document": create_document,
-        "preview_document": preview_doc,
+        "prepare_document": _as_json(prepare_document),
+        "generate_document": _as_json(generate_document),
+        "create_document": _as_json(create_document),
+        "preview_document": _as_json(preview_doc),
     }
 
 
@@ -866,6 +1230,17 @@ def fill_template_with_validation(template_path: Path, data: dict[str, Any], tem
     """Fill template with data, highlighting filled values in yellow."""
     doc = Document(str(template_path))
     empty_counter = new_empty_counter()
+
+    # Dynamic list expansion: grow/shrink Present lists, appointed-director
+    # lists and signing-table row groups to the real party count BEFORE fill.
+    # Returns synthetic {token: value} pairs the highlighter fills like any slot.
+    try:
+        from scout.tools.repeat_regions import expand_repeat_regions
+        synth = expand_repeat_regions(doc, data, template_name=template_name, company_name=company_name)
+        if synth:
+            data = {**data, **synth}
+    except Exception as e:
+        logging.getLogger("legalscout").warning(f"repeat-region expansion skipped: {e}")
 
     for paragraph in doc.paragraphs:
         _fill_paragraph_highlighted(paragraph, data, PLACEHOLDER_PATTERN, template_name=template_name, company_name=company_name, empty_counter=empty_counter)
@@ -1056,6 +1431,20 @@ def find_replacement(placeholder: str, data: dict[str, Any], template_name: str 
                     resolved = _resolve_from_data(placeholder, data)
                     if resolved:
                         return resolved
+
+                    # An NRC/passport belongs to a person, not to the document.
+                    # Training classifies it `user_input` because it is not a
+                    # column on companies, which decoupled it from the name slot
+                    # beside it — the picker chose the person, the NRC was asked
+                    # as free text, and the two could disagree or come out blank
+                    # while the register held the number all along.
+                    companion = companion_identifier(
+                        placeholder, mapping, data,
+                        company_name=company_name, document_id=document_id,
+                    )
+                    if companion:
+                        return companion
+
                     if default and default != "today" and str(default).strip():
                         return str(default)
                     return LEFT_BLANK

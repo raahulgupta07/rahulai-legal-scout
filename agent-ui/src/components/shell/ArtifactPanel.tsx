@@ -17,10 +17,11 @@ import type { Artifact, ArtifactField, ArtifactStatus } from './useArtifact'
 const DocViewer = dynamic(() => import('@/components/ui/DocViewer'), {
   ssr: false
 })
+const FillInView = dynamic(() => import('./FillInView'), { ssr: false })
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || ''
 
-type Tab = 'fields' | 'preview'
+type Tab = 'fields' | 'fill' | 'preview'
 
 /** Status pill colouring — a green-family tint scale, warn/danger for the
  *  exceptions. All alpha comes from color-mix so it tracks the theme. */
@@ -106,13 +107,29 @@ export default function ArtifactPanel({
   const [tab, setTab] = useState<Tab>('fields')
   const [previewNonce, setPreviewNonce] = useState(0)
 
-  const fileName = artifact?.fileName ?? null
+  // A "View" click in the transcript names one specific document. It wins over
+  // the latest artifact, because a conversation can produce several files and
+  // the user asked for THAT one.
+  const previewRequest = useStore((s) => s.previewRequest)
+  const [requestedFile, setRequestedFile] = useState<string | null>(null)
 
-  // A freshly generated file deserves the preview, not the field list the
-  // user has already watched fill in.
+  const fileName = requestedFile ?? artifact?.fileName ?? null
+
   useEffect(() => {
-    if (fileName) setTab('preview')
-  }, [fileName])
+    if (!previewRequest) return
+    setRequestedFile(previewRequest.fileName)
+    setTab('preview')
+    // Re-read even when the same file is asked for twice.
+    setPreviewNonce((n) => n + 1)
+  }, [previewRequest])
+
+  // A newly generated file supersedes whatever was pinned by an earlier click.
+  useEffect(() => {
+    if (artifact?.fileName) {
+      setRequestedFile(null)
+      setTab('preview')
+    }
+  }, [artifact?.fileName])
 
   const previewUrl = useMemo(() => {
     if (!fileName) return null
@@ -151,9 +168,19 @@ export default function ArtifactPanel({
         <div role="tablist" aria-label="Document view" className="flex items-center gap-1">
           <TabButton active={tab === 'fields'} onClick={() => setTab('fields')}>
             Fields
+            {/* artifact.total, not fields.length: the meter below and the
+                "Outstanding" header read the same derived counts, so the tab
+                can no longer say "Fields 0" next to "6 blanks left". */}
             <span className="text-[10px] tabular-nums text-[var(--text-muted)]">
-              {artifact.fields.length}
+              {artifact.total}
             </span>
+          </TabButton>
+          <TabButton
+            active={tab === 'fill'}
+            onClick={() => setTab('fill')}
+            disabled={!artifact.templateName || !artifact.companyName}
+          >
+            Fill in
           </TabButton>
           <TabButton
             active={tab === 'preview'}
@@ -228,8 +255,24 @@ export default function ArtifactPanel({
                   />
                 </div>
                 <div className="min-h-0 flex-1 overflow-auto">
-                  <FieldList fields={artifact.fields} message={artifact.message} />
+                  <FieldList
+                    fields={artifact.fields}
+                    message={artifact.message}
+                    outstanding={artifact.outstanding}
+                  />
                 </div>
+              </div>
+            ) : tab === 'fill' ? (
+              <div className="min-h-0 flex-1 overflow-hidden">
+                <FillInView
+                  templateName={artifact.templateName}
+                  companyName={artifact.companyName}
+                  // Everything the conversation has already settled — picker
+                  // choices, answers to question cards, values read from the
+                  // register. Without this the panel re-asks for what the user
+                  // just typed into the chat.
+                  knownFields={artifact.fields}
+                />
               </div>
             ) : previewUrl ? (
               <div className="min-h-0 flex-1 overflow-hidden">
@@ -302,10 +345,13 @@ function Meter({
 
 function FieldList({
   fields,
-  message
+  message,
+  outstanding
 }: {
   fields: ArtifactField[]
   message: string | null
+  /** Artifact-level count — the same number the tab badge and meter use. */
+  outstanding: number
 }) {
   const pending = fields.filter((f) => f.state !== 'filled')
   const filled = fields.filter((f) => f.state === 'filled')
@@ -327,7 +373,7 @@ function FieldList({
       )}
 
       {pending.length > 0 && (
-        <FieldGroup title="Outstanding" count={pending.length} fields={pending} />
+        <FieldGroup title="Outstanding" count={outstanding} fields={pending} />
       )}
       {filled.length > 0 && (
         <FieldGroup title="Resolved" count={filled.length} fields={filled} />
