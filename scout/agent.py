@@ -293,6 +293,103 @@ base_tools: list = (
 )
 
 # ---------------------------------------------------------------------------
+# Tool inventory — GENERATED from the registry, never hand-written
+# ---------------------------------------------------------------------------
+def _registered_tool_names(tools: list) -> set[str]:
+    """Every name the model can actually call, including toolkit members.
+
+    A Toolkit (FileTools, MCPTools) is ONE entry in the list but registers
+    several callables, so reading only its own name hides all of them.
+    """
+    names: set[str] = set()
+    for tool in tools or []:
+        name = getattr(tool, "__name__", None) or getattr(tool, "name", None)
+        if name:
+            names.add(str(name))
+        functions = getattr(tool, "functions", None)
+        if isinstance(functions, dict):
+            names.update(str(key) for key in functions)
+    return names
+
+
+def _build_tool_inventory(tools: list) -> str:
+    """Render the authoritative tool list FROM the registry.
+
+    The prompt used to describe the tools entirely in hand-written prose, and it
+    drifted from reality four separate times, every one of them silent — the
+    model follows the instruction, finds no such tool, and ends the turn with
+    nothing:
+
+      generate_dica_extract  never added to _tools_to_add at all
+      list_companies         registered under its __name__, list_all_companies
+      preview_document       the export-dict key; @wraps made the real name
+                             preview_doc
+      generate_document_tool named as primary_source in
+                             scout/knowledge/routing/intents.json, which is
+                             interpolated into this prompt as DATA — invisible
+                             to any search of the source
+
+    A list built from the registry cannot drift from the registry. The prose
+    elsewhere still explains WHEN to reach for each tool; this section is the
+    contract about what exists, and _audit_prompt_tool_contract() below now
+    refuses to start the process when the two disagree.
+
+    The one-line purpose is the first sentence of each tool's own docstring —
+    already the single source of truth, and already what agno sends the model as
+    the tool description.
+    """
+    seen: dict[str, str] = {}
+    for tool in tools or []:
+        candidates = []
+        functions = getattr(tool, "functions", None)
+        if isinstance(functions, dict):
+            candidates.extend(functions.values())
+        else:
+            candidates.append(tool)
+        for fn in candidates:
+            name = getattr(fn, "__name__", None) or getattr(fn, "name", None)
+            if not name or name in seen:
+                continue
+            # Order matters. A plain function carries its purpose in __doc__,
+            # but an agno-wrapped one is a Function INSTANCE whose __doc__ is
+            # the class docstring — "Model for storing functions that can be
+            # called by an agent." Reading __doc__ first put that sentence
+            # against 24 of the 45 tools, which describes agno rather than any
+            # of them. The wrapper keeps the real text on .description, and the
+            # original callable on .entrypoint.
+            entrypoint = getattr(fn, "entrypoint", None)
+            doc = str(getattr(fn, "description", "") or "").strip()
+            if not doc and entrypoint is not None:
+                doc = (getattr(entrypoint, "__doc__", None) or "").strip()
+            if not doc and not isinstance(getattr(fn, "functions", None), dict):
+                own = (getattr(fn, "__doc__", None) or "").strip()
+                if not own.startswith("Model for storing functions"):
+                    doc = own
+            first = doc.split("\n", 1)[0].strip()
+            # Trim to one sentence; these are reminders, not documentation.
+            if len(first) > 110:
+                first = first[:107].rstrip() + "..."
+            seen[str(name)] = first
+    if not seen:
+        return ""
+    lines = [f"- `{name}` — {purpose}" if purpose else f"- `{name}`"
+             for name, purpose in sorted(seen.items())]
+    return (
+        "## Tools you actually have (generated from the registry)\n\n"
+        "This list is built from the live tool registry at startup, so it is "
+        "always exactly what you can call. If a tool is not on this list it does "
+        "not exist, no matter what any other instruction says — calling it does "
+        "nothing and ends your turn with no reply, which the user sees as a "
+        "hang. When an instruction names a tool that is not here, do the closest "
+        "thing on this list and say what you did.\n\n"
+        + "\n".join(lines)
+    )
+
+
+TOOL_INVENTORY_BLOCK = _build_tool_inventory(base_tools)
+
+
+# ---------------------------------------------------------------------------
 # Dynamic template knowledge — auto-loaded from DB
 # ---------------------------------------------------------------------------
 def _build_template_knowledge() -> str:
@@ -496,6 +593,8 @@ You are Legal Scout - a helpful legal document assistant for Myanmar corporate l
 - The user is allowed to leave a date blank — if they do, leave it blank. Do not substitute today's date.
 - Format dates as: YYYY-MM-DD for data fields, "DD Month YYYY" for display
 - Only if the user explicitly says "use today's date" or "current date" → use the date from context
+
+{TOOL_INVENTORY_BLOCK}
 
 ## SCOPE RESTRICTION — CRITICAL
 
@@ -1622,18 +1721,9 @@ def _audit_prompt_tool_contract() -> list[str]:
     except Exception:  # noqa: BLE001
         return []
 
-    registered = set()
-    for tool in scout.tools or []:
-        name = getattr(tool, "__name__", None) or getattr(tool, "name", None)
-        if name:
-            registered.add(str(name))
-        # A Toolkit (FileTools, MCPTools) is ONE entry in scout.tools but
-        # registers several callables with the model. Reading only its own name
-        # hides every function inside it, which made the prompt's legitimate
-        # `save_file(...)` look like a missing tool.
-        functions = getattr(tool, "functions", None)
-        if isinstance(functions, dict):
-            registered.update(str(k) for k in functions)
+    # Shared with the inventory generator, so the list the model is SHOWN and the
+    # list this check measures against can never be two different things.
+    registered = _registered_tool_names(scout.tools or [])
 
     # Anything that reads as a call, backticked or bare.
     #
@@ -1684,3 +1774,35 @@ def _audit_prompt_tool_contract() -> list[str]:
 
 
 _PROMPT_TOOL_MISMATCHES = _audit_prompt_tool_contract()
+
+# Refuse to start on a broken prompt/tool contract.
+#
+# For weeks this was a log line, and a log line is worth exactly as much as
+# someone reading it. Four mismatches shipped anyway, and each one failed the
+# same silent way: the model follows the instruction, finds no such tool, and
+# ends the turn with no text. To the user that is a hang. To the logs it is
+# nothing at all — the tool was never called, so nothing records that it was
+# missing.
+#
+# Crashing at import is the loud alternative, and it is the right trade here.
+# The failure it replaces is not "one feature is degraded", it is "the agent
+# silently stops mid-task on whichever requests happen to need that tool", which
+# is far more expensive to diagnose than a container that will not start with
+# the offending names printed.
+#
+# STARTUP_STRICT_TOOLS=0 downgrades this to the old warning. It exists for one
+# situation: a production incident where a false positive here is the only thing
+# standing between the user and a working system. It is not a way to keep a
+# known mismatch.
+if _PROMPT_TOOL_MISMATCHES and getenv("STARTUP_STRICT_TOOLS", "1") != "0":
+    raise RuntimeError(
+        "PROMPT/TOOL MISMATCH — refusing to start. The system prompt tells the "
+        f"model to call tools that are not registered: {', '.join(_PROMPT_TOOL_MISMATCHES)}. "
+        "Requests needing them end the turn with no reply, which reads as a hang "
+        "and leaves no trace in the logs. Fix by adding the tool to "
+        "_tools_to_add, or by correcting the name in the prompt — including "
+        "prompt text that arrives as DATA, such as scout/knowledge/routing/"
+        "intents.json, which is interpolated into the instructions and will not "
+        "turn up in a search of the source. Set STARTUP_STRICT_TOOLS=0 to "
+        "downgrade this to a warning during an incident."
+    )

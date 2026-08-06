@@ -565,6 +565,41 @@ def test_structural_contracts():
               f"preview_excluded_from_closable={preview_excluded} "
               f"carried={carried} sends={sends_message} rendered={rendered}")
 
+    # The tool list the model reads must be GENERATED, and a mismatch must be fatal.
+    #
+    # Four prompt/tool mismatches shipped while this was hand-written prose
+    # checked by a log line, and every one failed silently — the model follows
+    # the instruction, finds no such tool, and ends the turn with no text, which
+    # reads as a hang and leaves no trace because the tool was never called:
+    #
+    #   generate_dica_extract  never added to _tools_to_add
+    #   list_companies         registered as list_all_companies
+    #   preview_document       export-dict key; @wraps made it preview_doc
+    #   generate_document_tool named in scout/knowledge/routing/intents.json,
+    #                          which reaches the prompt as DATA
+    #
+    # A log line is worth what someone reading it is worth. The inventory is now
+    # built from the live registry, and startup refuses on a mismatch.
+    agent_src = (REPO / "scout" / "agent.py")
+    if not agent_src.exists():
+        check("U13", "the tool inventory is generated and mismatches are fatal", True,
+              "SKIPPED — scout/agent.py not present")
+    else:
+        a = agent_src.read_text()
+        generates = "_build_tool_inventory" in a and "TOOL_INVENTORY_BLOCK" in a
+        injected = "{TOOL_INVENTORY_BLOCK}" in a
+        # The audit and the inventory must measure the SAME registry, or the
+        # list shown and the list checked drift apart again.
+        shared = a.count("_registered_tool_names(") >= 2
+        fatal = re.search(r"if _PROMPT_TOOL_MISMATCHES and[\s\S]{0,200}?raise RuntimeError", a) is not None
+        # The agno Function wrapper keeps its purpose on .description; __doc__
+        # is the class docstring, which described agno for 24 of 45 tools.
+        real_desc = "Model for storing functions" in a and 'getattr(fn, "description"' in a
+        check("U13", "the tool inventory is generated and mismatches are fatal",
+              generates and injected and shared and fatal and real_desc,
+              f"generates={generates} injected={injected} shared_registry={shared} "
+              f"fatal={fatal} real_descriptions={real_desc}")
+
     # No foreign-jurisdiction statute may be cited by this product.
     #
     # app/main.py:_get_legal_refs_from_name() hardcoded Indian company law —
