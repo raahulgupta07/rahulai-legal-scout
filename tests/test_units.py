@@ -1009,6 +1009,136 @@ def test_structural_contracts():
               f"no_public_documents_entry={no_dead_entry}")
 
 
+# ===========================================================================
+# U19-U22  Register authority
+#     Who is allowed to sign, and what the product is allowed to claim a tool
+#     is called. Both have produced legally wrong documents.
+# ===========================================================================
+def test_register_authority():
+    import app.main as _app_main  # noqa: F401 — already imported at bootstrap
+    import scout.agent as _agent
+    from db.connection import get_db_conn
+
+    registry = _agent._registered_tool_names(_agent.scout.tools or [])
+
+    # --- U19: skill BODIES name real tools ---------------------------------
+    # The startup contract audit reads name + description only, so bodies —
+    # the L2 playbooks lawyers edit in the admin UI — were never checked. Seven
+    # enabled skills shipped naming `preview_document` (registered as
+    # `preview_doc`) and `list_tracked_documents` (registered as
+    # `list_documents`). The model follows the instruction, finds no tool, and
+    # the step silently does not happen.
+    conn = get_db_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT name, body FROM legal_skills WHERE enabled = TRUE ORDER BY name")
+        skills = cur.fetchall()
+        cur.close()
+    finally:
+        conn.close()
+
+    check("U19a", "there are enabled skills to audit", len(skills) > 0, f"{len(skills)} enabled")
+
+    bad = {}
+    for sname, body in skills:
+        refs = set(re.findall(r"`([a-z_][a-z0-9_]{3,})\(?\)?`", body or ""))
+        refs |= set(re.findall(r"\b([a-z_][a-z0-9_]{3,})\(\)", body or ""))
+        for r in sorted(refs):
+            if r in registry:
+                continue
+            # Only a NEAR MISS is a defect. A skill body is prose; flagging every
+            # unknown snake_case token would trip on placeholder names and DB
+            # columns. Same 6-char prefix rule the /api/skills validator uses.
+            if any(t.startswith(r[:6]) or r.startswith(t[:6]) for t in registry):
+                bad.setdefault(sname, []).append(r)
+    check("U19b", "every enabled skill body names only registered tools",
+          not bad, f"{bad}" if bad else "")
+
+    # The two specific names that shipped, asserted by hand so a future
+    # re-seed of migration 014 cannot quietly reintroduce them.
+    eq("U19c", "preview_document is not a tool (preview_doc is)",
+       ("preview_document" in registry, "preview_doc" in registry), (False, True))
+    eq("U19d", "list_tracked_documents is not a tool (list_documents is)",
+       ("list_tracked_documents" in registry, "list_documents" in registry), (False, True))
+
+    # --- U20: legacy cessation ---------------------------------------------
+    # `_registered_people` filters cessation in SQL, but `_directors_of` falls
+    # back to `_legacy_people` when a company has no register rows — and that
+    # path read only name/position/appointed_date/shares. An unsynced company
+    # offered its RESIGNED directors as current, which is how a person with no
+    # authority reaches a signature block.
+    from datetime import date, timedelta
+    past = (date.today() - timedelta(days=30)).isoformat()
+    future = (date.today() + timedelta(days=120)).isoformat()
+
+    def _names(entries):
+        return [c.get("name") for c in pp._legacy_people(entries, "Director")]
+
+    eq("U20a", "a director who has already ceased is not offered",
+       _names([{"name": "GONE", "date_of_cessation": past}, {"name": "HERE"}]), ["HERE"])
+    eq("U20b", "the alternate spelling is honoured too",
+       _names([{"name": "GONE", "resigned_date": past}, {"name": "HERE"}]), ["HERE"])
+    # Safe direction: shown, not hidden. A name the user can see can be
+    # declined; a name never shown cannot be chosen.
+    eq("U20c", "a FUTURE cessation is still in office today",
+       _names([{"name": "STILL SERVING", "date_of_cessation": future}]), ["STILL SERVING"])
+    eq("U20d", "a blank marker is not a resignation",
+       _names([{"name": "FINE", "date_of_cessation": "-"}]), ["FINE"])
+    eq("U20e", "an unreadable date does not silently remove anybody",
+       _names([{"name": "FINE", "date_of_cessation": "01/12/2024"}]), ["FINE"])
+    # …and the user must be able to SEE a pending departure before signing.
+    sub = pp._legacy_people([{"name": "STILL SERVING", "date_of_cessation": future}],
+                            "Director")[0].get("subtitle") or ""
+    check("U20f", "a pending departure is visible on the candidate", future in sub, sub)
+
+    # --- U21: a representative must be on THAT company's board -------------
+    # Measured: KYAW THU SOE sits on CITY MART's board and NOT on CITY
+    # HOLDINGS'. He was printed as CITY HOLDINGS' authorised director — a person
+    # with no power to bind the company he was signing for.
+    board = rr._board_of("CITY HOLDINGS LIMITED")
+    check("U21a", "the member company's board is readable", len(board) > 0, f"{board}")
+    if board:
+        outsider = "KYAW THU SOE"
+        check("U21b", "a director of the SUBJECT company is refused as the member's rep",
+              rr._corp_representative({"name": "CITY HOLDINGS LIMITED", "type": "Company"},
+                                      {"authorized director_name": outsider}) != outsider,
+              f"board={board}")
+        insider = board[0]
+        eq("U21c", "a director who IS on that board is accepted",
+           rr._corp_representative({"name": "CITY HOLDINGS LIMITED", "type": "Company"},
+                                   {"authorized director_name": insider}), insider)
+    # An unregistered member company cannot be checked. Refusing there would
+    # blank the line for every corporate member not in the register, so it fails
+    # OPEN — deliberately, and logged.
+    eq("U21d", "an unverifiable company fails open rather than blanking the line",
+       rr._corp_representative({"name": "NOT IN THE REGISTER PTE LTD", "type": "Company"},
+                               {"authorized director_name": "SOMEBODY"}), "SOMEBODY")
+
+    # --- U22: member slots are typed, not positional -----------------------
+    # slots 1-2 were ASSUMED individual and slot 3 corporate, from a flat
+    # comma-joined name list. CITY MART's only member is the corporate CITY
+    # HOLDINGS LIMITED; it landed at index 0 and was written into the
+    # INDIVIDUAL slot, rendering a company as an individual member.
+    from scout.tools.smart_doc import prepare_document_data
+    prepared = prepare_document_data(
+        "Shareholders Resolution In Writing - Director Appointment.docx",
+        "CITY MART HOLDING COMPANY LIMITED")
+    cd = (prepared or {}).get("company_data") or {}
+    if not cd:
+        check("U22a", "company data prepared for a corporate-member company", False,
+              f"keys={sorted(prepared or {})[:12]}")
+    else:
+        eq("U22a", "the sole CORPORATE member fills the corporate slot",
+           cd.get("corporate_shareholder_3_name"), "CITY HOLDINGS LIMITED")
+        eq("U22b", "and does NOT fill the individual slot",
+           cd.get("individual_shareholder_1_name"), "TBD")
+        eq("U22c", "the space spelling agrees with the underscore one",
+           cd.get("individual shareholder_1_name"), "TBD")
+        # The generic, type-agnostic slots still list every member in order.
+        eq("U22d", "the untyped slot still carries the member",
+           cd.get("shareholder_1_name"), "CITY HOLDINGS LIMITED")
+
+
 def main():
     for fn in (
         test_placeholders,
@@ -1021,6 +1151,7 @@ def main():
         test_picker_payload,
         test_repeat_regions,
         test_fill_view,
+        test_register_authority,
         test_structural_contracts,
     ):
         try:
