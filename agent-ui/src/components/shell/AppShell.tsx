@@ -18,6 +18,7 @@ import { useState } from 'react'
 import { Menu, X } from 'lucide-react'
 import { IconButton } from '@/components/ui/kit'
 import AppRail from './AppRail'
+import ImportTray from './ImportTray'
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
@@ -65,6 +66,10 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
         <div className="min-h-0 flex-1 overflow-hidden">{children}</div>
       </div>
+
+      {/* Docked here, not on a page: a bulk import keeps running while the
+          operator moves between Templates, Companies and People. */}
+      <ImportTray />
     </div>
   )
 }

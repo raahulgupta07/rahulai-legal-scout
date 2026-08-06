@@ -267,6 +267,8 @@ export interface NewRunResponse {
 
 export interface RunResponseContent {
   content?: string | object
+  /** Model reasoning, streamed alongside content by reasoning-capable models. */
+  reasoning_content?: string
   content_type: string
   context?: MessageContext[]
   event: RunEvent
@@ -289,6 +291,8 @@ export interface RunResponseContent {
 
 export interface RunResponse {
   content?: string | object
+  /** Model reasoning, streamed alongside content. */
+  reasoning_content?: string
   content_type: string
   context?: MessageContext[]
   event: RunEvent
@@ -335,6 +339,17 @@ export interface ReasoningMessage {
 export interface ChatMessage {
   role: 'user' | 'agent' | 'system' | 'tool'
   content: string
+  /**
+   * The model's own reasoning for this turn.
+   *
+   * Distinct from `extra_data.reasoning_steps`, which is Agno's structured
+   * step list. This is the raw `reasoning_content` gemini-3.6-flash streams on
+   * RunContent. It mattered because a turn can produce reasoning and NO
+   * content — the run completes, the transcript shows an empty bubble, and it
+   * is indistinguishable from a stall. Rendering it collapsed means nothing the
+   * model said is ever invisible.
+   */
+  reasoning_content?: string
   streamingError?: boolean
   created_at: number
   tool_calls?: ToolCall[]

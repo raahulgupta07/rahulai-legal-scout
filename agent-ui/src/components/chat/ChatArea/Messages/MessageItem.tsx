@@ -6,7 +6,7 @@ import Images from './Multimedia/Images'
 import Audios from './Multimedia/Audios'
 import { memo, useState, useEffect } from 'react'
 import { DocumentCards } from '@/components/ui/DocumentViewer'
-import { Mail, Send, Paperclip, Loader2 } from 'lucide-react'
+import { Mail, Send, Paperclip, Loader2, RotateCcw, ChevronRight } from 'lucide-react'
 import { authFetch } from '@/lib/api-client'
 
 interface MessageProps {
@@ -287,11 +287,117 @@ const StreamingCursor = () => (
   />
 )
 
+/**
+ * The model's reasoning, collapsed.
+ *
+ * Reasoning-capable models (gemini-3.6-flash here) stream `reasoning_content`
+ * separately from `content`, and a turn can produce reasoning and NO content at
+ * all. That rendered as an empty bubble which read as a stall — the single most
+ * disruptive defect in the product. Collapsed by default so it never competes
+ * with the answer; open when it IS the whole turn, because then it is the only
+ * thing there is to show.
+ *
+ * OPEN STATE IS DERIVED, NOT SEEDED. Reasoning streams before content, so the
+ * same instance starts life in the reasoning-only branch (`autoOpen`) and then
+ * — React reconciling by position, never remounting it — carries on into the
+ * branch that has an answer. A `useState(defaultOpen)` seed is read once and
+ * then frozen, which is exactly why the block used to sit open on top of every
+ * reply. `open` is now recomputed from `autoOpen` on each render, so the answer
+ * landing closes it with no effect and no remount.
+ *
+ * A click writes `userOpen`, and from that moment the user's choice outranks
+ * `autoOpen` for the rest of the turn. That is what keeps a deliberately opened
+ * block open: content arrives in dozens of chunks, and an effect keyed on the
+ * content would slam it shut on every one of them.
+ */
+const ThinkingBlock = memo(function ThinkingBlock({
+  text,
+  live = false,
+  autoOpen = false
+}: {
+  text: string
+  live?: boolean
+  /** Should the block be open *right now*, absent a decision from the user. */
+  autoOpen?: boolean
+}) {
+  // null = the user has not touched it, so follow `autoOpen`. A boolean means
+  // they decided, and `autoOpen` is ignored from that point on.
+  const [userOpen, setUserOpen] = useState<boolean | null>(null)
+  const open = userOpen ?? autoOpen
+
+  return (
+    <div className="max-w-[65ch]">
+      <button
+        type="button"
+        onClick={() => setUserOpen(!open)}
+        aria-expanded={open}
+        // Reads as a control, not a caption: a chevron that turns with the
+        // state, a hairline + tint on hover, and a real focus ring. The former
+        // text-only trigger was routinely missed as something clickable.
+        className="inline-flex items-center gap-1.5 rounded-[var(--radius-sm)]
+                   border border-transparent px-1.5 py-1
+                   font-[family-name:var(--font-body)] text-[length:var(--text-xs)] font-medium
+                   text-[var(--text-muted)] transition-colors duration-150 motion-reduce:transition-none
+                   hover:border-[var(--border)] hover:bg-[var(--accent)] hover:text-[var(--text)]
+                   focus:outline-none focus-visible:border-[var(--border)]
+                   focus-visible:ring-2 focus-visible:ring-[var(--brand)]"
+      >
+        {/* The chevron stays put while live: the spinner sits BESIDE it rather
+            than replacing it, so the affordance never disappears mid-stream. */}
+        <ChevronRight
+          className={`h-3 w-3 shrink-0 transition-transform duration-150 motion-reduce:transition-none ${
+            open ? 'rotate-90' : ''
+          }`}
+          aria-hidden
+        />
+        {live && (
+          <Loader2 className="h-3 w-3 shrink-0 animate-spin motion-reduce:animate-none" aria-hidden />
+        )}
+        {live
+          ? 'Thinking\u2026'
+          : open
+            ? 'Hide thought process'
+            : 'Show thought process'}
+      </button>
+
+      {open && (
+        // Plain text, NOT markdown. Reasoning is full of ** emphasis and ###
+        // headings that the markdown renderer blows up into 16px+ headings —
+        // louder than the answer it sits above, and far outside the 11-13px
+        // scale the rest of the app uses. Model thinking is an aside; it should
+        // read like one.
+        <div className="mt-1.5 whitespace-pre-wrap border-l-2 border-[var(--border)] pl-3 text-[12px] leading-[1.6] text-[var(--text-muted)]">
+          {text}
+        </div>
+      )}
+    </div>
+  )
+})
+
 const AgentMessage = ({
   message,
   isStreaming = false
 }: MessageProps & { isStreaming?: boolean }) => {
-  const { streamingErrorMessage, setPendingMessage } = useStore()
+  const {
+    streamingErrorMessage,
+    setPendingMessage,
+    messages,
+    isStreaming: runInFlight
+  } = useStore()
+
+  // A failed turn used to be a dead end — the prompt had to be retyped. The
+  // last user turn is still in the transcript, so re-sending it is the retry.
+  const lastUserMessage = [...messages]
+    .reverse()
+    .find((entry) => entry.role === 'user' && entry.content.trim().length > 0)
+  const canRetry = !!lastUserMessage && !runInFlight
+
+  const handleRetry = () => {
+    if (!lastUserMessage || runInFlight) return
+    // setPendingMessage is the established injection path: ChatInput picks it
+    // up and runs it through the normal send, so retry is a real new turn.
+    setPendingMessage(lastUserMessage.content)
+  }
 
   // Skip the per-render extraction passes while tokens are still arriving —
   // they scan the whole content with several regexes and only matter once the
@@ -314,6 +420,8 @@ const AgentMessage = ({
     }
   }
 
+  const reasoning = (message.reasoning_content || '').trim()
+
   const displayContent =
     isStreaming && message.content
       ? stabilizeStreamingMarkdown(message.content)
@@ -322,18 +430,38 @@ const AgentMessage = ({
   let messageContent
   if (message.streamingError) {
     messageContent = (
-      <p className="text-[length:var(--text-sm)] text-[var(--danger-strong)]">
-        Something went wrong while streaming.{' '}
-        {streamingErrorMessage ? (
-          <>{streamingErrorMessage}</>
-        ) : (
-          'Please try refreshing the page or try again later.'
+      <div className="flex flex-col items-start gap-2">
+        <p className="text-[length:var(--text-sm)] text-[var(--danger-strong)]">
+          Something went wrong while streaming.{' '}
+          {streamingErrorMessage ? (
+            <>{streamingErrorMessage}</>
+          ) : (
+            'Please try refreshing the page or try again later.'
+          )}
+        </p>
+        {canRetry && (
+          <button
+            type="button"
+            onClick={handleRetry}
+            className="inline-flex items-center gap-1.5 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface)] px-2.5 py-1.5 text-[length:var(--text-xs)] font-medium text-[var(--text)] outline-none transition-colors hover:bg-[var(--bg-secondary)] focus-visible:ring-2 focus-visible:ring-[var(--brand)]"
+            title={`Send again: ${lastUserMessage?.content.slice(0, 120)}`}
+          >
+            <RotateCcw className="h-3 w-3 text-[var(--text-muted)]" aria-hidden />
+            Retry
+          </button>
         )}
-      </p>
+      </div>
     )
   } else if (displayContent) {
     messageContent = (
       <div className="flex w-full flex-col gap-4">
+        {/* autoOpen=false is load-bearing, not a default being restated: this is
+            the SAME ThinkingBlock instance the reasoning-only branch below
+            rendered with autoOpen, kept alive by position-based reconciliation.
+            Flipping the prop as the answer lands is what collapses it. */}
+        {reasoning && (
+          <ThinkingBlock text={reasoning} live={isStreaming} autoOpen={false} />
+        )}
         {/* ~65ch keeps prose at a comfortable reading measure; cards and
             attachments below are free to use the full column width. */}
         <div className="max-w-[65ch]">
@@ -376,6 +504,15 @@ const AgentMessage = ({
         </div>
       )
     }
+  } else if (reasoning) {
+    // A turn that produced ONLY reasoning. Previously this rendered nothing at
+    // all — an empty bubble indistinguishable from a stall, which is what the
+    // "silent stop" looked like from the user's side. Show the thinking.
+    messageContent = (
+      <div className="flex w-full flex-col gap-4">
+        <ThinkingBlock text={reasoning} live={isStreaming} autoOpen />
+      </div>
+    )
   } else {
     // No content yet — return null so the answer box is hidden
     // (the CLI block in AgentMessageWrapper already shows the loading state)

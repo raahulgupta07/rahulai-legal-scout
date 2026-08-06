@@ -33,6 +33,15 @@ function Workspace() {
     if (!hasDocSignal) userClosedRef.current = false
   }, [hasDocSignal])
 
+  // An explicit "View" on a document card always opens the panel, even after
+  // the user closed it — they just asked to see that file.
+  const previewRequest = useStore((s) => s.previewRequest)
+  useEffect(() => {
+    if (!previewRequest) return
+    userClosedRef.current = false
+    setPanelOpen(true)
+  }, [previewRequest])
+
   const togglePanel = () => {
     setPanelOpen((open) => {
       // Only a close on an ACTIVE document counts as "leave it closed" —

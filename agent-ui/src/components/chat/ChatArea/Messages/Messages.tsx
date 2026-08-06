@@ -9,7 +9,9 @@ import ChatBlankState from './ChatBlankState'
 import PickerCardList from '@/components/chat/PickerCardList'
 import AskUserCardList from '@/components/chat/AskUserCardList'
 import { useStore } from '@/store'
-import { Copy, Check, ChevronRight, AlertTriangle } from 'lucide-react'
+import { Copy, Check, ChevronRight, AlertTriangle, Plus } from 'lucide-react'
+import { toolLabel, summariseToolCall, formatRaw } from './toolDisplay'
+import type { ToolSummary } from './toolDisplay'
 
 // Instant fallback suggestions (shown immediately while LLM suggestions load)
 function getInstantSuggestions(content: string): string[] {
@@ -25,10 +27,16 @@ function getInstantSuggestions(content: string): string[] {
   return ["Show all templates", "List all companies"]
 }
 
-/** Tool names are snake_case identifiers; show them as readable labels. */
-function formatToolName(name: string): string {
-  const label = name.replace(/_/g, ' ')
-  return label.charAt(0).toUpperCase() + label.slice(1)
+/**
+ * The raw layer is for spot-checking, not reading. It lives in a scrollable
+ * box, so the cap only exists to keep a runaway payload out of the DOM —
+ * `quick_info` has measured ~94k characters.
+ */
+function clip(text: string | null, max = 4000): string | null {
+  if (!text) return null
+  return text.length > max
+    ? `${text.slice(0, max)}\n… ${text.length - max} more characters not shown`
+    : text
 }
 
 function formatSeconds(ms?: number): string | null {
@@ -150,17 +158,29 @@ const SuggestionButtons = ({ content, isLast, userQuestion }: { content: string,
   }, [isLast, content, userQuestion])
 
   if (!isLast || !content || suggestions.length === 0) return null
+  // Stacked rows rather than pills: full-sentence suggestions wrap instead of
+  // being truncated to fit a chip, and the list reads top-to-bottom.
   return (
-    <div className="mt-3 flex flex-wrap gap-2">
-      {suggestions.map((s, i) => (
-        <button
-          key={i}
-          onClick={() => setPendingMessage(s)}
-          className="cursor-pointer rounded-[999px] border border-[var(--border)] bg-[var(--surface)] px-3.5 py-1.5 text-[length:var(--text-sm)] text-[var(--text-secondary)] transition-colors hover:border-[var(--border-strong)] hover:bg-[var(--bg-secondary)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]"
-        >
-          {s}
-        </button>
-      ))}
+    <div className="mt-4 flex flex-col">
+      <p className="mb-1 text-[11px] uppercase tracking-[0.05em] text-[var(--text-muted)]">
+        Follow up
+      </p>
+      <ul className="flex flex-col border-t border-[var(--border)]">
+        {suggestions.map((s, i) => (
+          <li key={i} className="border-b border-[var(--border)]">
+            <button
+              onClick={() => setPendingMessage(s)}
+              className="group flex w-full cursor-pointer items-start gap-2.5 py-2 pr-1 text-left text-[13px] leading-[1.5] text-[var(--text-secondary)] transition-colors hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--brand)]"
+            >
+              <Plus
+                aria-hidden
+                className="mt-[3px] h-3.5 w-3.5 shrink-0 text-[var(--faint)] transition-colors group-hover:text-[var(--text-muted)]"
+              />
+              <span className="min-w-0 flex-1">{s}</span>
+            </button>
+          </li>
+        ))}
+      </ul>
     </div>
   )
 }
@@ -173,9 +193,19 @@ type EventState = 'running' | 'done' | 'failed'
 
 interface TraceEvent {
   key: string
+  /** Layer 2: domain language — "Read the company register", never `quick_info`. */
   label: string
   state: EventState
   duration: string | null
+  /**
+   * Layer 2: what came back, as a headline plus a few labelled facts — never
+   * the payload. See toolDisplay.summariseToolCall.
+   */
+  summary?: ToolSummary | null
+  /** Layer 3 (debugging): raw identifiers, hidden until the row is opened. */
+  toolName?: string
+  args?: string | null
+  result?: string | null
 }
 
 /** Colour + glyph per state, so state is legible without reading the word. */
@@ -185,21 +215,94 @@ const STATE_STYLE: Record<EventState, { dot: string; text: string; label: string
   failed: { dot: 'bg-[var(--danger)]', text: 'text-[var(--danger-strong)]', label: 'Failed' }
 }
 
-/** One timeline entry: state dot on the rail, label, duration. */
+/** Tone → colour for the one-line result headline. Tokens only, no hexes. */
+const SUMMARY_TONE: Record<NonNullable<TraceEvent['summary']>['tone'], string> = {
+  neutral: 'text-[var(--text-muted)]',
+  attention: 'text-[var(--warn)]',
+  error: 'text-[var(--danger-strong)]'
+}
+
+/**
+ * Layer 3. The payload the tool actually returned, collapsed behind an
+ * explicit toggle — a `get_company` result carries every director's NRC and a
+ * `quick_info` result runs to tens of thousands of characters, so it is never
+ * printed inline. Monospace, capped height, scrolls inside itself.
+ */
+const RawPayload = ({
+  toolName,
+  args,
+  result
+}: {
+  toolName: string
+  args?: string | null
+  result?: string | null
+}) => {
+  const [open, setOpen] = useState(false)
+  if (!args && !result) {
+    return (
+      <p className="font-[family-name:var(--font-mono)] text-[11px] text-[var(--faint)]">
+        {toolName}
+      </p>
+    )
+  }
+
+  return (
+    <div className="flex flex-col items-start">
+      <button
+        onClick={() => setOpen(!open)}
+        aria-expanded={open}
+        className="inline-flex cursor-pointer items-center gap-1 rounded-[var(--radius-sm)] py-0.5 font-[family-name:var(--font-mono)] text-[11px] text-[var(--faint)] transition-colors hover:text-[var(--text-muted)] focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--border-strong)]"
+      >
+        <ChevronRight
+          aria-hidden
+          className={`h-3 w-3 shrink-0 transition-transform ${open ? 'rotate-90' : ''}`}
+        />
+        raw · {toolName}
+      </button>
+      {open && (
+        <div className="mt-1 w-full">
+          {args && (
+            <pre className="max-h-52 overflow-auto whitespace-pre-wrap break-words rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface)] p-2 font-[family-name:var(--font-mono)] text-[11px] leading-[1.5] text-[var(--text-secondary)]">
+              {args}
+            </pre>
+          )}
+          {result && (
+            <pre className="mt-1 max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface)] p-2 font-[family-name:var(--font-mono)] text-[11px] leading-[1.5] text-[var(--text-secondary)]">
+              {result}
+            </pre>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * One timeline entry. Progressive disclosure, three clicks deep: the row shows
+ * the domain label and a one-line result headline; opening it shows the
+ * structured facts; opening "raw" inside that shows the payload.
+ */
 const ToolEventRow = ({ event }: { event: TraceEvent }) => {
   const style = STATE_STYLE[event.state]
-  return (
-    <li className="relative flex items-baseline gap-2 py-1 pl-[18px]">
-      <span
-        aria-hidden
-        className={`absolute left-[-3px] top-[9px] h-[7px] w-[7px] rounded-full ${
-          event.state === 'done'
-            ? 'bg-[var(--ok)]'
-            : event.state === 'running'
-              ? 'animate-pulse bg-[var(--brand)]'
-              : 'bg-[var(--danger)]'
-        }`}
-      />
+  const [open, setOpen] = useState(false)
+  const facts = event.summary?.facts ?? []
+  const hasDetail = Boolean(event.toolName) || facts.length > 0
+
+  const Dot = (
+    <span
+      aria-hidden
+      className={`absolute left-[-3px] top-[9px] h-[7px] w-[7px] rounded-full ${
+        event.state === 'done'
+          ? 'bg-[var(--ok)]'
+          : event.state === 'running'
+            ? 'animate-pulse bg-[var(--brand)]'
+            : 'bg-[var(--danger)]'
+      }`}
+    />
+  )
+
+  const Body = (
+    <>
       <span
         className={
           event.state === 'running'
@@ -209,12 +312,64 @@ const ToolEventRow = ({ event }: { event: TraceEvent }) => {
       >
         {event.label}
       </span>
+      {event.summary && (
+        <span className={`min-w-0 truncate text-[12px] ${SUMMARY_TONE[event.summary.tone]}`}>
+          {event.summary.headline}
+        </span>
+      )}
       {event.duration && (
-        <span className="shrink-0 font-[family-name:var(--font-mono)] text-[11px] tabular-nums text-[var(--faint)]">
+        <span className="ml-auto shrink-0 font-[family-name:var(--font-mono)] text-[11px] tabular-nums text-[var(--faint)]">
           {event.duration}
         </span>
       )}
       <span className="sr-only">{style.label}</span>
+    </>
+  )
+
+  if (!hasDetail) {
+    return (
+      <li className="relative flex items-baseline gap-2 py-1 pl-[18px]">
+        {Dot}
+        {Body}
+      </li>
+    )
+  }
+
+  return (
+    <li className="relative pl-[18px]">
+      {Dot}
+      <button
+        onClick={() => setOpen(!open)}
+        aria-expanded={open}
+        className="flex w-full cursor-pointer items-baseline gap-2 py-1 text-left transition-colors hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--border-strong)]"
+      >
+        {Body}
+      </button>
+      {open && (
+        <div
+          className="mb-1.5 ml-0 flex flex-col gap-2 rounded-[var(--radius-sm)] border border-[var(--border)] p-2"
+          style={{
+            // Alpha modifiers on var() colours emit nothing — mix instead.
+            background: 'color-mix(in srgb, var(--accent) 60%, transparent)'
+          }}
+        >
+          {facts.length > 0 && (
+            <dl className="grid grid-cols-[minmax(0,auto)_minmax(0,1fr)] gap-x-3 gap-y-1">
+              {facts.map((f, i) => (
+                <React.Fragment key={`${f.label}-${i}`}>
+                  <dt className="whitespace-nowrap text-[11px] uppercase tracking-[0.05em] text-[var(--text-muted)]">
+                    {f.label}
+                  </dt>
+                  <dd className="min-w-0 break-words text-[12px] text-[var(--text)]">{f.value}</dd>
+                </React.Fragment>
+              ))}
+            </dl>
+          )}
+          {event.toolName && (
+            <RawPayload toolName={event.toolName} args={event.args} result={event.result} />
+          )}
+        </div>
+      )}
     </li>
   )
 }
@@ -263,11 +418,20 @@ const ToolTrace = ({
         : isStreaming && isLastCall
           ? 'running'
           : 'done'
+      // ToolExecution.result is the session-history field; streaming fills
+      // `content` instead. Either can carry the payload we summarise.
+      const payload = tc.result ?? tc.content
       return {
         key: tc.tool_call_id || `${tc.tool_name}-${i}`,
-        label: formatToolName(tc.tool_name),
+        label: toolLabel(tc.tool_name),
         state,
-        duration: state === 'running' ? null : formatSeconds(tc.metrics?.time)
+        duration: state === 'running' ? null : formatSeconds(tc.metrics?.time),
+        // Only ever a summary object — the payload itself stays behind the
+        // raw toggle in the opened row.
+        summary: state === 'running' ? null : summariseToolCall(tc.tool_name, payload),
+        toolName: tc.tool_name,
+        args: clip(formatRaw(tc.tool_args)),
+        result: clip(formatRaw(payload))
       }
     })
   ]

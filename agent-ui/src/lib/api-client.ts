@@ -61,6 +61,7 @@ export const apiClient = {
   updatePerson: (id: number) => `${API_BASE_URL}/api/people/${id}`,
   deletePerson: (id: number) => `${API_BASE_URL}/api/people/${id}`,
   getPersonCompanies: (id: number) => `${API_BASE_URL}/api/people/${id}/companies`,
+  syncPeopleFromCompanies: () => `${API_BASE_URL}/api/people/sync-from-companies`,
 
   // Company ↔ person link endpoints
   linkCompanyPerson: (companyId: number) => `${API_BASE_URL}/api/companies/${companyId}/people`,
@@ -80,6 +81,11 @@ export const apiClient = {
   lookupKnowledge: (key: string, value: string) => `${API_BASE_URL}/api/knowledge/lookup?key=${encodeURIComponent(key)}&value=${encodeURIComponent(value)}`,
   getKnowledgeData: (filename: string, limit = 50) => `${API_BASE_URL}/api/knowledge/data/${encodeURIComponent(filename)}?limit=${limit}`,
   deleteKnowledgeSource: (filename: string) => `${API_BASE_URL}/api/knowledge/sources/${encodeURIComponent(filename)}`,
+
+  // Server-side background template training
+  trainStart: () => `${API_BASE_URL}/api/knowledge/train-start`,
+  trainJob: () => `${API_BASE_URL}/api/knowledge/train-job`,
+  trainCancel: () => `${API_BASE_URL}/api/knowledge/train-cancel`,
 
   // Legal Skills endpoints (playbooks the agent loads on demand)
   getSkills: () => `${API_BASE_URL}/api/skills`,

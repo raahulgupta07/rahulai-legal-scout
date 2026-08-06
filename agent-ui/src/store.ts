@@ -58,6 +58,18 @@ interface Store {
   setIsSessionsLoading: (isSessionsLoading: boolean) => void
   pendingMessage: string | null
   setPendingMessage: (message: string | null) => void
+  /**
+   * A request to show one specific document in the right-hand panel.
+   *
+   * A conversation can produce several files (a resignation letter AND the
+   * resolution that follows it), so "preview" has to name WHICH one rather
+   * than defaulting to the most recent artifact. `nonce` lets the same file be
+   * requested twice — clicking Preview again should re-open the panel even if
+   * nothing about the file changed.
+   */
+  previewRequest: { fileName: string; nonce: number } | null
+  requestPreview: (fileName: string) => void
+  clearPreviewRequest: () => void
 }
 
 export const useStore = create<Store>()(
@@ -65,6 +77,15 @@ export const useStore = create<Store>()(
     (set) => ({
       hydrated: false,
       setHydrated: () => set({ hydrated: true }),
+      previewRequest: null,
+      requestPreview: (fileName) =>
+        set((s) => ({
+          previewRequest: {
+            fileName,
+            nonce: (s.previewRequest?.nonce ?? 0) + 1
+          }
+        })),
+      clearPreviewRequest: () => set({ previewRequest: null }),
       streamingErrorMessage: '',
       setStreamingErrorMessage: (streamingErrorMessage) =>
         set(() => ({ streamingErrorMessage })),

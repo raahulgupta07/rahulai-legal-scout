@@ -42,6 +42,37 @@ const getLocalUserId = (): string | null => {
   }
 }
 
+/**
+ * Agno's built-in "paused" narration (agno/utils/response.py). It describes the
+ * framework's own state, never the user's task, so it is kept out of the
+ * transcript. Covers every variant: confirmation / user input / external
+ * execution, alone or combined.
+ */
+const AGNO_PAUSE_BOILERPLATE =
+  /^I have tools to execute, but (I need|it needs)\b.*\.$/i
+
+/**
+ * Content made of nothing but structural JSON punctuation and whitespace. A
+ * measured turn finished with its ENTIRE content being `]}` — the tail of a
+ * truncated tool payload — which painted in the transcript as if it were the
+ * answer AND reset the nudge counter, cancelling the auto-`continue` that
+ * would have recovered the turn. Junk is not the agent talking. The empty
+ * string matches too, which is intended: empty is not real output either.
+ */
+const JUNK_CONTENT = /^[\s[\]{}(),:"'`]*$/
+
+/** True only for a string carrying something other than structural noise. */
+const isRealContent = (c: unknown): c is string =>
+  typeof c === 'string' && !JUNK_CONTENT.test(c)
+
+/**
+ * How many silent stops in a row we quietly retry before telling the user.
+ * Measured behaviour: a single conversation stalled three times, so one retry
+ * is too few — but retrying without limit re-runs the document tools and
+ * duplicates output.
+ */
+const MAX_CONSECUTIVE_NUDGES = 3
+
 const useAIChatStreamHandler = () => {
   const setMessages = useStore((state) => state.setMessages)
   const { addMessage, focusChatInput } = useChatActions()
@@ -145,6 +176,26 @@ const useAIChatStreamHandler = () => {
   const revealRafRef = useRef<number | null>(null)
   // Runs already auto-nudged after a silent empty completion — one per run.
   const autoContinuedRunsRef = useRef<Set<string>>(new Set())
+  // CONSECUTIVE silent stops nudged without the agent saying anything back.
+  //
+  // The per-run_id guard above cannot bound this on its own: every nudge starts
+  // a NEW run with a NEW id, so a run that keeps stalling would be nudged
+  // forever — and each nudge re-runs the document tools, which is how the same
+  // document got generated three times in one session. Reset the moment the
+  // agent produces real content.
+  const consecutiveNudgesRef = useRef(0)
+  // Tools seen during THIS stream.
+  //
+  // The silent-stop guard below used to read `chunk.tools` off the RunCompleted
+  // event. RunPaused carries that key; RunCompleted does NOT carry it at all
+  // (verified against the live stream: `'tools' in ev` is False, while
+  // ToolCallStarted had already reported ask_questions and preview_doc). So
+  // `didToolWork` was permanently false, the nudge never fired in the browser,
+  // and neither did the out-of-retries message that shares the same guard — the
+  // user was left with a blank bubble and no way to tell it from a finished
+  // answer. Counting the ToolCallStarted events, the way tests/tracker_layer3.py
+  // does, is what makes the guard see the tool work at all.
+  const toolsThisRunRef = useRef(0)
 
   const cancelReveal = useCallback(() => {
     if (revealRafRef.current != null) {
@@ -303,6 +354,12 @@ const useAIChatStreamHandler = () => {
         chunk.event === RunEvent.ToolCallCompleted ||
         chunk.event === RunEvent.TeamToolCallCompleted
       ) {
+        if (
+          chunk.event === RunEvent.ToolCallStarted ||
+          chunk.event === RunEvent.TeamToolCallStarted
+        ) {
+          toolsThisRunRef.current += 1
+        }
         setMessages((prevMessages) => {
           const newMessages = [...prevMessages]
           const lastMessage = newMessages[newMessages.length - 1]
@@ -318,6 +375,46 @@ const useAIChatStreamHandler = () => {
         chunk.event === RunEvent.RunContent ||
         chunk.event === RunEvent.TeamRunContent
       ) {
+        // Capture the model's reasoning. gemini-3.6-flash streams it on
+        // RunContent as `reasoning_content`, and a turn can produce reasoning
+        // and NO content at all — which rendered as an empty bubble that looked
+        // exactly like a stall. Stored here, shown collapsed by the message.
+        if (typeof chunk.reasoning_content === 'string' && chunk.reasoning_content) {
+          const reasoning = chunk.reasoning_content
+          setMessages((prev) => {
+            const next = [...prev]
+            const last = next[next.length - 1]
+            if (last && last.role === 'agent') {
+              next[next.length - 1] = { ...last, reasoning_content: reasoning }
+            }
+            return next
+          })
+        }
+
+        // Agno narrates its own pause ("I have tools to execute, but I need
+        // user input.") before emitting RunPaused. That is framework plumbing
+        // talking about itself — the picker or question card that follows says
+        // everything the user needs. Dropped here rather than disabled inside
+        // agno, which would mean touching the fragile HITL resume path.
+        if (
+          typeof chunk.content === 'string' &&
+          AGNO_PAUSE_BOILERPLATE.test(chunk.content.trim())
+        ) {
+          return
+        }
+
+        // Junk-only content gets the same treatment, but ONLY while the
+        // message is still empty — that is the `]}` case, a whole answer made
+        // of a truncated payload's tail. Mid-answer a lone `{` or `"` is an
+        // ordinary streaming delta of real prose, so once anything real has
+        // landed in streamTargetRef every delta is appended unfiltered.
+        if (
+          !isRealContent(streamTargetRef.current) &&
+          typeof chunk.content === 'string' &&
+          !isRealContent(chunk.content)
+        ) {
+          return
+        }
         setMessages((prevMessages) => {
           const newMessages = [...prevMessages]
           const lastMessage = newMessages[newMessages.length - 1]
@@ -465,21 +562,46 @@ const useAIChatStreamHandler = () => {
         // "continue" a human would type.
         const finishedEmpty =
           typeof chunk.content === 'string' && chunk.content.trim() === ''
-        const didToolWork = (chunk.tools?.length ?? 0) > 0
+        // Counted from ToolCallStarted, NOT read off `chunk.tools` — see
+        // toolsThisRunRef: RunCompleted does not carry a `tools` key.
+        const didToolWork =
+          toolsThisRunRef.current > 0 || (chunk.tools?.length ?? 0) > 0
         const waitingOnUser = (chunk.tools ?? []).some(
           (t) => t.requires_user_input === true
         )
+        // Real output means the agent is talking again — forget the run of
+        // stalls. A `]}` tail is not the agent talking: it must leave the
+        // counter alone so the retry budget survives.
+        if (isRealContent(chunk.content)) {
+          consecutiveNudgesRef.current = 0
+        }
+
         if (
           finishedEmpty &&
           didToolWork &&
           !waitingOnUser &&
           chunk.run_id &&
-          !autoContinuedRunsRef.current.has(chunk.run_id)
+          !autoContinuedRunsRef.current.has(chunk.run_id) &&
+          consecutiveNudgesRef.current < MAX_CONSECUTIVE_NUDGES
         ) {
           autoContinuedRunsRef.current.add(chunk.run_id)
+          consecutiveNudgesRef.current += 1
           setTimeout(() => {
             useStore.getState().setPendingMessage('continue')
           }, 400)
+        } else if (
+          finishedEmpty &&
+          didToolWork &&
+          !waitingOnUser &&
+          consecutiveNudgesRef.current >= MAX_CONSECUTIVE_NUDGES
+        ) {
+          // Out of retries. Say so, rather than leaving a blank bubble that is
+          // indistinguishable from a finished answer.
+          consecutiveNudgesRef.current = 0
+          setStreamingErrorMessage(
+            'The assistant stopped without replying. Send "continue" to resume, ' +
+              'or rephrase the request.'
+          )
         }
         setMessages((prevMessages) => {
           const newMessages = prevMessages.map((message, index) => {
@@ -649,6 +771,7 @@ const useAIChatStreamHandler = () => {
 
       lastContentRef.current = ''
       streamTargetRef.current = ''
+      toolsThisRunRef.current = 0
       cancelReveal()
       const controller = new AbortController()
       setAbortController(controller)
@@ -791,6 +914,7 @@ const useAIChatStreamHandler = () => {
 
       lastContentRef.current = ''
       streamTargetRef.current = ''
+      toolsThisRunRef.current = 0
       cancelReveal()
       newSessionIdRef.current = sessionId
       sessionLabelRef.current = (formData.get('message') as string) ?? ''
@@ -830,10 +954,24 @@ const useAIChatStreamHandler = () => {
         const controller = new AbortController()
         setAbortController(controller)
 
-        // Create headers with auth token if available
+        // Create headers with auth token if available.
+        //
+        // `authToken` from the store is a playground leftover and is '' on
+        // every page load (it is not in the store's partialize), so the real
+        // JWT has to come from localStorage — the same place lib/api-client.ts
+        // reads it. This POST is the chat itself; without the header it 401s
+        // now that /agents is behind the JWT.
         const headers: Record<string, string> = {}
-        if (authToken) {
-          headers['Authorization'] = `Bearer ${authToken}`
+        let bearer = authToken
+        if (!bearer) {
+          try {
+            bearer = localStorage.getItem('ls_token') || ''
+          } catch {
+            bearer = ''
+          }
+        }
+        if (bearer) {
+          headers['Authorization'] = `Bearer ${bearer}`
         }
 
         await streamResponse({

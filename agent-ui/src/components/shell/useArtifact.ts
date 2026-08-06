@@ -3,6 +3,19 @@
 /**
  * Derives the "document currently being built" from real run state.
  *
+ * PREFERRED PATH — the tools DECLARE their state. Every document tool now
+ * returns a `document_state` key (smart_doc.py `_document_state`) holding the
+ * field list, the counts and the status outright. When a call carries it we
+ * build the artifact straight from it and run no inference at all: the tool
+ * knows whether a field is filled, and guessing from six overlapping result
+ * keys is what produced three separate user-visible bugs.
+ *
+ * FALLBACK PATH — everything below `foldToolCall`. Sessions stored before
+ * `document_state` existed hold results without it, and reopening one from the
+ * sidebar has to keep working. Do NOT delete the inference or
+ * `parsePythonLiteral`: removing either blanks the panel on every old
+ * conversation.
+ *
  * The source of truth is the agent's own tool calls, streamed into
  * store.messages by useAIStreamHandler. Four tools touch a document, and
  * each returns a different shape (see scout/tools/smart_doc.py):
@@ -53,6 +66,13 @@ export interface Artifact {
   message: string | null
   filled: number
   total: number
+  /**
+   * Fields still to resolve. Derived here, next to `filled`/`total`, so the
+   * tab badge, the meter and the "Outstanding" group header cannot disagree —
+   * the panel showed "Fields 0" beside "6 blanks left" when each computed its
+   * own number.
+   */
+  outstanding: number
 }
 
 const DOC_TOOLS = new Set([
@@ -212,9 +232,14 @@ function parsePythonLiteral(text: string): unknown {
 }
 
 /**
- * Tool results arrive as a string — JSON from some paths, Python repr from
- * most. Try JSON first (cheap, and correct when it applies), then the literal
- * parser.
+ * Tool results arrive as a string. Since the document tools were wrapped in
+ * `_as_json` (smart_doc.py) every NEW run sends real JSON, so the fast path
+ * below is the one that runs.
+ *
+ * The Python-literal fallback stays for stored history: sessions written before
+ * that change still hold `str(dict)` results, and reopening one from the
+ * sidebar has to keep working. Remove the fallback only once those sessions no
+ * longer matter — deleting it now blanks the panel on every old conversation.
  */
 function parseResult(raw: unknown): Record<string, unknown> | null {
   if (raw && typeof raw === 'object') return raw as Record<string, unknown>
@@ -413,6 +438,94 @@ function foldToolCall(d: Draft, call: ToolCall) {
   }
 }
 
+const STATUSES: ReadonlySet<string> = new Set([
+  'preparing',
+  'awaiting-input',
+  'ready',
+  'generated',
+  'error'
+])
+
+const FIELD_STATES: ReadonlySet<string> = new Set(['filled', 'tbd', 'pending'])
+
+/**
+ * The ONE place every count in the panel comes from.
+ *
+ * The enumerated fields win whenever there are any: a header saying "6
+ * outstanding" above two rows is the same contradiction in a different place.
+ * The reported totals are used only when no field list exists at all (an older
+ * result that carried validation_summary and nothing else).
+ */
+function deriveCounts(
+  fields: ArtifactField[],
+  reportedFilled: number | null,
+  reportedTotal: number | null
+): { filled: number; total: number; outstanding: number } {
+  if (fields.length) {
+    const filled = fields.filter((f) => f.state === 'filled').length
+    return { filled, total: fields.length, outstanding: fields.length - filled }
+  }
+  const total = reportedTotal ?? 0
+  const filled = Math.min(Math.max(reportedFilled ?? 0, 0), total)
+  return { filled, total, outstanding: total - filled }
+}
+
+/** Build the artifact from a tool's own declaration — no inference. */
+function fromDeclared(
+  state: Record<string, unknown>,
+  message: string | null
+): Artifact {
+  const template = stringify(state.template)
+  const company = stringify(state.company)
+
+  const raw = Array.isArray(state.fields) ? state.fields : []
+  const fields: ArtifactField[] = []
+  for (const entry of raw) {
+    const f = asRecord(entry)
+    const key = stringify(f.key)
+    if (!key) continue
+    const value = stringify(f.value)
+    const declaredState = stringify(f.state)
+    fields.push({
+      key,
+      label: humanise(key),
+      value,
+      // A state we don't recognise is treated as unknown rather than trusted.
+      state: (declaredState && FIELD_STATES.has(declaredState)
+        ? declaredState
+        : value
+          ? 'filled'
+          : 'pending') as FieldState
+    })
+  }
+
+  const declaredStatus = stringify(state.status)
+  const status: ArtifactStatus = (
+    declaredStatus && STATUSES.has(declaredStatus) ? declaredStatus : 'preparing'
+  ) as ArtifactStatus
+
+  const fileName = stringify(state.file_name)
+  const counts = deriveCounts(
+    fields,
+    typeof state.filled === 'number' ? state.filled : null,
+    typeof state.total === 'number' ? state.total : null
+  )
+
+  return {
+    title:
+      fileName ??
+      (template ? (company ? `${template} — ${company}` : template) : 'Untitled document'),
+    templateName: template,
+    companyName: company,
+    fields,
+    status,
+    fileName,
+    downloadUrl: stringify(state.download_url),
+    message,
+    ...counts
+  }
+}
+
 export function deriveArtifact(messages: ChatMessage[]): Artifact | null {
   const calls: ToolCall[] = []
   for (const m of messages) {
@@ -421,6 +534,21 @@ export function deriveArtifact(messages: ChatMessage[]): Artifact | null {
     }
   }
   if (!calls.length) return null
+
+  // Declared state wins, latest call last — the run's own account of the
+  // document, so nothing below needs to run.
+  let declared: Record<string, unknown> | null = null
+  let declaredMessage: string | null = null
+  for (const call of calls) {
+    const res = parseResult(call.result ?? call.content)
+    if (!res) continue
+    const state = asRecord(res.document_state)
+    if (!Object.keys(state).length) continue
+    declared = state
+    // The tool's own sentence, which the panel renders verbatim.
+    declaredMessage = stringify(res.message) ?? stringify(res.error)
+  }
+  if (declared) return fromDeclared(declared, declaredMessage)
 
   const d: Draft = {
     template: null,
@@ -445,9 +573,9 @@ export function deriveArtifact(messages: ChatMessage[]): Artifact | null {
     state: d.states.get(key) ?? 'pending'
   }))
 
-  const tallied = fields.filter((f) => f.state === 'filled').length
-  const total = d.reportedTotal ?? fields.length
-  const filled = d.reportedFilled ?? tallied
+  // Same helper as the declared path: one derivation, so the two paths cannot
+  // disagree with each other either.
+  const counts = deriveCounts(fields, d.reportedFilled, d.reportedTotal)
 
   const title =
     d.fileName ??
@@ -466,8 +594,7 @@ export function deriveArtifact(messages: ChatMessage[]): Artifact | null {
     fileName: d.fileName,
     downloadUrl: d.downloadUrl,
     message: d.message,
-    filled: Math.min(filled, Math.max(total, filled)),
-    total
+    ...counts
   }
 }
 

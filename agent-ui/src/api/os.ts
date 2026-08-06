@@ -15,14 +15,37 @@ import {
 
 import { buildAnswersValue } from '@/components/chat/askUserPayload'
 
+/**
+ * The JWT the app actually signs in with.
+ *
+ * `useStore().authToken` is a leftover from the Agno playground: it is NOT in
+ * the store's `partialize`, so it is '' on every page load and only ever holds
+ * a value if someone types one into the old token box. The real token lives in
+ * localStorage under `ls_token` (see lib/api-client.ts).
+ *
+ * That gap was invisible while the AgentOS routes (/agents, /teams, /sessions)
+ * were unauthenticated — they answered without a header. The moment those
+ * routes were put behind the JWT, every one of them started returning 401 and
+ * the workspace came up with "Failed to fetch agents: Unauthorized".
+ */
+const storedAuthToken = (): string => {
+  if (typeof window === 'undefined') return ''
+  try {
+    return localStorage.getItem('ls_token') || ''
+  } catch {
+    return ''
+  }
+}
+
 // Helper function to create headers with optional auth token
 const createHeaders = (authToken?: string): HeadersInit => {
   const headers: HeadersInit = {
     'Content-Type': 'application/json'
   }
 
-  if (authToken) {
-    headers['Authorization'] = `Bearer ${authToken}`
+  const token = authToken || storedAuthToken()
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`
   }
 
   return headers
@@ -32,8 +55,9 @@ const createHeaders = (authToken?: string): HeadersInit => {
 // the browser has to set the multipart boundary itself.
 const createAuthHeaders = (authToken?: string): Record<string, string> => {
   const headers: Record<string, string> = {}
-  if (authToken) {
-    headers['Authorization'] = `Bearer ${authToken}`
+  const token = authToken || storedAuthToken()
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`
   }
   return headers
 }

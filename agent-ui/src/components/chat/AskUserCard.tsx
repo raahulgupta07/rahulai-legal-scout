@@ -1,8 +1,9 @@
 'use client'
 
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { HelpCircle, Check } from 'lucide-react'
 
+import { resolveAskUserAnswers } from './askUserPayload'
 import type {
   AskUserAnswer,
   AskUserAnswerMap,
@@ -37,6 +38,13 @@ const AskUserCard = ({ request, onSubmit, disabled }: AskUserCardProps) => {
   // "Other…" text, keyed by question id (single or multi).
   const [otherText, setOtherText] = useState<Record<string, string>>({})
   const [submitting, setSubmitting] = useState(false)
+  // What this card sent. The live resolve path only flips `status` and writes
+  // `answer_summary` — it never back-fills `user_input_schema` — so the card
+  // itself is the only place that still knows the per-question answers it just
+  // submitted. Keeping them lets a just-answered card show settled values
+  // instead of falling back to the joined summary line.
+  const [submittedAnswers, setSubmittedAnswers] =
+    useState<AskUserAnswerMap | null>(null)
 
   // A single choose-one question with fixed options and no free-form escape
   // hatch resolves in one click — no Confirm needed.
@@ -91,6 +99,7 @@ const AskUserCard = ({ request, onSubmit, disabled }: AskUserCardProps) => {
   const submit = async (answers: AskUserAnswerMap) => {
     if (!onSubmit || submitting) return
     setSubmitting(true)
+    setSubmittedAnswers(answers)
     try {
       await onSubmit(request, answers)
     } finally {
@@ -120,6 +129,16 @@ const AskUserCard = ({ request, onSubmit, disabled }: AskUserCardProps) => {
 
   const title = questions.length > 1 ? 'A few questions' : 'Quick question'
   const submitLabel = questions.length > 1 ? 'Submit answers' : 'Submit'
+
+  // A resolved card must read as settled history, never as a live form: an
+  // empty input under a green "Answered" banner looks like a second ask.
+  const resolved = status !== 'pending'
+  const lockedAnswers = useMemo<AskUserAnswerMap | null>(
+    // History path: on resume agno stores the answers in `user_input_schema`
+    // (the tool `result` stays null), so a rehydrated card recovers them there.
+    () => submittedAnswers ?? resolveAskUserAnswers(request.user_input_schema),
+    [submittedAnswers, request.user_input_schema]
+  )
 
   // ------------------------------------------------------------------ //
 
@@ -234,6 +253,43 @@ const AskUserCard = ({ request, onSubmit, disabled }: AskUserCardProps) => {
     )
   }
 
+  /** Locked view of one question: the ask, plus the answer as plain text. */
+  const renderSettled = (question: AskUserQuestion) => {
+    const answer = lockedAnswers?.[question.id]
+    const values =
+      answer == null ? [] : Array.isArray(answer) ? answer.filter(Boolean) : [answer]
+
+    return (
+      <div className="flex flex-col gap-1.5">
+        <span className="text-[11px] font-medium uppercase tracking-[var(--tracking-tag)] text-[var(--text-muted)]">
+          {question.text}
+        </span>
+        {values.length ? (
+          <div className="flex flex-wrap gap-1.5">
+            {values.map((value, index) => (
+              <span
+                key={`${question.id}-answer-${index}`}
+                className="inline-flex items-center gap-1 rounded-full border border-[color-mix(in_srgb,var(--ok-strong)_35%,transparent)] bg-[color-mix(in_srgb,var(--ok)_10%,transparent)] px-2.5 py-1 text-[12px] font-medium text-[var(--text)]"
+              >
+                <Check
+                  className="h-3 w-3 text-[var(--ok-strong)]"
+                  aria-hidden
+                />
+                {value}
+              </span>
+            ))}
+          </div>
+        ) : (
+          // Pre-rename history (and closed-without-answer cards) carry no
+          // per-question map; the banner summary above is all there is.
+          <span className="text-[13px] text-[var(--text-muted)]">
+            {status === 'historical' ? 'Not answered' : 'Answer recorded'}
+          </span>
+        )}
+      </div>
+    )
+  }
+
   return (
     <section
       aria-label={title}
@@ -279,7 +335,9 @@ const AskUserCard = ({ request, onSubmit, disabled }: AskUserCardProps) => {
             key={question.id}
             className="border-b border-[var(--border)] px-3.5 py-3 last:border-b-0"
           >
-            {question.options?.length ? (
+            {resolved ? (
+              renderSettled(question)
+            ) : question.options?.length ? (
               <>
                 <p className="mb-2 text-[13px] font-medium text-[var(--text)]">
                   {question.text}
