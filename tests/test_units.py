@@ -600,6 +600,39 @@ def test_structural_contracts():
               f"generates={generates} injected={injected} shared_registry={shared} "
               f"fatal={fatal} real_descriptions={real_desc}")
 
+    # A stream that delivers nothing must never render as an answer.
+    #
+    # A 200 does not mean the body was ours. A restarting server, a proxy, or a
+    # route that fell through to the static frontend all answer 200 with HTML:
+    # response.ok is true, response.body exists, the reader drains it, and
+    # parseBuffer finds no events — so the stream "completed" having delivered
+    # zero chunks and the UI painted an empty agent bubble indistinguishable
+    # from a finished reply. Measured live 2026-08-06: a message sent while the
+    # container was being replaced came back in 1.0s as a blank bubble with no
+    # error, and no run was ever persisted.
+    #
+    # Also: the !response.ok branch called response.json() on that HTML, which
+    # threw a SyntaxError and hid the real status behind
+    # "Unexpected token '<'".
+    stream = ui / "hooks/useAIResponseStream.tsx"
+    if not stream.exists():
+        check("U15", "an empty stream is reported, not painted as a reply", True,
+              "SKIPPED — frontend sources not present in this image")
+    else:
+        s = stream.read_text()
+        counts = "delivered += 1" in s and "let delivered = 0" in s
+        raises = re.search(r"if \(delivered === 0\)[\s\S]{0,200}?throw new Error", s) is not None
+        # Both parse sites must go through the counter, or the count is a lie.
+        wired = len(re.findall(r"parseBuffer\(buffer, countingChunk\)", s)) >= 2
+        # Generous window: the branch carries the explanatory comment before the
+        # call, and a 300-char bound failed on correct code.
+        text_first = re.search(
+            r"if \(!response\.ok\)[\s\S]{0,800}?response\.text\(\)", s) is not None
+        check("U15", "an empty stream is reported, not painted as a reply",
+              counts and raises and wired and text_first,
+              f"counts={counts} raises={raises} both_parse_sites={wired} "
+              f"reads_text_before_json={text_first}")
+
     # The agent must never be able to send an email by itself.
     #
     # send_email_tool used to connect to SMTP and deliver, immediately, on the

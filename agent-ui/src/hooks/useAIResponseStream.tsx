@@ -217,8 +217,21 @@ export default function useAIResponseStream() {
         })
 
         if (!response.ok) {
-          const errorData = await response.json()
-          throw errorData
+          // Read as TEXT first. A server that is restarting, or a proxy in
+          // front of it, answers with an HTML error page, and response.json()
+          // throws a SyntaxError on it — which then surfaced as
+          // "SyntaxError: Unexpected token '<'" instead of the actual status.
+          const raw = await response.text().catch(() => '')
+          let detail = ''
+          try {
+            detail = JSON.parse(raw)?.detail ?? ''
+          } catch {
+            detail = ''
+          }
+          throw new Error(
+            detail ||
+              `The server replied ${response.status}. Your message was not processed.`
+          )
         }
         if (!response.body) {
           throw new Error('No response body')
@@ -228,11 +241,33 @@ export default function useAIResponseStream() {
         const decoder = new TextDecoder()
 
         // Recursively process the stream.
+        // A 200 does not mean the body was ours.
+        //
+        // A restarting server, a proxy, or a route that fell through to the
+        // static frontend all answer 200 with HTML. response.ok is true,
+        // response.body exists, the reader drains it happily, parseBuffer finds
+        // no events in it — and the stream "completes" having delivered nothing
+        // at all. The UI then painted an empty agent bubble that was
+        // indistinguishable from a finished reply, with no error anywhere.
+        // Measured live: a message sent while the container was being replaced
+        // came back in 1.0s as a blank bubble, and no run was ever persisted.
+        let delivered = 0
+        const countingChunk = (chunk: RunResponseContent) => {
+          delivered += 1
+          onChunk(chunk)
+        }
+
         const processStream = async (): Promise<void> => {
           const { done, value } = await reader.read()
           if (done) {
             // Process any final data in the buffer.
-            buffer = parseBuffer(buffer, onChunk)
+            buffer = parseBuffer(buffer, countingChunk)
+            if (delivered === 0) {
+              throw new Error(
+                'The server accepted the message but sent nothing back. ' +
+                  'It may have been restarting — send it again.'
+              )
+            }
             onComplete()
             return
           }
@@ -240,7 +275,7 @@ export default function useAIResponseStream() {
           buffer += decoder.decode(value, { stream: true })
 
           // Parse any complete JSON objects available in the buffer.
-          buffer = parseBuffer(buffer, onChunk)
+          buffer = parseBuffer(buffer, countingChunk)
           await processStream()
         }
         await processStream()
