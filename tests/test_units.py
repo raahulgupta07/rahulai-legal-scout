@@ -518,11 +518,52 @@ def test_structural_contracts():
         # duplicate run.
         guards = len(re.findall(r"!closeFromTool\s*&&", src))
         renders = re.search(r"if\s*\(closeFromTool\)\s*\{\s*//[^\n]*\n\s*updatedContent\s*=\s*closeFromTool", src) is not None
-        cleared = len(re.findall(r"closingFromToolRef\.current\s*=\s*''", src))
+        # The ref holds a {content, approval} object now, so a per-stream reset
+        # clears it to null rather than to the empty string it started as.
+        cleared = len(re.findall(r"closingFromToolRef\.current\s*=\s*(?:''|null)", src))
         check("U11l", "an empty turn is closed from the document tool result",
               builds and captured and guards >= 2 and renders and cleared >= 2,
               f"builder={builds} captured={captured} guards={guards} "
               f"renders={renders} resets={cleared}")
+
+        # A stalled PREVIEW must be given back the approval it owed.
+        #
+        # preview_doc renders the field table and then owes an ask_questions
+        # card with one question and two fixed options. Measured across six
+        # conversations it produced neither: the turn ended empty, leaving a
+        # preview the user could read and could not act on. It only became the
+        # dominant stall once the tool was reachable at all — the prompt named
+        # `preview_document`, which is not registered, so the required preview
+        # step was skipped entirely and the model went straight to generation.
+        #
+        # The card is reconstructed, not invented: the question and both option
+        # strings come from the tool's own agent_instruction. It must NOT be
+        # routed through AskUserCardList, which resumes a PAUSED run — this run
+        # completed, so there is no pause to consume.
+        approval_builder = "buildApprovalFromPreview" in src
+        approval_set = "APPROVAL_DOC_TOOLS" in src
+        # preview_doc closing the turn silently is the bug this replaced.
+        not_closable = re.search(
+            r"CLOSABLE_DOC_TOOLS = new Set\(\[([^\]]*)\]", src, re.S
+        )
+        closable_body = not_closable.group(1) if not_closable else ""
+        preview_excluded = "preview_doc" not in closable_body
+        carried = "pending_approval: closeFromTool?.approval" in src
+        prompt = (ui / "components/chat/ApprovalPrompt.tsx")
+        sends_message = (
+            prompt.exists() and "setPendingMessage(option)" in prompt.read_text()
+        )
+        rendered = "ApprovalPrompt approval={message.pending_approval}" in (
+            (ui / "components/chat/ChatArea/Messages/Messages.tsx").read_text()
+            if (ui / "components/chat/ChatArea/Messages/Messages.tsx").exists()
+            else ""
+        )
+        check("U11m", "a stalled preview is given back its approval card",
+              approval_builder and approval_set and preview_excluded
+              and carried and sends_message and rendered,
+              f"builder={approval_builder} set={approval_set} "
+              f"preview_excluded_from_closable={preview_excluded} "
+              f"carried={carried} sends={sends_message} rendered={rendered}")
 
     # No foreign-jurisdiction statute may be cited by this product.
     #

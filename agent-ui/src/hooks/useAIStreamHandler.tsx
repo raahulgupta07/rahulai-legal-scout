@@ -74,19 +74,34 @@ const isRealContent = (c: unknown): c is string =>
 const MAX_CONSECUTIVE_NUDGES = 3
 
 /**
- * Tools that can END a turn on their own.
- *
- * The bar is not "the result reads well in English" — it is "there is nothing
- * left for the agent to do". `preview_doc` and `prepare_document` are excluded
- * deliberately: both are followed by an `ask_questions` approval card, and
- * closing the turn on their text would leave the user holding a preview with no
- * way to approve it. A stalled turn there still has work outstanding, so the
- * nudge is the correct recovery.
+ * Tools that can END a turn on their own, with nothing owed to the user.
  */
 const CLOSABLE_DOC_TOOLS = new Set([
   'generate_document',
   'generate_dica_extract'
 ])
+
+/**
+ * Tools that leave a DECISION outstanding when the turn dies.
+ *
+ * `preview_doc` renders the whole field table and then owes an approval card.
+ * Closing the turn on its text alone would leave the user holding a preview
+ * with no way to say yes, which is why it was excluded from CLOSABLE_DOC_TOOLS
+ * — the answer is not to close it silently but to draw the decision the model
+ * failed to ask for.
+ *
+ * This became the dominant stall only after the tool started working at all:
+ * the prompt named `preview_document`, which is not a registered tool, so the
+ * required preview step was unreachable and the model skipped to generation.
+ * With the name fixed, preview runs — and stalls — in nearly every conversation.
+ */
+const APPROVAL_DOC_TOOLS = new Set(['preview_doc', 'prepare_document'])
+
+/** What a dead turn should have shown: some text, and maybe a decision. */
+type ToolClosing = {
+  content: string
+  approval?: { question: string; options: string[] }
+}
 
 /**
  * Build the closing sentence a silent turn should have written.
@@ -98,11 +113,16 @@ const CLOSABLE_DOC_TOOLS = new Set([
  * re-injects the entire history to obtain a sentence the tool result already
  * contains.
  *
- * Returns '' when the result cannot be read, which leaves the nudge path in
+ * Returns null when the result cannot be read, which leaves the nudge path in
  * place as the fallback it always was.
  */
-const buildClosingFromTool = (toolName: string, rawResult: unknown): string => {
-  if (!CLOSABLE_DOC_TOOLS.has(toolName)) return ''
+const buildClosingFromTool = (
+  toolName: string,
+  rawResult: unknown
+): ToolClosing | null => {
+  const closable = CLOSABLE_DOC_TOOLS.has(toolName)
+  const needsApproval = APPROVAL_DOC_TOOLS.has(toolName)
+  if (!closable && !needsApproval) return null
 
   let result: Record<string, unknown>
   try {
@@ -113,12 +133,14 @@ const buildClosingFromTool = (toolName: string, rawResult: unknown): string => {
   } catch {
     // Sessions written before tool results became JSON hold Python repr, which
     // JSON.parse cannot read. Nudging is the right answer there.
-    return ''
+    return null
   }
-  if (!result || typeof result !== 'object') return ''
+  if (!result || typeof result !== 'object') return null
+
+  if (needsApproval) return buildApprovalFromPreview(result)
 
   const message = typeof result.message === 'string' ? result.message.trim() : ''
-  if (!message) return ''
+  if (!message) return null
 
   // A generated document has a file to link. The link is what the user came
   // for, and the markdown form is what the panel and the chat both understand.
@@ -145,12 +167,93 @@ const buildClosingFromTool = (toolName: string, rawResult: unknown): string => {
   // picker card that does the choosing was never rendered, because the model
   // stopped before calling the lookup tool. That turn has work outstanding, so
   // it belongs to the nudge.
-  if (result.success !== true || !fileName || !downloadUrl) return ''
+  if (result.success !== true || !fileName || !downloadUrl) return null
 
-  return `${message}.${fillNote}\n\n[${fileName}](${downloadUrl})`.replace(
-    '..',
-    '.'
-  )
+  return {
+    content: `${message}.${fillNote}\n\n[${fileName}](${downloadUrl})`.replace(
+      '..',
+      '.'
+    )
+  }
+}
+
+/**
+ * Turn a stalled preview into the preview plus the approval it owed.
+ *
+ * `preview_doc` returns `preview` as finished markdown — the field table the
+ * user is meant to read — and `needs_approval: true`. Its `agent_instruction`
+ * then spells out the exact question and the exact two options the model is
+ * supposed to ask, which is what makes this reconstructable rather than
+ * invented: nothing here is a guess about what the user should be asked.
+ *
+ * Returns null when the shape is not what it claims, so the nudge still covers
+ * anything unrecognised.
+ */
+const buildApprovalFromPreview = (
+  result: Record<string, unknown>
+): ToolClosing | null => {
+  const preview = typeof result.preview === 'string' ? result.preview.trim() : ''
+  if (!preview || result.needs_approval !== true) return null
+
+  const template =
+    typeof result.template_name === 'string' ? result.template_name : ''
+  const company =
+    typeof result.company_name === 'string' ? result.company_name : ''
+  if (!template || !company) return null
+
+  // Same shortening the tool applies when it writes the question itself, so the
+  // reconstructed card reads identically to the one the model should have sent.
+  const short = template.replace(/\.docx$/i, '').replace(/_/g, ' ')
+  const label = short.length > 40 ? `${short.slice(0, 37)}...` : short
+
+  // `missing_fields` is what the REGISTER could not supply, so it still lists a
+  // field that `custom_data` filled in from an earlier answer. Saying "2 fields
+  // still need a value: meeting_date, new_director_identification_number" while
+  // the table right above shows that NRC filled in is the kind of contradiction
+  // a lawyer would have to stop and resolve. The tool writes the literal
+  // "[TBD - needs input]" into `data` for anything genuinely unresolved, so the
+  // values decide, not the list.
+  const values = (result.data ?? {}) as Record<string, unknown>
+  const isUnresolved = (field: string) => {
+    const value = values[field]
+    if (value === undefined || value === null) return true
+    const text = String(value).trim()
+    return text === '' || text.startsWith('[TBD')
+  }
+  const missing = (
+    Array.isArray(result.missing_fields)
+      ? (result.missing_fields as unknown[]).filter(
+          (f): f is string => typeof f === 'string'
+        )
+      : []
+  ).filter(isUnresolved)
+  const coverage =
+    typeof result.field_coverage === 'string' ? result.field_coverage : ''
+
+  // "Every field is filled (83% coverage)" contradicts itself, and coverage is
+  // not the same question as completeness: it measures how much the COMPANY
+  // REGISTER supplied, so a document whose remaining values came from the
+  // conversation is complete at 83%. Say what is true of the document, and only
+  // mention the register when it is the reason something is outstanding.
+  const note = missing.length
+    ? `\n\n${missing.length} field${missing.length === 1 ? '' : 's'} still ` +
+      `${missing.length === 1 ? 'needs' : 'need'} a value: ` +
+      missing.slice(0, 6).join(', ') +
+      (missing.length > 6 ? ', …' : '') +
+      '.'
+    : `\n\nEvery field has a value${
+        coverage && coverage !== '100%'
+          ? ` (${coverage} of them from the company register, the rest from this conversation)`
+          : ''
+      }.`
+
+  return {
+    content: `${preview}${note}`,
+    approval: {
+      question: `Generate ${label} for ${company} now?`,
+      options: ['Yes, generate it', 'No, change the data first']
+    }
+  }
 }
 
 const useAIChatStreamHandler = () => {
@@ -279,7 +382,7 @@ const useAIChatStreamHandler = () => {
   // The closing sentence for the most recent document tool, kept so a turn
   // that ends empty can be finished from the tool result rather than by paying
   // for a second inference. Reset with toolsThisRunRef at each stream start.
-  const closingFromToolRef = useRef('')
+  const closingFromToolRef = useRef<ToolClosing | null>(null)
 
   const cancelReveal = useCallback(() => {
     if (revealRafRef.current != null) {
@@ -453,7 +556,7 @@ const useAIChatStreamHandler = () => {
               finished.tool_name,
               finished.result
             )
-            if (closing) closingFromToolRef.current = closing
+            if (closing?.content) closingFromToolRef.current = closing
           }
         }
         setMessages((prevMessages) => {
@@ -679,7 +782,7 @@ const useAIChatStreamHandler = () => {
         const closeFromTool =
           finishedEmpty && didToolWork && !waitingOnUser
             ? closingFromToolRef.current
-            : ''
+            : null
         if (closeFromTool) {
           consecutiveNudgesRef.current = 0
         }
@@ -719,7 +822,7 @@ const useAIChatStreamHandler = () => {
               let updatedContent: string
               if (closeFromTool) {
                 // The model wrote nothing; the tool result speaks for it.
-                updatedContent = closeFromTool
+                updatedContent = closeFromTool.content
               } else if (typeof chunk.content === 'string') {
                 updatedContent = chunk.content
               } else {
@@ -732,6 +835,9 @@ const useAIChatStreamHandler = () => {
               return {
                 ...message,
                 content: updatedContent,
+                // Only set when the turn died owing a decision. `null` clears a
+                // stale card if this message is re-rendered after a real reply.
+                pending_approval: closeFromTool?.approval ?? null,
                 tool_calls: processChunkToolCalls(chunk, message.tool_calls),
                 images: chunk.images ?? message.images,
                 videos: chunk.videos ?? message.videos,
@@ -885,7 +991,7 @@ const useAIChatStreamHandler = () => {
       lastContentRef.current = ''
       streamTargetRef.current = ''
       toolsThisRunRef.current = 0
-      closingFromToolRef.current = ''
+      closingFromToolRef.current = null
       cancelReveal()
       const controller = new AbortController()
       setAbortController(controller)
@@ -1029,7 +1135,7 @@ const useAIChatStreamHandler = () => {
       lastContentRef.current = ''
       streamTargetRef.current = ''
       toolsThisRunRef.current = 0
-      closingFromToolRef.current = ''
+      closingFromToolRef.current = null
       cancelReveal()
       newSessionIdRef.current = sessionId
       sessionLabelRef.current = (formData.get('message') as string) ?? ''

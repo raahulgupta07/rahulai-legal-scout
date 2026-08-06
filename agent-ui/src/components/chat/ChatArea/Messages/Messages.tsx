@@ -8,6 +8,7 @@ import React, { type FC } from 'react'
 import ChatBlankState from './ChatBlankState'
 import PickerCardList from '@/components/chat/PickerCardList'
 import AskUserCardList from '@/components/chat/AskUserCardList'
+import ApprovalPrompt from '@/components/chat/ApprovalPrompt'
 import { useStore } from '@/store'
 import { Copy, Check, ChevronRight, AlertTriangle, Plus } from 'lucide-react'
 import { toolLabel, summariseToolCall, formatRaw } from './toolDisplay'
@@ -561,6 +562,13 @@ const AgentMessageWrapper = ({ message, isLastMessage }: MessageWrapperProps) =>
 
         {/* Structured question cards (paused HITL run) */}
         <AskUserCardList requests={message.ask_user_requests} />
+
+        {/* The approval a stalled preview owed. Not a paused run — answering
+            sends the choice as the next message. Only ever set on the last
+            message, by the silent-stop guard in useAIStreamHandler. */}
+        {!isStillStreaming && (
+          <ApprovalPrompt approval={message.pending_approval} />
+        )}
 
         {!isStillStreaming && hasContent && (
           <div className="-ml-2 mt-2 flex items-center">

@@ -367,6 +367,20 @@ export interface ChatMessage {
   picker_requests?: PickerRequest[]
   /** Structured `ask_user` question cards rendered inline in this message. */
   ask_user_requests?: AskUserRequest[]
+  /**
+   * Approval offered on the client's own initiative, because the turn ended
+   * empty after a tool that owed the user a decision.
+   *
+   * NOT an `ask_user_requests` entry: those resume a PAUSED run through
+   * /continue, and this run is completed, not paused — feeding it there would
+   * try to consume a pause that does not exist. Answering this sends the chosen
+   * option as an ordinary next message, the same mechanism the silent-stop
+   * nudge already uses.
+   */
+  pending_approval?: {
+    question: string
+    options: string[]
+  } | null
 }
 
 export interface AttachmentData {
