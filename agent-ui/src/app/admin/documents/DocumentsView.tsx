@@ -179,7 +179,30 @@ export default function DocumentsView() {
     const customData = previewDetail?.custom_data || {}
     const validation = previewDetail?.validation_result || {}
     const placeholders: Array<[string, any]> = Object.entries(customData)
-    const unfilledCount = placeholders.filter(([, v]) => isUnfilled(v)).length
+
+    // ★ Count what the DOCUMENT is missing, not what the data bag is missing.
+    //
+    // This badge used to count TBD entries across custom_data, which is the
+    // whole bag of values assembled for the fill — every alias, every field any
+    // template might want — not the placeholders this template actually
+    // renders. On a correct Commerce Ace resolution that read "10 placeholders
+    // unfilled" while the stat cards directly below said Placeholders 9 /
+    // Filled 9 / Unfilled 0 / Complete. Both were drawn from the same record;
+    // the header simply asked a different question and phrased the answer as
+    // though it were the same one.
+    //
+    // The ten were auditor_fee, auditor_name, the financial-year dates, the
+    // share counts, and the member slots for positions this company does not
+    // have — none of which appear in the document. A lawyer reading that badge
+    // has every reason to distrust a document that is in fact complete.
+    //
+    // validation_result is the authority, and it is what the cards read. Fall
+    // back to the old count only for records saved before it was stored.
+    const validationUnfilled = validation?.unfilled ?? validation?.total_unfilled
+    const unfilledCount =
+      typeof validationUnfilled === "number"
+        ? validationUnfilled
+        : placeholders.filter(([, v]) => isUnfilled(v)).length
 
     return (
       <Page>
