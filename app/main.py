@@ -6494,6 +6494,239 @@ async def delete_legal_skill(name: str, request: Request):
 # ---------------------------------------------------------------------------
 # Frontend Static Files — serve Next.js export from /app/static-frontend/
 # ---------------------------------------------------------------------------
+# Outbound email approval gate
+# ---------------------------------------------------------------------------
+# The agent can QUEUE an email (scout/agent.py:send_email_tool). It cannot send
+# one. Delivery happens here, and only here, behind a request carrying the
+# user's own JWT — which the agent has no way to obtain. That asymmetry is the
+# entire control: an approval the agent could grant itself would not be an
+# approval, so there is deliberately no "confirmed" flag the model can set.
+#
+# ★ These must stay ABOVE the `@app.get("/{full_path:path}")` catch-all below.
+# Defined after it, GET /api/email/queued matched the catch-all instead and
+# returned the frontend's HTML with a 200 — so the queue looked permanently
+# empty and no approval could ever be given. The POSTs still worked, because
+# the catch-all only claims GET, which is exactly the kind of half-working that
+# survives a quick test.
+
+
+@app.get("/api/email/queued")
+async def list_queued_emails(request: Request):
+    """List emails the agent has queued and nobody has approved yet."""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    conn = None
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT id, to_email, subject, body, attachment_name, created_at
+            FROM email_logs
+            WHERE status = 'queued'
+            ORDER BY created_at DESC
+            LIMIT 50
+            """
+        )
+        rows = cur.fetchall()
+        cur.close()
+        return {
+            "success": True,
+            "queued": [
+                {
+                    "id": r[0],
+                    "to_email": r[1],
+                    "subject": r[2],
+                    "body": r[3],
+                    "attachment_name": r[4],
+                    "created_at": r[5].isoformat() if r[5] else None,
+                }
+                for r in rows
+            ],
+        }
+    except Exception as e:
+        logging.getLogger("legalscout").error(f"Listing queued emails failed: {e}")
+        raise HTTPException(status_code=500, detail="Could not list queued emails")
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.post("/api/email/queued/{email_id}/discard")
+async def discard_queued_email(email_id: int, request: Request):
+    """Reject a queued email. It is never delivered."""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    conn = None
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            UPDATE email_logs
+            SET status = 'discarded', decided_at = NOW(), decided_by_email = %s
+            WHERE id = %s AND status = 'queued'
+            RETURNING to_email
+            """,
+            (user.get("email", "unknown"), email_id),
+        )
+        row = cur.fetchone()
+        conn.commit()
+        cur.close()
+        if not row:
+            raise HTTPException(status_code=404, detail="No such queued email")
+        log_activity(user.get("user_id"), user.get("email", "unknown"),
+                     "email_discarded", f"Discarded queued email #{email_id} to {row[0]}", "")
+        return {"success": True, "discarded": email_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.getLogger("legalscout").error(f"Discarding email {email_id} failed: {e}")
+        raise HTTPException(status_code=500, detail="Could not discard the email")
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.post("/api/email/queued/{email_id}/send")
+async def send_queued_email(email_id: int, request: Request):
+    """Deliver a queued email. This is the ONLY path to SMTP for agent-composed mail."""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    approver = user.get("email", "unknown")
+    conn = None
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        # Claim the row before doing any work. Two clicks, or a click racing a
+        # second tab, must not send the same email twice — and an email cannot
+        # be recalled, so the claim has to happen before SMTP, not after.
+        cur.execute(
+            """
+            UPDATE email_logs
+            SET status = 'sending', decided_at = NOW(), decided_by_email = %s
+            WHERE id = %s AND status = 'queued'
+            RETURNING to_email, subject, body, attachment_name, attachment_path
+            """,
+            (approver, email_id),
+        )
+        row = cur.fetchone()
+        conn.commit()
+        cur.close()
+        conn.close()
+        conn = None
+        if not row:
+            raise HTTPException(
+                status_code=409,
+                detail="That email is not waiting for approval — it may already have been sent or discarded.",
+            )
+        to_email, subject, body, attachment_name, attachment_path = row
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.getLogger("legalscout").error(f"Claiming email {email_id} failed: {e}")
+        if conn:
+            conn.close()
+        raise HTTPException(status_code=500, detail="Could not send the email")
+
+    def _finish(status: str, error: str = ""):
+        try:
+            c = get_db_conn()
+            k = c.cursor()
+            k.execute(
+                "UPDATE email_logs SET status = %s, error_message = %s, sent_by_email = %s WHERE id = %s",
+                (status, error or None, approver, email_id),
+            )
+            c.commit()
+            k.close()
+            c.close()
+        except Exception as e:  # noqa: BLE001
+            logging.getLogger("legalscout").error(f"Recording email {email_id} outcome failed: {e}")
+
+    try:
+        import os
+        import smtplib
+        from email.mime.text import MIMEText
+        from email.mime.multipart import MIMEMultipart
+        from email.mime.base import MIMEBase
+        from email import encoders
+
+        full_path = None
+        if attachment_path:
+            # The path was resolved when queued, but re-check it here: this is
+            # the boundary that actually opens the file, and the row in between
+            # was written by a tool the model drives.
+            output_base = Path("/documents/legal/output").resolve()
+            templates_base = Path("/documents/legal/templates").resolve()
+            candidate = Path(attachment_path).resolve()
+            inside = str(candidate).startswith(str(output_base)) or str(
+                candidate
+            ).startswith(str(templates_base))
+            if not inside or not candidate.exists():
+                _finish("failed", f"Attachment outside the documents directory or missing: {attachment_path}")
+                return {"success": False, "error": "The attachment is no longer available."}
+            full_path = candidate
+
+        sconn = get_db_conn()
+        scur = sconn.cursor()
+        scur.execute("SELECT key, value FROM app_settings WHERE key LIKE 'smtp_%'")
+        smtp = {r[0]: r[1] for r in scur.fetchall()}
+        scur.close()
+        sconn.close()
+
+        smtp_host = smtp.get("smtp_host") or os.getenv("SMTP_HOST", "")
+        smtp_port = int(smtp.get("smtp_port") or os.getenv("SMTP_PORT", "587"))
+        smtp_user = smtp.get("smtp_user") or os.getenv("SMTP_USER", "")
+        smtp_pass = smtp.get("smtp_pass") or os.getenv("SMTP_PASS", "")
+        smtp_from = smtp.get("smtp_from") or os.getenv("SMTP_FROM", "noreply@legalscout.com")
+
+        if not smtp_host or not smtp_user:
+            # Put it back so the approval is not lost to a config problem.
+            _finish("queued")
+            return {"success": False, "error": "Email is not configured. Go to Settings to configure SMTP."}
+
+        msg = MIMEMultipart()
+        msg["Subject"] = f"Legal Scout — {subject}" if subject else "Legal Scout"
+        msg["From"] = smtp_from
+        msg["To"] = to_email
+        msg.attach(MIMEText(body or "", "plain"))
+
+        if full_path is not None:
+            with open(full_path, "rb") as f:
+                part = MIMEBase("application", "octet-stream")
+                part.set_payload(f.read())
+                encoders.encode_base64(part)
+                part.add_header("Content-Disposition", f"attachment; filename={full_path.name}")
+                msg.attach(part)
+
+        with smtplib.SMTP(smtp_host, smtp_port) as server:
+            server.starttls()
+            server.login(smtp_user, smtp_pass)
+            server.send_message(msg)
+
+        _finish("sent")
+        log_activity(user.get("user_id"), approver, "email_approved_and_sent",
+                     f"Sent queued email #{email_id} to {to_email}"
+                     + (f" with {attachment_name}" if attachment_name else ""), "")
+        return {
+            "success": True,
+            "message": f"Sent to {to_email}"
+            + (f" with {attachment_name} attached" if attachment_name else ""),
+        }
+    except Exception as e:
+        # 'failed', not back to 'queued'. SMTP may have accepted the message
+        # before the error, and re-offering Send on something that might already
+        # be delivered is how a client receives the same filing twice.
+        _finish("failed", str(e))
+        logging.getLogger("legalscout").error(f"Sending queued email {email_id} failed: {e}")
+        return {"success": False, "error": f"Delivery failed: {e}"}
+
+
+# ---------------------------------------------------------------------------
 # The frontend is built as a static export (HTML/JS/CSS) and served directly
 # by FastAPI. This eliminates the need for a separate Node.js container.
 #

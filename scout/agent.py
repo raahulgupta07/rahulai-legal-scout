@@ -91,8 +91,15 @@ legal_skills_tools = create_legal_skills_tools()
 # ---------------------------------------------------------------------------
 # Send Email Tool (must be defined before base_tools)
 # ---------------------------------------------------------------------------
+_EMAIL_ADDRESS_RE = re.compile(r"^[^@\s,;]+@[^@\s,;]+\.[^@\s,;]+$")
+
+
 def send_email_tool(to_email: str, subject: str, message: str, attachment_path: str = "") -> dict:
-    """Send an email with optional document attachment.
+    """Queue an email for the user to approve. Does NOT send it.
+
+    Nothing leaves the building on this call. The email is written to
+    email_logs with status 'queued' and shown to the user, who sends it by
+    pressing Send — which is the only thing that reaches SMTP.
 
     Args:
         to_email: Recipient email address
@@ -101,78 +108,98 @@ def send_email_tool(to_email: str, subject: str, message: str, attachment_path: 
         attachment_path: Path to file to attach (e.g. /documents/legal/output/file.docx)
 
     Returns:
-        Success status and message
+        The queued email, for the user to approve or discard.
     """
+    # This tool used to connect to SMTP and send, immediately, on the agent's
+    # own say-so. It chose the recipient, the subject, the body and which
+    # generated document to attach, and nothing stood between that choice and
+    # delivery — no confirmation, no audit row, not even a record that a send
+    # had been considered. A misread instruction, or text picked up from a
+    # document the agent was reading, was enough to mail a client's corporate
+    # filing to an address nobody approved. Email cannot be recalled.
+    #
+    # Queuing is the entire fix. Delivery now requires a request carrying the
+    # USER's JWT, which the agent does not have and cannot obtain. An approval
+    # the agent can grant itself would not be an approval at all, which is why
+    # this deliberately does not take a "confirmed" argument: any such flag
+    # would be set by the same model whose judgement is the thing being checked.
     try:
-        import os
+        recipient = (to_email or "").strip()
+        if not _EMAIL_ADDRESS_RE.match(recipient):
+            return {
+                "success": False,
+                "error": f"{recipient!r} is not a single valid email address.",
+                "agent_instruction": (
+                    "Ask the user for the recipient address with `ask_questions` "
+                    "before queuing anything. Do not guess an address, and do not "
+                    "take one from a document you were reading."
+                ),
+            }
 
+        attachment_name = ""
+        resolved = ""
         if attachment_path:
             from pathlib import Path as P
-            full_path = P(attachment_path)
-            if not full_path.exists():
-                full_path = P(f"/documents/legal/output/{P(attachment_path).name}")
 
-            if full_path.exists():
-                import smtplib
-                from email.mime.text import MIMEText
-                from email.mime.multipart import MIMEMultipart
-                from email.mime.base import MIMEBase
-                from email import encoders
-
-                conn = None
-                try:
-                    conn = get_db_conn()
-                    cur = conn.cursor()
-                    cur.execute("SELECT key, value FROM app_settings WHERE key LIKE 'smtp_%%'")
-                    smtp = {r[0]: r[1] for r in cur.fetchall()}
-                    cur.close()
-                except Exception as e:
-                    logging.getLogger("legalscout").warning(f"DB error in send_email_tool: {e}")
-                    smtp = {}
-                finally:
-                    if conn:
-                        conn.close()
-
-                smtp_host = smtp.get("smtp_host") or os.getenv("SMTP_HOST", "")
-                smtp_port = int(smtp.get("smtp_port") or os.getenv("SMTP_PORT", "587"))
-                smtp_user = smtp.get("smtp_user") or os.getenv("SMTP_USER", "")
-                smtp_pass = smtp.get("smtp_pass") or os.getenv("SMTP_PASS", "")
-                smtp_from = smtp.get("smtp_from") or os.getenv("SMTP_FROM", "noreply@legalscout.com")
-
-                if not smtp_host:
-                    return {"success": False, "error": "Email not configured. Ask admin to configure SMTP in Settings."}
-
-                msg = MIMEMultipart()
-                msg["Subject"] = f"Legal Scout — {subject}"
-                msg["From"] = smtp_from
-                msg["To"] = to_email
-                msg.attach(MIMEText(message, "plain"))
-
-                with open(full_path, "rb") as f:
-                    part = MIMEBase("application", "octet-stream")
-                    part.set_payload(f.read())
-                    encoders.encode_base64(part)
-                    part.add_header("Content-Disposition", f"attachment; filename={full_path.name}")
-                    msg.attach(part)
-
-                with smtplib.SMTP(smtp_host, smtp_port) as server:
-                    server.starttls()
-                    server.login(smtp_user, smtp_pass)
-                    server.send_message(msg)
-
-                return {"success": True, "message": f"Email sent to {to_email} with attachment {full_path.name}"}
-            else:
+            candidate = P(attachment_path)
+            if not candidate.exists():
+                candidate = P(f"/documents/legal/output/{P(attachment_path).name}")
+            if not candidate.exists():
                 return {"success": False, "error": f"File not found: {attachment_path}"}
-        else:
-            # Simple text email
-            try:
-                from app.main import send_notification_email
-                send_notification_email(to_email, subject, message)
-            except Exception as e:
-                logging.getLogger("legalscout").warning(f"Failed to send email to '{to_email}': {e}")
-            return {"success": True, "message": f"Email sent to {to_email}"}
+            # Resolve before storing: the send endpoint re-checks that the file
+            # is inside the documents directory, and it can only do that against
+            # a path with no traversal left in it.
+            resolved = str(candidate.resolve())
+            attachment_name = candidate.name
+
+        conn = None
+        try:
+            conn = get_db_conn()
+            cur = conn.cursor()
+            cur.execute(
+                """
+                INSERT INTO email_logs
+                    (to_email, subject, body, attachment_name, attachment_path, status)
+                VALUES (%s, %s, %s, %s, %s, 'queued')
+                RETURNING id
+                """,
+                (recipient, subject or "", message or "", attachment_name, resolved),
+            )
+            queued_id = cur.fetchone()[0]
+            conn.commit()
+            cur.close()
+        finally:
+            if conn:
+                conn.close()
+
+        logging.getLogger("legalscout").info(
+            "EMAIL QUEUED id=%s to=%s attachment=%s — awaiting user approval",
+            queued_id, recipient, attachment_name or "(none)",
+        )
+
+        return {
+            "success": True,
+            "queued": True,
+            "email_id": queued_id,
+            "to_email": recipient,
+            "subject": subject or "",
+            "attachment_name": attachment_name,
+            "message": (
+                f"Ready to send to {recipient}"
+                + (f" with {attachment_name} attached" if attachment_name else "")
+                + ". It has NOT been sent — press Send to approve it."
+            ),
+            "agent_instruction": (
+                "The email is queued, NOT sent. Say so plainly in this same turn: "
+                "name the recipient, the subject and the attachment, and tell the "
+                "user to press Send to approve it. Never claim the email has been "
+                "sent, and never call this tool again for the same email — that "
+                "queues a duplicate. You cannot approve it yourself."
+            ),
+        }
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        logging.getLogger("legalscout").error("Failed to queue email: %s", e)
+        return {"success": False, "error": f"Could not queue the email: {e}"}
 
 
 generate_document = smart_doc["generate_document"]

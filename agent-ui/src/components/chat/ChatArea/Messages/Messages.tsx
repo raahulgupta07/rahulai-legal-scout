@@ -9,6 +9,7 @@ import ChatBlankState from './ChatBlankState'
 import PickerCardList from '@/components/chat/PickerCardList'
 import AskUserCardList from '@/components/chat/AskUserCardList'
 import ApprovalPrompt from '@/components/chat/ApprovalPrompt'
+import QueuedEmailCard from '@/components/chat/QueuedEmailCard'
 import { useStore } from '@/store'
 import { Copy, Check, ChevronRight, AlertTriangle, Plus } from 'lucide-react'
 import { toolLabel, summariseToolCall, formatRaw } from './toolDisplay'
@@ -569,6 +570,10 @@ const AgentMessageWrapper = ({ message, isLastMessage }: MessageWrapperProps) =>
         {!isStillStreaming && (
           <ApprovalPrompt approval={message.pending_approval} />
         )}
+
+        {/* An email the agent composed. It has NOT been sent — sending needs
+            the user's own JWT, which the agent does not have. */}
+        <QueuedEmailCard toolCalls={message.tool_calls} />
 
         {!isStillStreaming && hasContent && (
           <div className="-ml-2 mt-2 flex items-center">

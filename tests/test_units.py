@@ -600,6 +600,46 @@ def test_structural_contracts():
               f"generates={generates} injected={injected} shared_registry={shared} "
               f"fatal={fatal} real_descriptions={real_desc}")
 
+    # The agent must never be able to send an email by itself.
+    #
+    # send_email_tool used to connect to SMTP and deliver, immediately, on the
+    # agent's own decision — it chose the recipient, the subject, the body and
+    # which generated document to attach, with no confirmation, no audit row and
+    # no record that a send had even been considered. A misread instruction, or
+    # text picked up from a document it was reading, was enough to mail a
+    # client's corporate filing to an address nobody approved. Email cannot be
+    # recalled.
+    #
+    # The tool now only queues. Delivery lives behind an endpoint requiring the
+    # USER's JWT, which the agent has no way to obtain. There must be no
+    # "confirmed" parameter either: a flag set by the same model whose judgement
+    # is being checked is not an approval.
+    if not agent_src.exists():
+        check("U14", "the agent cannot send an email without a human", True,
+              "SKIPPED — scout/agent.py not present")
+    else:
+        a = agent_src.read_text()
+        tool = re.search(r"def send_email_tool\(([\s\S]*?)\n(?=\w|@)", a)
+        body = tool.group(0) if tool else ""
+        no_smtp = "smtplib" not in body and "send_message" not in body
+        queues = "'queued'" in body or '"queued"' in body
+        no_confirm_arg = tool is not None and "confirmed" not in (tool.group(1).split(")")[0])
+        main_src = REPO / "app" / "main.py"
+        m = main_src.read_text() if main_src.exists() else ""
+        # Delivery endpoint exists, demands a token, and claims the row before
+        # touching SMTP so a double click cannot send twice.
+        gated = '@app.post("/api/email/queued/{email_id}/send")' in m
+        needs_auth = bool(re.search(
+            r'/api/email/queued/\{email_id\}/send"\)[\s\S]{0,400}?if not user:[\s\S]{0,80}?401', m))
+        claims_first = bool(re.search(
+            r"SET status = 'sending'[\s\S]{0,200}?WHERE id = %s AND status = 'queued'", m))
+        check("U14", "the agent cannot send an email without a human",
+              bool(tool) and no_smtp and queues and no_confirm_arg
+              and gated and needs_auth and claims_first,
+              f"tool_found={bool(tool)} no_smtp={no_smtp} queues={queues} "
+              f"no_confirm_arg={no_confirm_arg} endpoint={gated} "
+              f"auth={needs_auth} claims_before_send={claims_first}")
+
     # No foreign-jurisdiction statute may be cited by this product.
     #
     # app/main.py:_get_legal_refs_from_name() hardcoded Indian company law —
