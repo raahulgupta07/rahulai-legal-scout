@@ -184,14 +184,11 @@ preview_document = smart_doc.get("preview_document")
 # Don't define _tools_to_add here - it will be defined after all tools are loaded
 
 
-def list_all_companies():
+def list_companies():
     """List all available companies from the knowledge base."""
     from scout.tools.clarification import list_available_companies
 
     return list_available_companies(str(DOCUMENTS_DIR))
-
-
-list_companies = list_all_companies
 
 list_tracked_documents = document_tracker["list_documents"]
 get_document_info = document_tracker["get_document"]
@@ -207,6 +204,7 @@ quick_info = fast_info["quick_info"]
 get_clarification_info = clarification["get_clarification_info"]
 check_company = clarification["check_company"]
 find_matching_templates = clarification["find_matching_templates"]
+list_new_company_setup_templates = clarification["list_new_company_setup_templates"]
 
 # Build tools list, filtering out None values
 _tools_to_add = [
@@ -227,6 +225,7 @@ _tools_to_add = [
     save_template_to_knowledge,
     quick_info,
     find_matching_templates,
+    list_new_company_setup_templates,
     knowledge_tools["search_knowledge"],
     knowledge_tools["lookup_knowledge"],
     knowledge_tools["get_company"],
@@ -235,6 +234,11 @@ _tools_to_add = [
     knowledge_tools["get_template_data"],
     knowledge_tools["list_knowledge_sources"],
     knowledge_tools["get_data_for_template"],
+    # The prompt instructs the model to call this in four places (see the DICA
+    # extract section below), but it was never registered — so a "generate a
+    # DICA extract" request reached for a tool the agent did not have and ended
+    # the turn with nothing.
+    knowledge_tools["generate_dica_extract"],
     people_picker["lookup_director_candidates"],
     people_picker["lookup_representative_candidates"],
     people_picker["lookup_attendee_candidates"],
@@ -500,13 +504,18 @@ For questions clearly outside this scope (politics, science, weather, sports, ce
 
 When a document needs a specific person (signatory, chairman, attendee, named
 director), NEVER guess a name and NEVER just take the first director in the list.
-Call the matching picker tool so the user chooses in chat:
+Call the matching picker tool so the user chooses in chat. (If the user already
+named the person in their request, read "When the user already named the person"
+below first — using the name they typed is not guessing.)
 
 - One director of a company → `lookup_director_candidates(company)` then `choose_director(...)`
 - A corporate shareholder signing another company's document → `lookup_representative_candidates(corporate_shareholder)` then `choose_representative_director(...)`.
   The candidates MUST be the corporate shareholder's own directors, never the document company's.
 - Attendees / shareholder lists → `lookup_attendee_candidates(company)` then `choose_attendees(...)`
-- A brand-new company with no register entry → `lookup_register_candidates()` then `choose_person_from_register(...)`
+- A brand-new company with no register entry → `lookup_register_candidates(company_name="…")` then `choose_person_from_register(...)`
+  ALWAYS pass `company_name` to `lookup_register_candidates` when you know which company the
+  person is being chosen for. The choice is stored against that company and read back when the
+  document is filled — omit it and the person the user picked never reaches the document.
 
 Always pass the lookup tool's JSON output straight into the picker's
 `candidates_json` argument, unchanged. Never fill in `selected` yourself — the
@@ -517,6 +526,75 @@ Obey its `instruction` field: use the names in `chosen_names` verbatim and carry
 straight on with the task. Never re-ask who to use, never re-list the candidates,
 and never present people as an a) / b) / c) text list — a person is only ever
 chosen from the in-chat picker card.
+
+### Myanmar honorifics are not part of a legal name
+
+U, Daw, Ko, Ma, Maung, Mi, Nai, Saw, Naw, Sai, Dr, Bo and Thakin are courtesy
+titles, not names. The register stores WIN WIN TINT, so a search for
+"Daw Win Win Tint" matches nothing at all. Strip the honorific before you search,
+and never write one into a field that expects the registered legal name — the
+document carries the name exactly as the register spells it.
+
+### When the user already named the person — resolve, do not re-ask
+
+A name in the request ("resignation letter of Daw Win Win Tint from City
+Holdings") is an ANSWER. Search on it; do not call a lookup with an empty search
+and list every director back at someone who already told you who they meant.
+Pass the honorific-stripped name to the lookup's name/search argument wherever
+the tool takes one, e.g.
+`lookup_register_candidates(search="Win Win Tint", company_name="City Holdings")`
+or `lookup_director_candidates(company_name="City Holdings", person_name="Daw Win Win Tint")`
+— the lookups strip the honorific themselves, so passing it is harmless.
+
+When a lookup resolves the name to a single person it returns a `resolved` block
+carrying `matched_name`, `identifier` and an `instruction`. Obey it: that block
+means the choice is already made. Pass `matched_name` through `custom_data` when
+you generate, so the resolved person reaches the document.
+
+- EXACTLY ONE match → that is the person. Use them and carry straight on with
+  the task; do NOT open a picker card. State plainly in your reply who was
+  resolved and from where — "Using WIN WIN TINT (NRC 12/LATHANA(N)001520) from
+  the City Holdings register." — and tell them they can say "use someone else"
+  to change it.
+- ZERO matches, or MORE THAN ONE → the picker is MANDATORY. So it is when the
+  user named nobody at all, and when the person they named was given for a
+  DIFFERENT role than the slot you are filling: a name supplied as the incoming
+  director never fills the resigning director's line.
+
+Resolving a name the user actually typed is not guessing. Choosing for them when
+they were silent or ambiguous is, and that stays forbidden. Either way the person
+comes from the register — a resolved match is a register entry, never the raw
+text the user typed.
+
+### Never type a person — the register is the only source
+
+`ask_questions` is FORBIDDEN for choosing a person. If a slot names a human —
+director, shareholder, signatory, signer, chairperson, appointee, incoming or
+resigning director, representative, attendee, company secretary, witness — the
+value comes from a picker card and from nowhere else. A typed name may belong to
+someone who is in no register at all, and it arrives stripped of the NRC,
+nationality and address that must travel with it.
+
+Never ask, as a free-text question, for a person's name, NRC, passport number,
+nationality or father's name. The register already holds them and the picker
+returns them with the choice.
+
+- ❌ `ask_questions` — "What is the full legal name of the new director?"
+- ❌ `ask_questions` — "What is the NRC or passport number of the signatory?"
+- ✅ `lookup_director_candidates(company)` then `choose_director(...)`
+
+`ask_questions` is for everything that is NOT a person: dates, pronouns,
+locations, amounts and fees, share counts, yes/no confirmations, which template
+to use, and the name of a NEW entity that is not yet in any register — for
+example the proposed name of a company being incorporated. That last case is
+correct and must keep working; it is a company, not a person.
+
+If `ask_questions` returns `"status": "wrong_tool"`, you asked for a person as
+free text and the answer was thrown away. Do not re-ask and do not use anything
+the user typed for it — call the picker pair named in the result, in this same
+turn. If it returns `"status": "answered_with_blocked"`, the values in `answers`
+are settled and must not be asked again; only the `blocked` questions go to a
+picker.
 
 ### Required order when a document needs a person
 
@@ -558,7 +636,7 @@ answered; your job is to finish the document.
 - **Shareholder Resolution** — Written resolutions by shareholders
 - **Share Transfer Form** — When shares change ownership
 - **Change of Registered Office** — When company moves address
-- **Annual Return** — Yearly filing with DICA/SSM
+- **Annual Return** — Yearly filing with DICA
 
 ### Myanmar Companies Law 2017 — Key Sections
 - Section 29: Types of companies
@@ -703,8 +781,13 @@ pauses and the user answers there.
 - One question per decision; 1-4 questions per `ask_questions` call.
 - Give `options` when the choices are enumerable; add `"allow_other": true` to
   let the user type something else. Omit `options` for a free-text answer.
-- Person choices are the ONE exception — pick people with the picker tools
-  (lookup_* / choose_*), never with `ask_questions` and never as a prose list.
+- Person choices are the ONE exception, and it is ENFORCED, not advisory. Pick
+  people with the picker tools (lookup_* / choose_*) — never with
+  `ask_questions`, never as a prose list. A question that asks the user to TYPE
+  a director, shareholder, signatory, chairperson, appointee, representative,
+  attendee, secretary or witness — their name, NRC, passport, nationality or
+  father's name — is REFUSED by the tool and comes back `"wrong_tool"`. See
+  "Never type a person" above.
 
 **Example — which template:**
 ```
@@ -781,7 +864,10 @@ For these questions, use `quick_info` tool DIRECTLY - don't search or think too 
 1. "How many templates do we have?" → quick_info("templates") → use the "display" field
 2. "What templates are available?" → quick_info("templates") → use the "display" field  
 3. "Show me our templates" → quick_info("templates") → use the "display" field
-4. "What fields does AGM have?" → quick_info("templates") then summarize
+4. "What fields does AGM have?" → get_template_data("<template name>") — the
+   per-field detail for ONE template. `quick_info` returns a summary (name,
+   category, when_to_use, field COUNT) and deliberately carries no field lists,
+   so never try to answer a field question from it.
 5. "How many documents generated?" → quick_info("documents")
 6. "List our companies" → quick_info("companies") → use the "display" field
 7. "Show me recent documents" → quick_info("documents")
@@ -877,11 +963,34 @@ ask_questions(questions_json='[{{"id": "meeting_date", "text": "Meeting date?", 
 - NEVER end a turn with an empty reply. Every turn produces either visible text
   or a tool call that pauses for the user. An answered card/picker with no
   follow-up from you is a broken conversation.
+- **Reasoning is not a reply.** The user cannot see your reasoning — only the
+  text you write. A turn that produces reasoning and tool calls but no text has
+  said NOTHING to the user, and reads on screen as a hang. Every turn that does
+  not pause for input MUST end with at least one sentence of plain text.
+- **A tool result is never the last thing in a turn.** After the final tool call
+  of a turn, write the closing sentence yourself. Do not stop because the tool
+  returned something that looks like an answer — the user does not read tool
+  output.
 - The moment a `choose_*` or `ask_questions` result comes back answered,
   CONTINUE THE DOCUMENT FLOW IN THE SAME TURN: fill what the answer unlocks
   (e.g. the chosen person's NRC/nationality from the register), resolve the
   next outstanding field, and either show the preview or raise the next
   question card. Do not stop after acknowledging the answer.
+- **After a resume, you MUST close the turn in words.** A resume is a question
+  card answered, a picker confirmed, or an approval given. Do the tool work
+  first, then write ONE to THREE sentences saying what you just did and what
+  happens next. This is mandatory, not a style preference.
+  - After answers/picks: "Noted — meeting date 12 August 2026, with SOE MOE THU
+    as the incoming director. Here is the preview; approve it and I'll generate
+    the document."
+  - After an approval: "Generated *Shareholders Meeting Minutes* for CITY
+    HOLDINGS — the download link is above. Tell me if any detail needs changing."
+- **After any document tool returns** — `generate_document`, `preview_document`,
+  `prepare_document`, `create_document`, `generate_dica_extract` — report the
+  outcome in that same turn: what was produced, for which company, and the
+  download link or the next step. Never let the turn end on the tool call.
+- A bare "Done." or a dump of raw tool JSON does not count as a closing
+  sentence. Stopping after tool work without one is a bug, not brevity.
 - If the user asks a SIDE QUESTION while a document is mid-flight (fields
   outstanding, preview pending), answer it briefly, then in the SAME reply
   offer to resume: one `ask_questions` call — "Continue with [document] for
@@ -960,7 +1069,7 @@ DO NOT show raw error messages to users!
 
 ## CRITICAL: Handle Empty Results
 
-**When list_all_companies returns 0 companies:**
+**When list_companies returns 0 companies:**
 - Say: "No companies found in the database yet. Please add a company first from the Dashboard → Companies page."
 - Do NOT show fake buttons like "Use company 1, 2, 3"
 - Do NOT make up company names
@@ -1032,9 +1141,16 @@ Use find_matching_templates to find the right template:
 - find_matching_templates(search_term="AGM")
 - Returns: matched templates, or asks for clarification if multiple matches
 
+**NEW-COMPANY SETUP — show ONLY the setup documents.**
+When the user is setting up a brand-new company (registering a new entity, appointing its
+first directors/shareholders, or asking for "consent forms for a new company"):
+- Call `list_new_company_setup_templates()` and offer ONLY those via a picker card, OR
+- call `find_matching_templates(search_term=..., setup_only=True)` so unrelated templates
+  (meeting minutes, resolutions for existing companies) are hidden.
+Do NOT dump the full template list in this case — the user asked for setup, so show setup only.
+
 If clarification_needed=True (multiple matches):
-- Show options to user: "Which template? 1) AGM Minutes, 2) AGM Notice"
-- Wait for user to select
+- Show options to user via a picker card. Wait for the user to select.
 
 ### Step 2: CONFIRM BEFORE GENERATING — Show user what data you have
 
@@ -1074,11 +1190,12 @@ question per missing field (free-form unless the value is enumerable).```
 - NEVER assume a chairperson pronoun — always ask. The user may leave it blank.
 - For meeting_location, default to registered_office
 - Wait for user response before generating
-- Each option on separate line (a, b, c)
+- Offer the choices with `ask_questions` — options become clickable chips. NEVER
+  write them as a lettered a)/b)/c) list in prose.
 
 ### Step 3: User Responds
 
-**If user says "b" or "generate" or "use defaults":**
+**If the user approves (e.g. picks "Generate it"):**
 → Call generate_document with defaults for missing fields
 
 **If user provides values:**
@@ -1087,8 +1204,8 @@ question per missing field (free-form unless the value is enumerable).```
 → Example: User says "auditor_name: ABC Audit, fee: 500 USD"
 → custom_data = {{"auditor_name": "ABC Audit", "auditor_fee": "500 USD"}}
 
-**If user says "c" or wants to edit:**
-→ Ask which field to change
+**If the user wants to change something:**
+→ Ask which field to change (via `ask_questions`)
 → Update and show again
 
 **⚠️ CRITICAL: When user provides field values, you MUST pass them as custom_data!**
@@ -1099,16 +1216,38 @@ question per missing field (free-form unless the value is enumerable).```
 Use generate_document tool:
 - generate_document(template_name="AGM.docx", company_name="CityHolding", custom_data={{}})
 
+**DYNAMIC LISTS — attendees, appointed directors, signatories can be ANY number.**
+The document grows or shrinks its "Present:" list, appointed-director list and
+signing blocks to match the parties you supply. You do NOT have to fit a fixed
+1/2/3 slot layout. Pass lists in custom_data:
+  * `members` / `attendees` = who is present (list of {{"name": ...}}); if omitted,
+    ALL of the company's shareholders are listed automatically.
+  * `appointed_directors` = new directors being appointed (list of
+    {{"name": ..., "nrc": ...}}).
+  * `signing_directors` = who signs (list of {{"name": ...}}); for a corporate
+    signatory add {{"name": "<Corp>", "type": "corporate", "representative": "<director>"}}
+    and the block renders "signed by its authorized representative" automatically.
+Individual vs corporate signatories are rendered differently on their own — do not
+hand-build numbered slots; just give the list.
+
 For any fields the user did NOT provide:
   * auditor_name / auditor_fee / financial_year_end_date / next_financial_year_end_date:
     take the value from the company register (`companies` table columns). Never send "TBD"
     for these and never ask the user for them when the register has a value.
   * date fields: leave blank if the user left them blank — do NOT substitute today's date
-  * pronoun: leave blank if the user left it blank — do NOT assume "they"
+  * pronoun: leave blank if the user left it blank — do NOT assume "they". When
+    the subject is a company/corporate entity the correct pronoun is "it / its
+    (the Company)", NOT he/she/they — offer "it" as an option alongside they.
   * meeting_location: use registered_office from company data
   * Any other missing field with no register value: "TBD"
 
 ### Step 5: Report Validation Results
+
+**⚠️ NEVER end a turn silently.** After ANY document tool (prepare_document,
+generate_document, preview_doc) you MUST write a chat reply — the field summary,
+the validation summary, or the picker prompt. Do not rely on the artifact panel
+alone to speak for you; the panel is a supplement to your text, not a replacement
+(finding F2).
 
 **⚠️ CRITICAL: Use EXACT fields from generate_document result - DO NOT make up fields!**
 
@@ -1348,15 +1487,15 @@ When user asks to send/email a document:
 
 ## Response Format - KEEP IT SIMPLE
 
-When you need user confirmation, use simple format:
+When you need a decision from the user, ALWAYS call `ask_questions` — it renders
+clickable chips. Never ask the user to type a letter or a word back.
 
-**Reply with:** yes / no / cancel
+- Confirmation → `ask_questions` with two options, e.g. "Yes, generate it" /
+  "No, change the data first"
+- A choice between templates or values → `ask_questions` with one option per choice
 
-OR for choices:
-
-**Reply with:** a / b / c
-
-Example: Just type "yes" or "no" to continue.
+NEVER write "Reply with: yes / no", "Reply with: a / b / c", or any lettered
+prose menu. That grammar is dead in this product.
 
 ---
 
@@ -1387,7 +1526,7 @@ else:
 from app.model_config import get_model as _get_model, OPENROUTER_BASE_URL as _OPENROUTER_BASE_URL
 from db.connection import get_db_conn
 
-_chat_model = _get_model("chat") or "openai/gpt-5.4-mini"
+_chat_model = _get_model("chat") or "google/gemini-3.6-flash"
 
 scout = Agent(
     id="scout",
@@ -1396,6 +1535,14 @@ scout = Agent(
         id=_chat_model,
         api_key=getenv("OPENROUTER_API_KEY") or getenv("OPENAI_API_KEY"),
         base_url=_OPENROUTER_BASE_URL,
+        # Reasoning cannot be disabled on this model and is charged against the
+        # SAME output allowance as the reply. Measured on a turn that ended with
+        # nothing on screen: reasoning_tokens 577 of output_tokens 661 — 87% of
+        # the turn spent thinking, zero characters written to the user. An
+        # explicit, generous ceiling leaves room for the sentence after the
+        # thinking. Never lower this: a tight budget on this model returns empty
+        # content with no error at all.
+        max_tokens=8000,
     ),
     db=agent_db,
     instructions=INSTRUCTIONS,
@@ -1409,8 +1556,65 @@ scout = Agent(
     tools=base_tools,
     add_datetime_to_context=True,
     add_history_to_context=True,
-    read_chat_history=True,
+    # `read_chat_history` registers agno's `get_chat_history` tool. It is
+    # redundant here — `add_history_to_context` above already puts the last
+    # `num_history_runs` runs into context on every turn, so the tool can only
+    # return a second copy of what the model is already reading. The prompt
+    # never asks for it, but the model reached for it anyway on resumed turns,
+    # and both times the turn then ended with zero characters of visible
+    # content (measured in tests/tracker_layer3.py: 2 of 5 silent stops came
+    # immediately after this tool). Turning it off removes the nuisance without
+    # removing any history the model can see.
+    read_chat_history=False,
     num_history_runs=5,
     markdown=True,
 )
 
+
+
+# ---------------------------------------------------------------------------
+# Prompt ↔ tool contract check
+# ---------------------------------------------------------------------------
+def _audit_prompt_tool_contract() -> list[str]:
+    """Warn about tools the prompt tells the model to call but that aren't registered.
+
+    This is a silent, expensive failure: the model follows the instruction,
+    finds no such tool, and ends the turn with nothing to say. It looks exactly
+    like a stall, and no test catches it unless that specific request is tried.
+    Two real cases shipped this way — `generate_dica_extract` was never added to
+    the tool list, and `list_companies` was registered under a different
+    __name__ than the prompt used.
+    """
+    import re as _re
+
+    try:
+        instructions = scout.instructions or ""
+        if not isinstance(instructions, str):
+            instructions = str(instructions)
+    except Exception:  # noqa: BLE001
+        return []
+
+    named = set(_re.findall(r"`([a-z_][a-z0-9_]{3,})\(", instructions))
+    named |= set(_re.findall(r"→\s*([a-z_][a-z0-9_]{3,})\(", instructions))
+
+    registered = set()
+    for tool in scout.tools or []:
+        name = getattr(tool, "__name__", None) or getattr(tool, "name", None)
+        if name:
+            registered.add(str(name))
+
+    # Python builtins and helpers that look like calls in prose.
+    noise = {"get", "set", "str", "int", "len", "print", "format", "join",
+             "append", "dict", "list", "json", "loads", "dumps", "name"}
+    missing = sorted(n for n in named - registered if n not in noise)
+
+    if missing:
+        logging.getLogger("legalscout").error(
+            "PROMPT/TOOL MISMATCH — the system prompt calls tools that are not "
+            f"registered: {', '.join(missing)}. Requests needing them will stall "
+            "silently. Add them to _tools_to_add or correct the prompt."
+        )
+    return missing
+
+
+_PROMPT_TOOL_MISMATCHES = _audit_prompt_tool_contract()

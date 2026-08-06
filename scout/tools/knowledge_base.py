@@ -615,6 +615,7 @@ def add_company(data: dict) -> dict:
                 auditor_fee = EXCLUDED.auditor_fee,
                 custom_fields = COALESCE(companies.custom_fields, '{}'::jsonb) || EXCLUDED.custom_fields,
                 updated_at = NOW()
+            RETURNING id
         """, (
             company_name,
             data.get("company_name_myanmar"),
@@ -649,7 +650,24 @@ def add_company(data: dict) -> dict:
             data.get("auditor_fee") or None,
             safe_json_dumps(data.get("custom_fields") or {}),
         ))
+        row = cur.fetchone()
+        company_id = row[0] if row else None
         conn.commit()
+
+        # Project the filing's humans into the People register. The company row
+        # stays the source of truth; People is its deduped, cross-company view.
+        people_stats = None
+        if company_id:
+            try:
+                from scout.tools.people_sync import sync_company_people
+
+                people_stats = sync_company_people(
+                    conn, company_id, directors, members, data.get("created_by_email")
+                )
+                conn.commit()
+            except Exception as e:
+                conn.rollback()
+                print(f"[PEOPLE SYNC] skipped for {company_name}: {e}")
 
         # Also add to knowledge_lookup for AI search
         lookup_fields = {
@@ -670,7 +688,10 @@ def add_company(data: dict) -> dict:
         cur.close()
         conn.close()
 
-        return {"success": True, "message": f"Company '{company_name}' saved"}
+        result = {"success": True, "message": f"Company '{company_name}' saved"}
+        if people_stats:
+            result["people_sync"] = people_stats
+        return result
     except Exception as e:
         return {"success": False, "error": str(e)}
 

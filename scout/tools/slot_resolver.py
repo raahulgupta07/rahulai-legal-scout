@@ -21,12 +21,54 @@ means the corporate shareholder's own directors: an AGM resolution signed by
 City Holdings on CMHL's document is signed by a City Holdings director.
 """
 
+import contextlib
+import contextvars
 import json
 import logging
 import re
 from typing import Any
 
 from scout.tools.field_aliases import normalize_field
+
+# The conversation a fill is being performed for.
+#
+# A picker answer and the document fill are separate tool calls, so the answer
+# is parked in party_selections and read back at fill time. The read-back has to
+# know WHICH conversation is asking, or it will happily hand back a person
+# chosen in somebody else's chat (see migration 017 for the measured case).
+#
+# Carried in a ContextVar rather than threaded through find_replacement ->
+# fill_template_with_validation -> resolve_slot -> selected_parties, because
+# that is six signatures deep and every caller would have to be correct. A
+# ContextVar is per-context, not a shared global: concurrent runs cannot see
+# each other's value, which is the property the threading would have given us.
+_SESSION_SCOPE: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "legalscout_session_scope", default=""
+)
+
+
+@contextlib.contextmanager
+def session_scope(session_id: str | None):
+    """Bind the conversation a fill belongs to, for the duration of the block.
+
+    Set once at the tool entry point, where agno's RunContext is available.
+    Everything below reads it. Always resets, so a failed generation cannot
+    leak its scope into whatever runs next on this thread.
+    """
+    token = _SESSION_SCOPE.set(str(session_id or "").strip())
+    try:
+        yield
+    finally:
+        _SESSION_SCOPE.reset(token)
+
+
+def current_session_scope() -> str:
+    """The conversation a fill belongs to, or '' when there is none.
+
+    '' means a non-chat caller — the Fill-in view generates straight from values
+    the user picked in the UI and must never inherit a chat's selections.
+    """
+    return _SESSION_SCOPE.get()
 
 SLOT_KINDS = frozenset({
     "signatory", "attendee", "chairperson", "resigning_director",
@@ -80,16 +122,41 @@ PICKER_KINDS = {
     "choose_person_from_register": set(SLOT_KINDS),
 }
 
+# Ordered most-specific first: the first match wins, and "signatory" is the
+# deliberate catch-all at the end.
+#
+# Separators are [ _-] rather than literal "_" because these run against TWO
+# kinds of text: snake_case placeholder names ("new_director_name") AND the
+# prose `purpose` a picker is given ("select the new director to be appointed").
+# When they only matched underscores, every prose purpose fell through to the
+# catch-all and was recorded as "signatory" — which is how a person chosen as
+# the INCOMING director was later reused as the RESIGNING one.
 _KIND_PATTERNS = (
-    ("resigning_director", r"resign"),
-    ("new_director", r"new_director|appointed_director|incoming_director|appointee"),
+    ("resigning_director", r"resign|outgoing|stepping[ _-]?down"),
+    ("new_director", r"new[ _-]?director|appointed[ _-]?director|incoming[ _-]?director|appointee|being[ _-]?appointed|to[ _-]?be[ _-]?appointed"),
     ("chairperson", r"chair"),
-    ("representative", r"represent|authoris?ed_person|authoriz?ed_person"),
-    ("attendee", r"attend|present_member|persons_present"),
+    ("representative", r"represent|authoris?ed[ _-]?person|authoriz?ed[ _-]?person"),
+    ("attendee", r"attend|present[ _-]?member|persons[ _-]?present"),
     ("auditor", r"auditor"),
     ("shareholder_list", r"shareholder|member"),
-    ("signatory", r"director|signator|signed_by|sign"),
+    ("signatory", r"director|signator|signed[ _-]?by|sign"),
 )
+
+
+def classify_kind(text: str) -> str:
+    """Best-effort slot kind for a placeholder name or a picker's prose purpose.
+
+    Shared with people_picker so a selection is RECORDED under the same
+    vocabulary it is later looked up by. Returns "" when nothing matches, which
+    callers treat as "unknown" rather than guessing.
+    """
+    probe = (text or "").lower()
+    if not probe:
+        return ""
+    for kind, pattern in _KIND_PATTERNS:
+        if re.search(pattern, probe):
+            return kind
+    return ""
 
 _ARRAY_PATH = re.compile(r"^(\w+)\[(\d+)\](?:\.(\w+))?$")
 _INDEX_IN_NAME = re.compile(r"(?:^|[^0-9a-z])(\d+)(?:[^0-9a-z]|$)")
@@ -386,6 +453,13 @@ def _parties_from_picker_log(company_name: str | None, slot: dict) -> list[dict]
     if not company_name or not kind:
         return []
 
+    # No conversation in scope means a non-chat caller — the Fill-in view, which
+    # generates from values the user chose in the UI. It has no picker log of
+    # its own and must not inherit one, so there is nothing to read back.
+    session_id = current_session_scope()
+    if not session_id:
+        return []
+
     pickers = [p for p, kinds in PICKER_KINDS.items() if kind in kinds]
     if not pickers:
         return []
@@ -401,11 +475,34 @@ def _parties_from_picker_log(company_name: str | None, slot: dict) -> list[dict]
             SELECT selection FROM party_selections
             WHERE LOWER(company_name) = LOWER(%s)
               AND picker = ANY(%s)
+              AND slot_kind = %s
+              AND session_id = %s
               AND created_at > NOW() - INTERVAL '30 minutes'
             ORDER BY created_at DESC, id DESC
             LIMIT 1
             """,
-            (company_name.strip(), pickers),
+            # Three things scope a read-back, and each one closed a real defect:
+            #
+            # slot_kind — without it this matched on company + picker alone, so
+            # ANY pick for this company in the last 30 minutes was reusable for
+            # ANY role: a person chosen as the INCOMING director on one document
+            # appeared on the NEXT document's resignation line, replacing the
+            # director who was actually resigning. Wrong person, right company,
+            # no warning.
+            #
+            # session_id — without it a pick bled between CONVERSATIONS. Measured
+            # 2026-08-06: a director chosen in one chat was silently reused in an
+            # unrelated chat 24 minutes later, putting a name nobody in that
+            # conversation had given into generated meeting minutes.
+            #
+            # the 30-minute window — a backstop, not the guard. Session scope is.
+            #
+            # `slot_kind = ''` and `session_id = ''` are deliberately NOT
+            # tolerated. Rows written before either column existed simply stop
+            # resolving, and the agent asks again — which is the correct
+            # behaviour, and better than reusing a pick whose role or
+            # conversation we cannot establish.
+            (company_name.strip(), pickers, kind, session_id),
         )
         row = cur.fetchone()
         cur.close()
@@ -542,6 +639,82 @@ def _corporate_shareholder_name(data: dict, company_name: str | None) -> str:
     return ""
 
 
+# An NRC / passport / identification placeholder — the identifier half of a
+# person, as opposed to their name.
+_IDENTIFIER_ATTR_RE = re.compile(
+    r"(?:^|[_\s])(?:"
+    r"nrc|nrc_no|nrc_number|nrc_passport_no|nrc_passport_number|"
+    r"passport|passport_no|passport_number|"
+    r"identification_number|identification_no|identity_number|"
+    r"identification|id_number|id_no"
+    r")$"
+)
+
+# The name half of a person, so a role prefix can be matched to its slot.
+_NAME_ATTR_RE = re.compile(r"(?:^|[_\s])(?:name|full_name)$")
+
+
+def _role_prefix(placeholder: str, attr_re: re.Pattern) -> str:
+    """The role part of `new_director_identification_number` → `new_director`."""
+    norm = str(placeholder or "").replace("\xa0", " ").strip().lower()
+    match = attr_re.search(norm)
+    if not match:
+        return ""
+    return norm[: match.start()].strip(" _")
+
+
+def companion_identifier(
+    placeholder: str,
+    mapping: dict,
+    data: dict,
+    company_name: str | None = None,
+    document_id: Any = None,
+) -> str | None:
+    """The NRC/passport of the person a sibling slot already resolved to.
+
+    Templates split one person across two placeholders — `new_director_name`
+    (a slot, answered by a picker) and `new_director_identification_number`
+    (classified `user_input` by training, so asked as free text). Nothing tied
+    them together, so the two halves of one person's identity resolved from two
+    different sources.
+
+    Measured 2026-08-06: the name arrived from a picker selection while the NRC
+    was asked as text and left blank, and the minutes went out reading
+    "SOE MOE THU (holder of Myanmar NRC/Passport number: )". The register had
+    his NRC the whole time.
+
+    So an identifier placeholder is answered by the person its sibling name slot
+    resolved to, and is only asked when there is no such person.
+    """
+    prefix = _role_prefix(placeholder, _IDENTIFIER_ATTR_RE)
+    if not prefix or not isinstance(mapping, dict):
+        return None
+
+    for key, entry in mapping.items():
+        if not slot_of(entry):
+            continue
+        # The sibling is the name of the SAME role: `new_director_name` for
+        # `new_director_identification_number`. A bare `new_director` counts
+        # too — some templates name the slot without the `_name` suffix.
+        key_norm = str(key or "").replace("\xa0", " ").strip().lower()
+        if _role_prefix(key, _NAME_ATTR_RE) != prefix and key_norm != prefix:
+            continue
+
+        parties = selected_parties(
+            key, entry, data, document_id=document_id, company_name=company_name
+        )
+        for party in parties:
+            identifier = str(party.get("identifier") or "").strip()
+            if identifier:
+                return identifier
+        # The sibling resolved to somebody with no identifier on file, or to
+        # nobody at all. Either way there is nothing to copy; fall through so
+        # the normal user_input path asks.
+        return None
+
+    return None
+
+
 def resolve_slot(
     placeholder: str,
     entry: dict,
@@ -600,6 +773,104 @@ def slot_request(placeholder: str, entry: dict, data: dict, company_name: str | 
     }
 
 
+def _member_family_parties(data: dict, company_name: str | None) -> list[dict]:
+    """The real member/attendee list a template's numbered shareholder slots will
+    be expanded to by repeat_regions — from supplied data or the company register.
+    Used to suppress phantom numbered-slot asks (finding F1)."""
+    try:
+        from scout.tools.repeat_regions import _parties_for_family
+        return _parties_for_family("member", "name", data or {}, company_name) or []
+    except Exception as e:  # noqa: BLE001
+        _logger.warning(f"member-family resolve failed for {company_name!r}: {e}")
+        return []
+
+
+def _party_is_corporate(party: dict) -> bool:
+    try:
+        from scout.tools.repeat_regions import _is_corporate
+        return _is_corporate(party if isinstance(party, dict) else {"name": str(party)})
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _repeat_family(placeholder: str) -> str | None:
+    """Which repeat_regions party family a placeholder belongs to (or None).
+
+    Asking repeat_regions itself — rather than re-deriving the rule here — keeps
+    the ask step and the fill step from drifting apart: we only ever suppress a
+    question the expander demonstrably answers.
+    """
+    try:
+        from scout.tools.repeat_regions import _family
+        return _family(placeholder or "")
+    except Exception as e:  # noqa: BLE001
+        _logger.warning(f"repeat_regions family classify failed for {placeholder!r}: {e}")
+        return None
+
+
+def _slot_position(placeholder: str) -> int | None:
+    """The 1-based position a numbered slot occupies (`shareholder_2_name` -> 2)."""
+    match = _INDEX_IN_NAME.search(_norm(placeholder))
+    if not match:
+        return None
+    index = int(match.group(1))
+    return index if index >= 1 else None
+
+
+def _member_position_covered(placeholder: str, member_parties: list[dict]) -> bool:
+    """True when repeat_regions will settle this numbered MEMBER slot on its own.
+
+    Two ways it settles: the register has a party at that position (the slot is
+    filled from it), or the register has fewer members than the template has
+    slots, in which case the surplus unit is DELETED from the document and the
+    position stops existing. Either way the ask is noise.
+
+    Only the `member` family qualifies — appointed-director and signing-director
+    lists have no register fallback in `_parties_for_family`, so they are only
+    resolvable when the agent supplies them, and `resolve_slot` above already
+    catches that case.
+    """
+    if not member_parties:
+        return False  # nothing on file: we cannot prove anything, so ask
+    position = _slot_position(placeholder)
+    if position is None:
+        return False
+    if position > len(member_parties):
+        return True
+    try:
+        from scout.tools.repeat_regions import _render_value, _tail_attr
+        return bool(_render_value(member_parties[position - 1], _tail_attr(placeholder)))
+    except Exception as e:  # noqa: BLE001
+        _logger.warning(f"member-position render check failed for {placeholder!r}: {e}")
+        return False
+
+
+def _corp_rep_resolvable(party: dict, data: dict) -> bool:
+    """True when a corporate member's authorised representative is already known
+    or auto-resolvable (from the party, the supplied data, or the register). When
+    it is, forcing a representative pick is a phantom ask (findings F1 + F4)."""
+    try:
+        from scout.tools.repeat_regions import _corp_representative
+        return bool(_corp_representative(
+            party if isinstance(party, dict) else {"name": str(party)}, data or {}))
+    except Exception:  # noqa: BLE001
+        p = party if isinstance(party, dict) else {}
+        return bool(p.get("representative") or p.get("representative_name"))
+
+
+# Roles the register can never answer: a director being APPOINTED is not on the
+# register yet, a RESIGNING one has to be named by the user, a chairperson is a
+# choice among many, an auditor is an engagement decision. These are the reason
+# the ask step exists, so no suppression rule below may touch them. (Pronouns and
+# dates are not slots at all — they are user_input entries this function never
+# sees — so they keep being asked for free.)
+_NEVER_SUPPRESS_KINDS = frozenset({
+    "new_director", "resigning_director", "chairperson", "auditor",
+})
+
+_CORPORATE_SLOT_RE = re.compile(r"corporate", re.I)
+
+
 def collect_slot_requests(
     mapping: dict,
     required_fields: list,
@@ -615,6 +886,17 @@ def collect_slot_requests(
     requests = []
     seen = set()
 
+    # The numbered shareholder/member/attendee slots in a template
+    # (`individual shareholder_1_name`, `corporate shareholder_3_name`, ...) are a
+    # FIXED layout; repeat_regions grows/shrinks them to the company's REAL member
+    # list at fill time. So when that list is already known (supplied or on the
+    # register) we must not force the user to fill phantom positions the company
+    # does not have (finding F1). The corporate-representative sub-ask is only real
+    # when an actual corporate member is present and its representative is unknown.
+    member_parties = _member_family_parties(data, company_name)
+    corp_members = [p for p in member_parties if _party_is_corporate(p)]
+    corp_needs_rep = any(not _corp_rep_resolvable(p, data) for p in corp_members)
+
     for placeholder, entry in mapping.items():
         slot = slot_of(entry)
         if not slot:
@@ -626,6 +908,41 @@ def collect_slot_requests(
         request = slot_request(placeholder, entry, data, company_name=company_name)
         if not request:
             continue
+
+        kind = request["kind"]
+        # Member/attendee list: repeat_regions fills it from the same source, so
+        # the forced pick is only needed when NO member list is resolvable at all.
+        if kind in ("shareholder_list", "attendee") and member_parties:
+            continue
+        # Corporate representative: skip unless a real corporate member needs one.
+        if kind == "representative" and request["of"] == "corporate_shareholder":
+            if not corp_members or not corp_needs_rep:
+                continue
+
+        if kind not in _NEVER_SUPPRESS_KINDS:
+            # A slot that names the CORPORATE side of the member layout
+            # (`corporate shareholder_3_name`, and anything scoped to the corporate
+            # shareholder) exists only because the template hard-codes a corporate
+            # position. When the register is known and holds no corporate member,
+            # repeat_regions collapses that region away, so the question is about a
+            # position the finished document will not contain. An EMPTY register
+            # proves nothing, hence the `member_parties` guard.
+            targets_corporate = (
+                request["of"] == "corporate_shareholder"
+                or _CORPORATE_SLOT_RE.search(_norm(placeholder) or "") is not None
+            )
+            if targets_corporate and member_parties and not corp_members:
+                continue
+
+            # A numbered member position the register already covers (or that the
+            # register shrinks out of the document entirely). Checked per position
+            # rather than per kind so a slot that classifies as something else but
+            # still belongs to the member family is caught too.
+            if _repeat_family(placeholder) == "member" and _member_position_covered(
+                placeholder, member_parties
+            ):
+                continue
+
         key = (request["kind"], request["of"], request["candidates_from"], request["multi"])
         if key in seen:
             continue

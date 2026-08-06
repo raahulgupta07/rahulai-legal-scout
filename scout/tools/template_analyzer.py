@@ -121,7 +121,7 @@ def classify_template_fields(template_text: str, fields: List[str]) -> Dict[str,
                 "Content-Type": "application/json",
             },
             json={
-                "model": os.getenv("CLASSIFICATION_MODEL", "google/gemini-3.1-flash-lite-preview"),
+                "model": os.getenv("CLASSIFICATION_MODEL", "google/gemini-3.6-flash"),
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0,
             },
@@ -391,7 +391,7 @@ def get_all_templates_from_db() -> List[Dict]:
                    sections, signatures, deadlines, legal_references,
                    related_documents, tips, use_cases, usage_instructions,
                    ai_trained, created_at, updated_at, ai_analyzed, uploaded_by_email,
-                   field_mapping
+                   field_mapping, template_group
             FROM templates ORDER BY created_at DESC
         """)
         rows = cur.fetchall()
@@ -435,6 +435,7 @@ def get_all_templates_from_db() -> List[Dict]:
                 "ai_analyzed": row[33] if len(row) > 33 else None,
                 "uploaded_by_email": row[34] if len(row) > 34 else None,
                 "field_mapping": row[35] if len(row) > 35 else None,
+                "template_group": row[36] if len(row) > 36 else None,
             }
             for row in rows
         ]
@@ -503,7 +504,13 @@ def list_analyzed_templates() -> list:
         {
             "name": t["name"],
             "path": t.get("path"),
-            "fields": list(t["fields"].keys()) if isinstance(t["fields"], dict) else t.get("fields", []),
+            # Pass the classification object through UNCHANGED. Collapsing it to
+            # list(dict.keys()) sent the FE only ["db_fields","user_input_fields",
+            # ...] — the 4 bucket NAMES — and hid every real placeholder plus the
+            # db/user split, descriptions and static-text warnings (the panel then
+            # showed "Not classified yet" with 4 key-chips). The FE reads the
+            # object shape directly (db_fields / user_input_fields / ...).
+            "fields": t.get("fields") if t.get("fields") is not None else [],
             "total_fields": t.get("total_fields", 0),
             "category": t.get("category"),
             "keywords": t.get("keywords"),
@@ -534,11 +541,38 @@ def list_analyzed_templates() -> list:
             "ai_analyzed": t.get("ai_analyzed"),
             "uploaded_by_email": t.get("uploaded_by_email"),
             "field_mapping": t.get("field_mapping"),
+            "template_group": t.get("template_group"),
             "created_at": t.get("created_at"),
             "updated_at": t.get("updated_at"),
         }
         for t in templates
     ]
+
+
+NEW_COMPANY_SETUP_GROUP = "new_company_setup"
+
+
+def get_templates_by_group(group: str) -> List[Dict]:
+    """Return only templates tagged with the given template_group."""
+    return [t for t in get_all_templates_from_db() if (t.get("template_group") or "") == group]
+
+
+def set_template_group(name: str, group: Optional[str]) -> bool:
+    """Tag (or untag with None) a template's group. Used by admin UI."""
+    conn = None
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("UPDATE templates SET template_group = %s WHERE name = %s", (group, name))
+        conn.commit()
+        cur.close()
+        return True
+    except Exception as e:
+        logging.getLogger("legalscout").warning(f"DB error in set_template_group: {e}")
+        return False
+    finally:
+        if conn:
+            conn.close()
 
 
 def save_template_knowledge(template_name: str, fields: list, documents_dir: str = "/documents") -> dict:

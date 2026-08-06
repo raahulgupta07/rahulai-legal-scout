@@ -38,7 +38,7 @@ def get_all_companies(limit: int = 100) -> List[Dict]:
                    created_at, updated_at, members, total_shares_issued,
                    currency_of_share_capital,
                    financial_year_end_date, next_financial_year_end_date,
-                   auditor_name, auditor_fee, custom_fields
+                   auditor_name, auditor_fee, custom_fields, source
             FROM companies
             ORDER BY company_name_english ASC
             LIMIT %s
@@ -76,6 +76,7 @@ def get_all_companies(limit: int = 100) -> List[Dict]:
                 "auditor_name": row[14] or "",
                 "auditor_fee": row[15] or "",
                 "custom_fields": row[16] if isinstance(row[16], dict) else {},
+                "source": row[17] or "",
             })
         return results
     except Exception as e:
@@ -105,10 +106,46 @@ def get_company_names(limit: int = 50) -> List[str]:
         return []
 
 
+def is_corporate_member(member: Any) -> bool:
+    """A member is a body corporate, not a natural person.
+
+    DICA extracts are inconsistent: some rows carry the shareholder company's
+    own registration number, others only tag a type. Either is proof enough.
+    """
+    if not isinstance(member, dict):
+        return False
+    if str(member.get("registration_number") or "").strip():
+        return True
+    return str(member.get("type") or "").strip().lower() in {"company", "corporate"}
+
+
 def get_companies_info() -> Dict[str, Any]:
-    """Get companies info for fast_info tool."""
+    """Get companies info for fast_info tool.
+
+    `companies` stays a list of plain names because existing callers index it
+    that way; the structured detail a lawyer needs to tell two entries apart
+    is added alongside it under `records`.
+    """
     companies = get_all_companies()
+    records = []
+    for c in companies[:50]:
+        members = c.get("shareholders_list") or []
+        corporate = [m for m in members if is_corporate_member(m)]
+        records.append({
+            "name": c.get("name", ""),
+            "registration_number": c.get("registration_number", ""),
+            "status": c.get("status", ""),
+            "company_type": c.get("company_type", ""),
+            "director_count": len(c.get("directors_list") or []),
+            "shareholder_count": len(members),
+            "corporate_member_count": len(corporate),
+            "has_corporate_member": bool(corporate),
+            # Fixtures are otherwise indistinguishable from a real client.
+            "is_test_data": str(c.get("source") or "").strip().lower() == "test-fixture",
+        })
+
     return {
         "total": len(companies),
         "companies": [c["name"] for c in companies[:50]],
+        "records": records,
     }

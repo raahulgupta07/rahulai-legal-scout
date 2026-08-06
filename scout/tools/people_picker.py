@@ -20,12 +20,94 @@ picker.
 import json
 from typing import Any, Dict, List, Optional
 
+from agno.run import RunContext
 from agno.tools import tool
 
 from db.connection import get_db_conn
 
+
+def _session_of(run_context: Any) -> str:
+    """The conversation a tool was called in.
+
+    agno injects `run_context` into any tool whose signature declares it and
+    strips it from the schema the model sees, so the model can neither read nor
+    forge it (agno/tools/function.py: entrypoint_args["run_context"] = ...).
+
+    ### Only safe on tools that do NOT pause
+
+    A `requires_user_input=True` tool must NOT declare `run_context`. agno builds
+    that tool's `user_input_schema` from `for name in sig.parameters` with no
+    exclusions, so `run_context` lands in the schema; the frontend echoes the
+    WHOLE schema back on resume; and the call becomes
+    `entrypoint(**entrypoint_args, **self.arguments)` with `run_context` in
+    both — TypeError: got multiple values for keyword argument 'run_context'.
+    The picker then never executes and no selection is ever recorded.
+
+    So the lookup_* tools (which never pause) read the session here and publish
+    it in their payload; the pickers read it back out with
+    `_session_from_payload`.
+    """
+    return str(getattr(run_context, "session_id", "") or "").strip()
+
+
+def _session_from_payload(candidates_json: Any) -> str:
+    """The session id the matching lookup_* tool stamped into its payload.
+
+    The pickers cannot take `run_context` themselves (see above), and the
+    candidates payload is already passed through them unchanged, so it is the
+    one channel that reaches a paused tool without the model being able to
+    invent it — a made-up value would have to match a real session id.
+
+    Empty on any parse failure. That is the safe direction: a selection stored
+    with no session simply will not resolve at fill time and the agent asks
+    again, rather than a pick leaking into another conversation.
+    """
+    try:
+        payload = (
+            json.loads(candidates_json)
+            if isinstance(candidates_json, str)
+            else (candidates_json or {})
+        )
+    except (ValueError, TypeError):
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    return str(payload.get("session") or "").strip()
+
 DIRECTOR_ROLES = ("director", "both")
 SHAREHOLDER_ROLES = ("individual_shareholder", "both")
+
+# Myanmar courtesy titles. NOT part of a legal name and never stored in the
+# register, but people write them constantly — "Daw Win Win Tint" is the normal
+# way to refer to the person filed as WIN WIN TINT.
+#
+# Measured 2026-08-06: the lookup is `full_name ILIKE '%<search>%'`, so
+# '%Daw Win Win Tint%' matched ZERO rows while '%Win Win Tint%' matched exactly
+# one. The user named the person in their very first message and the agent could
+# not find them, so it fell back to a picker listing every director — asking a
+# question that had already been answered.
+#
+# U/Daw are the common adult titles; Ko/Ma/Maung/Mi are younger forms; Saw/Naw
+# are Karen, Sai/Nang Shan, Nai Mon; Bo and Thakin are historical/military.
+_HONORIFICS = frozenset({
+    "u", "daw", "ko", "ma", "maung", "mi", "nai", "saw", "naw", "sai", "nang",
+    "dr", "dr.", "bo", "thakin", "mr", "mr.", "mrs", "mrs.", "ms", "ms.", "miss",
+})
+
+
+def strip_honorifics(name: str) -> str:
+    """A searchable name: courtesy titles removed, whitespace normalised.
+
+    Only LEADING titles are removed, and never the final word — "Daw Daw" would
+    otherwise strip to nothing, and a register really can hold a single-word
+    name. Returns the original text when stripping would empty it.
+    """
+    words = str(name or "").replace("\xa0", " ").split()
+    i = 0
+    while i < len(words) - 1 and words[i].strip(".,").lower() in _HONORIFICS:
+        i += 1
+    stripped = " ".join(words[i:]).strip()
+    return stripped or str(name or "").strip()
 
 NEW_PERSON_FIELDS = [
     {"name": "full_name", "label": "Full name", "required": True},
@@ -226,11 +308,15 @@ def _payload(
     purpose: str = "",
     multi_select: bool = False,
     note: str = "",
+    session: str = "",
 ) -> Dict[str, Any]:
     """Wrap candidates in the envelope the chat UI consumes."""
     return {
         "picker": picker,
         "purpose": purpose,
+        # Carried so the picker that consumes this payload can record WHICH
+        # conversation the choice belongs to. See _session_from_payload.
+        "session": session,
         "company": company or {},
         "multi_select": multi_select,
         "candidates": candidates,
@@ -240,11 +326,54 @@ def _payload(
     }
 
 
-def lookup_director_candidates(company_name: str) -> str:
+# Read by the model, never rendered to the user (same contract as
+# smart_doc.py's agent_instruction).
+#
+# Measured 2026-08-06: after a lookup returned, runs ended having written ZERO
+# characters to the user while producing a couple of hundred characters of
+# invisible reasoning — the model worked out its next step and then simply
+# stopped talking. A rule sitting far away in the system prompt did not hold.
+# The tool result is the last thing read before the turn ends, so the
+# instruction belongs here. Sent on every call: keep it short.
+_LOOKUP_FAILED_INSTRUCTION = (
+    "ACT NOW, IN THIS SAME TURN — do not end your turn empty. This lookup failed: "
+    "say so briefly, then retry with a corrected name or ask for it with ask_questions."
+)
+
+
+def _lookup_instruction(picker: str, hint: str = "", resolved: Any = None) -> str:
+    """What to do the moment this lookup returns — picker, or carry on.
+
+    Branches on the `resolved` block: when exactly one named person matched there
+    is nothing to choose between, so opening a picker would re-ask an answered
+    question. That block carries its own instruction; this one only points at it
+    rather than restating (or contradicting) it.
+    """
+    if resolved:
+        return (
+            "ACT NOW, IN THIS SAME TURN — do not end your turn empty. One person was "
+            f"RESOLVED, so do NOT call {picker}. Follow the `resolved` block: use that "
+            "person, continue the task, and name them in your reply."
+        )
+    return (
+        "ACT NOW, IN THIS SAME TURN — do not end your turn empty. Call "
+        f"{picker} now, passing this whole payload as candidates_json{hint}. "
+        "There is no reason to stop here."
+    )
+
+
+def lookup_director_candidates(
+    company_name: str, person_name: str = "", run_context: RunContext = None
+) -> str:
     """Fetch the director candidates for a company, as JSON for choose_director.
 
     Args:
         company_name: Company whose directors should be listed.
+        person_name: The person the USER already named, if they named one — e.g.
+            "Daw Win Win Tint". Courtesy titles are stripped automatically. When
+            exactly one director matches, the result carries a `resolved` block
+            and no picker is needed. Pass it whenever the request names someone;
+            leave empty to list every director.
     """
     conn = None
     try:
@@ -252,21 +381,32 @@ def lookup_director_candidates(company_name: str) -> str:
         cur = conn.cursor()
         resolved = _directors_of(cur, company_name)
         cur.close()
-        return json.dumps(
-            _payload(
-                picker="choose_director",
-                candidates=resolved["candidates"],
-                company=resolved.get("company"),
-            )
+        payload = _payload(
+            picker="choose_director",
+            session=_session_of(run_context),
+            candidates=_narrow(resolved["candidates"], person_name),
+            company=resolved.get("company"),
         )
+        match = _resolution(payload["candidates"], person_name)
+        if match:
+            payload["resolved"] = match
+        payload["agent_instruction"] = _lookup_instruction(
+            "choose_director",
+            " and purpose set to what this director is being chosen for",
+            resolved=match,
+        )
+        return json.dumps(payload)
     except Exception as e:
-        return json.dumps({"error": str(e), "candidates": [], "allow_new": True})
+        return json.dumps({
+            "error": str(e), "candidates": [], "allow_new": True,
+            "agent_instruction": _LOOKUP_FAILED_INSTRUCTION,
+        })
     finally:
         if conn is not None:
             conn.close()
 
 
-def lookup_representative_candidates(corporate_shareholder_name: str) -> str:
+def lookup_representative_candidates(corporate_shareholder_name: str, run_context: RunContext = None) -> str:
     """Fetch the directors of a corporate shareholder, as JSON for choose_representative_director.
 
     Args:
@@ -278,22 +418,30 @@ def lookup_representative_candidates(corporate_shareholder_name: str) -> str:
         cur = conn.cursor()
         resolved = _directors_of(cur, corporate_shareholder_name)
         cur.close()
-        return json.dumps(
-            _payload(
-                picker="choose_representative_director",
-                candidates=resolved["candidates"],
-                company=resolved.get("company"),
-                note="Candidates are directors of the corporate shareholder, not of the document company.",
-            )
+        payload = _payload(
+            picker="choose_representative_director",
+            session=_session_of(run_context),
+            candidates=resolved["candidates"],
+            company=resolved.get("company"),
+            note="Candidates are directors of the corporate shareholder, not of the document company.",
         )
+        payload["agent_instruction"] = _lookup_instruction(
+            "choose_representative_director",
+            " — these are the corporate shareholder's OWN directors, so never "
+            "substitute the document company's board",
+        )
+        return json.dumps(payload)
     except Exception as e:
-        return json.dumps({"error": str(e), "candidates": [], "allow_new": True})
+        return json.dumps({
+            "error": str(e), "candidates": [], "allow_new": True,
+            "agent_instruction": _LOOKUP_FAILED_INSTRUCTION,
+        })
     finally:
         if conn is not None:
             conn.close()
 
 
-def lookup_attendee_candidates(company_name: str) -> str:
+def lookup_attendee_candidates(company_name: str, run_context: RunContext = None) -> str:
     """Fetch the shareholder candidates for a company, as JSON for choose_attendees.
 
     Args:
@@ -305,32 +453,44 @@ def lookup_attendee_candidates(company_name: str) -> str:
         cur = conn.cursor()
         resolved = _shareholders_of(cur, company_name)
         cur.close()
-        return json.dumps(
-            _payload(
-                picker="choose_attendees",
-                candidates=resolved["candidates"],
-                company=resolved.get("company"),
-                multi_select=True,
-            )
+        payload = _payload(
+            picker="choose_attendees",
+            session=_session_of(run_context),
+            candidates=resolved["candidates"],
+            company=resolved.get("company"),
+            multi_select=True,
         )
+        payload["agent_instruction"] = _lookup_instruction(
+            "choose_attendees",
+            " — it is multi-select, so let the user pick every attendee and keep their order",
+        )
+        return json.dumps(payload)
     except Exception as e:
-        return json.dumps({"error": str(e), "candidates": [], "allow_new": True})
+        return json.dumps({
+            "error": str(e), "candidates": [], "allow_new": True,
+            "agent_instruction": _LOOKUP_FAILED_INSTRUCTION,
+        })
     finally:
         if conn is not None:
             conn.close()
 
 
-def lookup_register_candidates(search: str = "") -> str:
+def lookup_register_candidates(search: str = "", company_name: str = "", run_context: RunContext = None) -> str:
     """Fetch people from the people register, as JSON for choose_person_from_register.
 
     Args:
         search: Optional name fragment to filter the register.
+        company_name: The company this person is being chosen FOR. Always pass it
+            when known — the choice is stored against the company and read back
+            at generation time, so omitting it means the picked person never
+            reaches the document.
     """
     conn = None
     try:
         conn = get_db_conn()
         cur = conn.cursor()
-        if search.strip():
+        term = strip_honorifics(search)
+        if term:
             cur.execute(
                 """
                 SELECT id, full_name, nrc_passport_no, nationality
@@ -339,7 +499,7 @@ def lookup_register_candidates(search: str = "") -> str:
                 ORDER BY full_name ASC
                 LIMIT 100
                 """,
-                (f"%{search.strip()}%",),
+                (f"%{term}%",),
             )
         else:
             cur.execute(
@@ -362,12 +522,88 @@ def lookup_register_candidates(search: str = "") -> str:
             for row in cur.fetchall()
         ]
         cur.close()
-        return json.dumps(_payload(picker="choose_person_from_register", candidates=candidates))
+        payload = _payload(
+            picker="choose_person_from_register",
+            session=_session_of(run_context),
+            candidates=candidates,
+            company={"name": company_name.strip()} if company_name.strip() else None,
+        )
+        resolved = _resolution(candidates, search)
+        if resolved:
+            payload["resolved"] = resolved
+        payload["agent_instruction"] = _lookup_instruction(
+            "choose_person_from_register",
+            " — the company is already in this payload, leave it there",
+            resolved=resolved,
+        )
+        return json.dumps(payload)
     except Exception as e:
-        return json.dumps({"error": str(e), "candidates": [], "allow_new": True})
+        return json.dumps({
+            "error": str(e), "candidates": [], "allow_new": True,
+            "agent_instruction": _LOOKUP_FAILED_INSTRUCTION,
+        })
     finally:
         if conn is not None:
             conn.close()
+
+
+def _narrow(candidates: List[Dict], person_name: str) -> List[Dict]:
+    """Candidates filtered to a name the user gave, or all of them.
+
+    Falls back to the FULL list whenever the name matches nothing — a typo or an
+    unregistered person must still show every option rather than an empty picker
+    with no way forward.
+    """
+    term = strip_honorifics(person_name).lower()
+    if not term:
+        return candidates
+    hits = [c for c in candidates if term in str(c.get("name") or "").lower()]
+    return hits or candidates
+
+
+def _resolution(candidates: List[Dict], search: str) -> Optional[Dict[str, Any]]:
+    """The one person the user already named, when there is exactly one.
+
+    Asking "who is resigning?" after the user opened with "resignation letter of
+    Daw Win Win Tint" is asking a question they have already answered. When a
+    searched name matches a single register entry there is nothing to choose
+    between, so the payload says so and the agent proceeds.
+
+    This does NOT weaken the rule that a person is never guessed. It fires only
+    when the user typed a name AND exactly one person matches it — resolving
+    what someone said is not the same as picking for them. Zero matches, several
+    matches, or no name at all all still go to the picker card.
+
+    Nothing is written to party_selections here: this function cannot know which
+    ROLE the person is being resolved for, and a selection stored under the wrong
+    slot_kind is how a chosen incoming director once ended up on a resignation
+    line. The agent carries the name forward in custom_data instead, which the
+    slot resolver already reads.
+    """
+    term = strip_honorifics(search)
+    if not term or len(candidates) != 1:
+        return None
+
+    only = candidates[0]
+    name = str(only.get("name") or "").strip()
+    if not name:
+        return None
+
+    identifier = str(only.get("identifier") or "").strip()
+    return {
+        "matched_name": name,
+        "identifier": identifier,
+        "searched_for": term,
+        "instruction": (
+            f"The user already named this person, and exactly one register entry matches "
+            f"\"{term}\": {name}"
+            + (f" (NRC/passport {identifier})" if identifier else "")
+            + ". Do NOT open a picker card and do NOT ask who they mean — that question is "
+            "already answered. Use this person, pass the name through custom_data when "
+            "generating, and say in your reply who you resolved and from where, adding that "
+            "they can ask for someone else to change it."
+        ),
+    }
 
 
 def _describe(entry: Dict[str, Any]) -> str:
@@ -386,7 +622,27 @@ PICKER_SLOT_KINDS = {
 }
 
 
-def _record_selection(picker: str, company_name: str, chosen: List[Dict]) -> None:
+def _classify_purpose(purpose: str) -> str:
+    """Role this pick is FOR, inferred from the agent's prose purpose.
+
+    Imported lazily: both modules are leaves today, and keeping it lazy means
+    neither can constrain the other's import order later.
+    """
+    try:
+        from scout.tools.slot_resolver import classify_kind
+
+        return classify_kind(purpose)
+    except Exception:  # noqa: BLE001 — a classification miss must never break a pick
+        return ""
+
+
+def _record_selection(
+    picker: str,
+    company_name: str,
+    chosen: List[Dict],
+    purpose: str = "",
+    session_id: str = "",
+) -> None:
     """Persist a confirmed selection so document generation can find it.
 
     Choosing the person and filling the template are two separate tool calls, and
@@ -403,14 +659,26 @@ def _record_selection(picker: str, company_name: str, chosen: List[Dict]) -> Non
         cur = conn.cursor()
         cur.execute(
             """
-            INSERT INTO party_selections (company_name, picker, slot_kind, selection)
-            VALUES (%s, %s, %s, %s)
+            INSERT INTO party_selections (company_name, picker, slot_kind, selection, session_id)
+            VALUES (%s, %s, %s, %s, %s)
             """,
             (
                 (company_name or "").strip(),
                 picker,
-                PICKER_SLOT_KINDS.get(picker, ""),
+                # The ROLE this person was chosen for, read out of the purpose
+                # the agent supplied ("select the new director to be appointed"
+                # → new_director). PICKER_SLOT_KINDS is only a fallback: it maps
+                # a whole picker to one kind, so choose_director always claimed
+                # "signatory" whether the person was joining or resigning. That
+                # made every selection look alike on read-back, and a person
+                # picked as the incoming director was reused as the resigning
+                # one on the next document.
+                _classify_purpose(purpose) or PICKER_SLOT_KINDS.get(picker, ""),
                 json.dumps(chosen),
+                # The conversation this pick belongs to. Read back only by the
+                # same conversation — without it a pick bleeds into somebody
+                # else's chat for the same company (see migration 017).
+                str(session_id or "").strip(),
             ),
         )
         conn.commit()
@@ -424,7 +692,13 @@ def _record_selection(picker: str, company_name: str, chosen: List[Dict]) -> Non
             conn.close()
 
 
-def _selection_result(picker: str, selected: str, company_name: str = "") -> str:
+def _selection_result(
+    picker: str,
+    selected: str,
+    company_name: str = "",
+    purpose: str = "",
+    session_id: str = "",
+) -> str:
     """Normalise whatever the UI sent back into a result the agent can use.
 
     The result carries an explicit `instruction`, not just the raw choice. Without
@@ -457,14 +731,15 @@ def _selection_result(picker: str, selected: str, company_name: str = "") -> str
                 "count": 0,
                 "status": "no_selection",
                 "instruction": (
-                    "The user has not chosen anyone yet. Call this picker tool again so the "
-                    "choice is made from the in-chat card. NEVER ask for the name as a text "
-                    "question and NEVER offer a), b), c) options."
+                    "The user has not chosen anyone yet. ACT NOW, IN THIS SAME TURN — call "
+                    "this picker tool again so the choice is made from the in-chat card, and "
+                    "do not end your turn empty. NEVER ask for the name as a text question "
+                    "and NEVER offer a), b), c) options."
                 ),
             }
         )
 
-    _record_selection(picker, company_name, chosen)
+    _record_selection(picker, company_name, chosen, purpose, session_id=session_id)
 
     return json.dumps(
         {
@@ -477,15 +752,22 @@ def _selection_result(picker: str, selected: str, company_name: str = "") -> str
                 f"The user has ALREADY chosen: {', '.join(_describe(c) for c in chosen)}. "
                 "This selection is final and confirmed. Do NOT ask who to use, do NOT list "
                 "the candidates again, and do NOT offer a), b), c) options. Use exactly "
-                "these names and continue the task now — if a document was requested, "
-                "generate it immediately, passing these names through custom_data."
+                "these names and continue the task NOW, IN THIS SAME TURN — if a document "
+                "was requested, generate it immediately, passing these names through "
+                "custom_data. Never end your turn empty: always write the user a line "
+                "saying who was chosen and what you did next."
             ),
         }
     )
 
 
 @tool(requires_user_input=True, user_input_fields=["selected"])
-def choose_director(company_name: str, purpose: str, candidates_json: str, selected: str = "") -> str:
+def choose_director(
+    company_name: str,
+    purpose: str,
+    candidates_json: str,
+    selected: str = "",
+) -> str:
     """Ask the user in chat which director of a company should sign, chair or be named.
 
     Call lookup_director_candidates first and pass its output as candidates_json.
@@ -496,7 +778,10 @@ def choose_director(company_name: str, purpose: str, candidates_json: str, selec
         candidates_json: JSON payload from lookup_director_candidates, passed through unchanged.
         selected: Filled in by the user from the chat picker. Never set this yourself.
     """
-    return _selection_result("choose_director", selected, company_name)
+    return _selection_result(
+        "choose_director", selected, company_name, purpose,
+        session_id=_session_from_payload(candidates_json),
+    )
 
 
 @tool(requires_user_input=True, user_input_fields=["selected"])
@@ -520,11 +805,22 @@ def choose_representative_director(
         candidates_json: JSON payload from lookup_representative_candidates, passed through unchanged.
         selected: Filled in by the user from the chat picker. Never set this yourself.
     """
-    return _selection_result("choose_representative_director", selected, document_company)
+    # This picker only ever answers one role, so its purpose is forced rather
+    # than inferred — a prose purpose like "who signs for the shareholder" would
+    # otherwise classify as a plain signatory.
+    return _selection_result(
+        "choose_representative_director", selected, document_company, "representative",
+        session_id=_session_from_payload(candidates_json),
+    )
 
 
 @tool(requires_user_input=True, user_input_fields=["selected"])
-def choose_attendees(company_name: str, purpose: str, candidates_json: str, selected: str = "") -> str:
+def choose_attendees(
+    company_name: str,
+    purpose: str,
+    candidates_json: str,
+    selected: str = "",
+) -> str:
     """Ask the user to multi-select which shareholders attend or are listed, in order.
 
     Call lookup_attendee_candidates first and pass its output as candidates_json.
@@ -535,11 +831,18 @@ def choose_attendees(company_name: str, purpose: str, candidates_json: str, sele
         candidates_json: JSON payload from lookup_attendee_candidates, passed through unchanged.
         selected: Ordered list filled in by the user from the chat picker. Never set this yourself.
     """
-    return _selection_result("choose_attendees", selected, company_name)
+    return _selection_result(
+        "choose_attendees", selected, company_name, purpose,
+        session_id=_session_from_payload(candidates_json),
+    )
 
 
 @tool(requires_user_input=True, user_input_fields=["selected"])
-def choose_person_from_register(purpose: str, candidates_json: str, selected: str = "") -> str:
+def choose_person_from_register(
+    purpose: str,
+    candidates_json: str,
+    selected: str = "",
+) -> str:
     """Ask the user to pick a person from the people register, for companies with no register entry yet.
 
     Call lookup_register_candidates first and pass its output as candidates_json.
@@ -549,7 +852,30 @@ def choose_person_from_register(purpose: str, candidates_json: str, selected: st
         candidates_json: JSON payload from lookup_register_candidates, passed through unchanged.
         selected: Filled in by the user from the chat picker. Never set this yourself.
     """
-    return _selection_result("choose_person_from_register", selected)
+    # The company MUST be recorded with the selection. party_selections is read
+    # back via idx_party_selections_lookup on (lower(company_name), picker), so a
+    # row stored with an empty company can never be found again — the user picks
+    # a person, the pick is logged, and the document still generates without
+    # them. lookup_register_candidates already puts the company in the payload;
+    # carry it through.
+    company_name = ""
+    try:
+        payload = json.loads(candidates_json) if isinstance(candidates_json, str) else (candidates_json or {})
+        if isinstance(payload, dict):
+            company = payload.get("company")
+            if isinstance(company, dict):
+                company_name = str(company.get("name") or company.get("company_name") or "").strip()
+            elif isinstance(company, str):
+                company_name = company.strip()
+    except (ValueError, TypeError) as e:
+        logging.getLogger("legalscout").warning(
+            f"choose_person_from_register: could not read company from candidates_json: {e}"
+        )
+
+    return _selection_result(
+        "choose_person_from_register", selected, company_name, purpose,
+        session_id=_session_from_payload(candidates_json),
+    )
 
 
 people_picker = {
