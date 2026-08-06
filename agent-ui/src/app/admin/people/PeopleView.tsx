@@ -9,6 +9,7 @@ import {
   Link2,
   Pencil,
   Plus,
+  RefreshCw,
   Trash2,
   UserPlus,
 } from "lucide-react"
@@ -72,6 +73,9 @@ interface Person {
   phone: string
   email: string
   residential_address: string
+  business_occupation: string
+  country_of_residence: string
+  father_name: string
   companies?: CompanyLink[]
 }
 
@@ -80,8 +84,12 @@ interface CompanyOption {
   company_name: string
 }
 
-// The client confirmed these eight fields are the ONLY person fields.
-// Shares + capital deliberately live on the company link, not the person.
+// The client's agreed eight fields, plus two added later: business occupation
+// (DICA publishes it per director, so the sync would otherwise discard it) and
+// country of residence (hand-entered; consent forms treat resident and
+// non-resident directors differently).
+// Shares, capital and appointment dates deliberately live on the company link,
+// not the person — the same director joins two boards on two different dates.
 const EMPTY_PERSON: Person = {
   full_name: "",
   nationality: "",
@@ -91,6 +99,9 @@ const EMPTY_PERSON: Person = {
   phone: "",
   email: "",
   residential_address: "",
+  business_occupation: "",
+  country_of_residence: "",
+  father_name: "",
 }
 
 const ROLE_OPTIONS: { value: Role; label: string }[] = [
@@ -141,6 +152,7 @@ export default function PeopleView() {
     appointed_date: "",
   })
   const [linking, setLinking] = useState(false)
+  const [syncing, setSyncing] = useState(false)
 
   // ── Load people ──
   const fetchPeople = useCallback(async () => {
@@ -183,6 +195,34 @@ export default function PeopleView() {
       setLoading(false)
     }
   }, [])
+
+  // ── Backfill the register from the stored company filings ──
+  // New companies sync on save; this covers records saved before the sync
+  // existed. Idempotent, so re-running it is always safe.
+  const syncFromCompanies = useCallback(async () => {
+    setSyncing(true)
+    try {
+      const res = await authFetch(apiClient.syncPeopleFromCompanies(), { method: "POST" })
+      if (!res.ok) throw new Error(await errorMessage(res, "Sync failed"))
+      const body = await res.json()
+      if (!body?.success) throw new Error(body?.error || "Sync failed")
+
+      const { created = 0, updated = 0, linked = 0, companies: scanned = 0 } = body
+      if (created === 0 && updated === 0) {
+        toast.success(`Register already matches ${scanned} ${scanned === 1 ? "company" : "companies"}`)
+      } else {
+        toast.success(
+          `${created} added, ${updated} updated, ${linked} company ${linked === 1 ? "link" : "links"} from ${scanned} ${scanned === 1 ? "company" : "companies"}`
+        )
+      }
+      await fetchPeople()
+    } catch (e: any) {
+      console.error("People sync error:", e)
+      toast.error(e?.message || "Sync failed")
+    } finally {
+      setSyncing(false)
+    }
+  }, [fetchPeople])
 
   // ── Load companies (for the link picker) ──
   const fetchCompanies = useCallback(async () => {
@@ -240,6 +280,9 @@ export default function PeopleView() {
         phone: formData.phone?.trim() || "",
         email: formData.email?.trim() || "",
         residential_address: formData.residential_address?.trim() || "",
+        business_occupation: formData.business_occupation?.trim() || "",
+        country_of_residence: formData.country_of_residence?.trim() || "",
+        father_name: formData.father_name?.trim() || "",
       }
       const url = editingId ? apiClient.updatePerson(editingId) : apiClient.addPerson()
       const res = await authFetch(url, {
@@ -464,6 +507,12 @@ export default function PeopleView() {
           mono
         />
         <TextField
+          label="Father's name"
+          value={formData.father_name}
+          onChange={(v) => setFormData({ ...formData, father_name: v })}
+          placeholder="U Tin Maung"
+        />
+        <TextField
           label="Nationality"
           value={formData.nationality}
           onChange={(v) => setFormData({ ...formData, nationality: v })}
@@ -498,6 +547,18 @@ export default function PeopleView() {
           onChange={(v) => setFormData({ ...formData, email: v })}
           type="email"
           placeholder="name@example.com"
+        />
+        <TextField
+          label="Business occupation"
+          value={formData.business_occupation}
+          onChange={(v) => setFormData({ ...formData, business_occupation: v })}
+          placeholder="Company Director"
+        />
+        <TextField
+          label="Country of residence"
+          value={formData.country_of_residence}
+          onChange={(v) => setFormData({ ...formData, country_of_residence: v })}
+          placeholder="Myanmar"
         />
         <TextField
           label="Residential address"
@@ -564,20 +625,43 @@ export default function PeopleView() {
             </Notice>
           )}
 
-          <Card title="Person record" meta={<Badge tone="neutral">8 fields</Badge>}>
+          <Card title="Person record" meta={<Badge tone="neutral">11 fields</Badge>}>
             <DetailList
               items={[
                 ["Full name", p.full_name],
+                ["Father's name", p.father_name],
                 ["NRC / passport", <span key="nrc" className="font-mono tabular-nums">{p.nrc_passport_no || "—"}</span>],
                 ["Nationality", p.nationality],
                 ["Gender", p.gender],
                 ["Date of birth", p.date_of_birth ? formatDate(p.date_of_birth) : ""],
+                ["Business occupation", p.business_occupation],
+                ["Country of residence", p.country_of_residence],
                 ["Phone", p.phone],
                 ["Email", p.email],
                 ["Residential address", p.residential_address],
               ]}
             />
           </Card>
+
+          {/* Appointment and resignation dates are per-company, not per-person:
+              the same director joins two boards on two different dates. Shown
+              here read-only, sourced from the company links below. */}
+          {links.some((l) => l.appointed_date || l.resigned_date) && (
+            <Card title="Appointment history" meta={<Badge tone="neutral">{links.length}</Badge>}>
+              <DetailList
+                items={links.map((l) => [
+                  l.company_name || `Company #${l.company_id}`,
+                  [
+                    roleLabel(l.role),
+                    l.appointed_date ? `appointed ${formatDate(l.appointed_date)}` : null,
+                    l.resigned_date ? `resigned ${formatDate(l.resigned_date)}` : null,
+                  ]
+                    .filter(Boolean)
+                    .join(" · "),
+                ]) as [string, string][]}
+              />
+            </Card>
+          )}
 
           <Card
             title="Company links"
@@ -831,9 +915,20 @@ export default function PeopleView() {
         meta={<Badge tone="neutral">{people.length} on register</Badge>}
         description="Every individual who appears in a document — directors, individual shareholders and signatories. Record a person once, then link them to as many companies as you need."
         actions={
-          <Button variant="primary" onClick={openCreate} icon={<Plus className="w-4 h-4" />}>
-            Add person
-          </Button>
+          <>
+            <Button
+              variant="secondary"
+              onClick={syncFromCompanies}
+              disabled={syncing}
+              icon={<RefreshCw className={`w-4 h-4 ${syncing ? "animate-spin" : ""}`} />}
+              title="Read directors and individual shareholders off every company filing"
+            >
+              {syncing ? "Syncing…" : "Sync from companies"}
+            </Button>
+            <Button variant="primary" onClick={openCreate} icon={<Plus className="w-4 h-4" />}>
+              Add person
+            </Button>
+          </>
         }
       />
 
@@ -861,22 +956,32 @@ export default function PeopleView() {
             description="Nobody has been added yet."
             steps={[
               {
-                title: "Add the person",
+                title: "Sync from companies",
+                body: "Reads the directors and individual shareholders off every company filing and adds them here, deduplicated by NRC / passport. Fastest way to fill the register.",
+              },
+              {
+                title: "Or add the person by hand",
                 body: "Eight fields: name, nationality, NRC / passport, gender, date of birth, phone, email and address.",
               },
               {
                 title: "Link them to a company",
-                body: "Pick a role — Director, Individual Shareholder, or Both.",
-              },
-              {
-                title: "Record shares on the link",
-                body: "Shares, capital and appointed date belong to the company link, not to the person.",
+                body: "Pick a role — Director, Individual Shareholder, or Both. Shares, capital and appointed date belong to the link, not to the person.",
               },
             ]}
             action={
-              <Button variant="primary" onClick={openCreate} icon={<UserPlus className="w-4 h-4" />}>
-                Add the first person
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="primary"
+                  onClick={syncFromCompanies}
+                  disabled={syncing}
+                  icon={<RefreshCw className={`w-4 h-4 ${syncing ? "animate-spin" : ""}`} />}
+                >
+                  {syncing ? "Syncing…" : "Sync from companies"}
+                </Button>
+                <Button variant="secondary" onClick={openCreate} icon={<UserPlus className="w-4 h-4" />}>
+                  Add the first person
+                </Button>
+              </div>
             }
           />
         ) : (
