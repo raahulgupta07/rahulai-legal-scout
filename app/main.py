@@ -619,7 +619,11 @@ PUBLIC_ROUTES = [
     "/redoc",
     "/chat",
     "/dashboard",
-    "/documents/legal/",     # Static file serving
+    # ★ "/documents/legal/" was listed here as "Static file serving". It was dead
+    # text: this list is only consulted after the `path.startswith("/api/")` gate
+    # below, and /documents/... never gets that far. Removing it changes no
+    # behaviour — the gating now happens in STATIC_PROTECTED_ROOTS, above that
+    # early return, which is the only place it can happen at all.
 ]
 
 # ---------------------------------------------------------------------------
@@ -663,6 +667,35 @@ AGENTOS_PROTECTED_ROOTS = frozenset({
     "metrics",              # Agno usage metrics + the Prometheus scrape endpoint
 })
 
+# ---------------------------------------------------------------------------
+# Static file trees mounted outside /api
+# ---------------------------------------------------------------------------
+# ★★★ Every client document was downloadable without a password.
+#
+# `app.mount("/documents", StaticFiles(...))` serves the whole documents tree,
+# and the auth middleware returns early on anything that does not start with
+# "/api/" — so generated documents, uploaded DICA filings, the firm's templates
+# and the cached previews were all served to anyone who asked. Measured
+# 2026-08-06 against the running app: a real AGM minutes .docx came back 200,
+# 29,313 bytes, with no token of any kind. The container publishes on
+# 0.0.0.0, so that was the whole local network, and would be the whole internet
+# on a public host.
+#
+# PUBLIC_ROUTES carried a "/documents/legal/" entry commented "Static file
+# serving", which read like a deliberate policy but never executed — that list
+# is consulted AFTER the /api/ early return. The gate has to sit before it,
+# which is here.
+#
+# Matched on the first path segment, like the AgentOS roots above, and checked
+# with _request_jwt — which reads the Authorization header, then `?token=`, then
+# the ls_session cookie. The cookie is what matters: a plain <a href> download
+# link and an <img>/canvas fetch cannot set a header, but the browser sends the
+# cookie automatically on same-origin requests. So every existing download link
+# keeps working unchanged, and no token has to be put in a URL.
+STATIC_PROTECTED_ROOTS = frozenset({
+    "documents",            # generated docs, uploaded DICA filings, templates, previews
+})
+
 # The JWT is also issued as an HttpOnly cookie at login so that same-origin
 # requests carry it automatically. See `auth_login` for why.
 SESSION_COOKIE_NAME = "ls_session"
@@ -699,7 +732,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
         # AgentOS routes mounted at the app root — gate on the first segment.
         root = path.split("/", 2)[1] if path.startswith("/") else ""
-        if root in AGENTOS_PROTECTED_ROOTS:
+        if root in AGENTOS_PROTECTED_ROOTS or root in STATIC_PROTECTED_ROOTS:
             token = _request_jwt(request)
             if not token:
                 return JSONResponse(status_code=401, content={"detail": "Authentication required"})
@@ -5104,6 +5137,9 @@ async def add_dashboard_company(request: Request):
         result = add_company(body)
 
         if result.get("success"):
+            # Which filing this record came from — resolved server-side against
+            # the uploads directory, never taken on the client's word.
+            _persist_company_source_pdf(body)
             company_name = body.get("company_name_english", "Unknown")
             creator_email = user.get("email", "unknown") if user else "unknown"
             # Track creator
@@ -5239,6 +5275,7 @@ async def update_dashboard_company(request: Request, company_name: str, body: di
         # add_company does UPSERT on company_registration_number
         result = add_company(body)
         if result.get("success"):
+            _persist_company_source_pdf(body)
             return {"success": True, "message": f"Company updated"}
         return {"success": False, "error": result.get("error", "Update failed")}
     except Exception as e:
@@ -5457,6 +5494,116 @@ async def get_document_pdf(request: Request, doc_name: str, token: str = ""):
 
 
 # ---------------------------------------------------------------------------
+# Uploaded DICA filings — storage and provenance
+#
+# The uploaded PDF is the document every extracted field was copied out of, so
+# the company row has to be able to point back at it. Two rules make that link
+# trustworthy: the server, not the client, decides where the file lands, and the
+# path is re-resolved inside the uploads directory before it is ever written to
+# the database.
+# ---------------------------------------------------------------------------
+UPLOADS_DIR = Path("/documents/legal/uploads")
+
+
+def _store_uploaded_pdf(content: bytes, client_filename: str | None) -> tuple[Path, str]:
+    """Write an uploaded PDF into the uploads directory under a server-minted name.
+
+    The client's filename is never used as a path. It is reduced to its basename,
+    stripped to safe characters and prefixed with a UTC timestamp — two firms both
+    filing "extract.pdf" must not overwrite each other's provenance, and a name
+    like "../../app/main.py" must not escape the directory at all.
+
+    Returns (absolute path on disk, stored filename).
+    """
+    raw = Path(client_filename or "upload.pdf").name  # drops any directory part
+    cleaned = _re.sub(r"[^\w\-.]+", "_", raw).strip("._")
+    if not cleaned.lower().endswith(".pdf"):
+        cleaned = (cleaned or "upload") + ".pdf"
+    cleaned = cleaned[-120:].lstrip("._") or "upload.pdf"
+
+    stored_name = f"{datetime.utcnow().strftime('%Y%m%dT%H%M%S%f')}_{cleaned}"
+    UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+    base_dir = UPLOADS_DIR.resolve()
+    dest = (base_dir / stored_name).resolve()
+    if not str(dest).startswith(str(base_dir)):
+        raise ValueError("Refusing to write outside the uploads directory")
+    dest.write_bytes(content)
+    return dest, stored_name
+
+
+def _resolve_stored_upload(value: str | None) -> str | None:
+    """Turn a client-supplied reference to an uploaded filing into a stored path.
+
+    Accepts either the bare stored name or any of the URL forms the frontend
+    carries around ("/documents/legal/uploads/x.pdf"). Only the basename is
+    trusted; it is resolved inside the uploads directory and the file must
+    actually be there. Anything else — traversal, a name for a file that was
+    never uploaded, an absolute path — returns None rather than being stored.
+
+    Returns the path relative to the documents root, e.g. "legal/uploads/x.pdf".
+    """
+    if not value or not isinstance(value, str):
+        return None
+    name = Path(value.strip()).name
+    if not name or not name.lower().endswith(".pdf"):
+        return None
+    base_dir = UPLOADS_DIR.resolve()
+    candidate = (base_dir / name).resolve()
+    if not str(candidate).startswith(str(base_dir)):
+        return None
+    if not candidate.is_file():
+        return None
+    return f"legal/uploads/{name}"
+
+
+def _persist_company_source_pdf(body: dict) -> None:
+    """Record which uploaded filing a company row was extracted from.
+
+    Called after add_company() has upserted the row. The reference comes from the
+    client, so it is re-resolved against the uploads directory here and dropped
+    unless it names a file that is really on disk.
+
+    A save that carries no usable reference leaves whatever is already stored
+    alone: an edit through the manual form must not silently erase the link to
+    the filing the record came from.
+    """
+    stored = _resolve_stored_upload(body.get("source_pdf_path") or body.get("pdf_url"))
+    if not stored:
+        return
+
+    reg_no = (body.get("company_registration_number") or "").strip()
+    name = (body.get("company_name_english") or body.get("company_name") or "").strip()
+    if not reg_no and not name:
+        return
+
+    conn = None
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        if reg_no:
+            cur.execute(
+                "UPDATE companies SET source_pdf_path = %s, updated_at = NOW() "
+                "WHERE company_registration_number = %s",
+                (stored, reg_no),
+            )
+        else:
+            cur.execute(
+                "UPDATE companies SET source_pdf_path = %s, updated_at = NOW() "
+                "WHERE company_name_english = %s",
+                (stored, name),
+            )
+        conn.commit()
+        cur.close()
+    except Exception as e:
+        logging.getLogger("legalscout").warning(
+            f"source PDF not recorded for '{name or reg_no}': {e}"
+        )
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+# ---------------------------------------------------------------------------
 # PDF Upload (preview only, no AI extraction)
 # ---------------------------------------------------------------------------
 @app.post("/api/company/upload-pdf")
@@ -5468,13 +5615,12 @@ async def upload_company_pdf(file: UploadFile = File(...)):
             return {"success": False, "error": "File too large (max 50MB)"}
         if not (file.filename or "").lower().endswith(".pdf"):
             return {"success": False, "error": "Only PDF files allowed"}
-        pdf_dir = Path("/documents/legal/uploads")
-        pdf_dir.mkdir(parents=True, exist_ok=True)
-        safe_name = (file.filename or "upload.pdf").replace(" ", "_")
-        pdf_path = pdf_dir / safe_name
-        with open(pdf_path, "wb") as f:
-            f.write(content)
-        return {"success": True, "pdf_url": f"/documents/legal/uploads/{safe_name}"}
+        _, stored_name = _store_uploaded_pdf(content, file.filename)
+        return {
+            "success": True,
+            "pdf_url": f"/documents/legal/uploads/{stored_name}",
+            "source_pdf_path": f"legal/uploads/{stored_name}",
+        }
     except Exception as e:
         return {"success": False, "error": str(e)}
 
@@ -5493,7 +5639,6 @@ async def extract_company_from_pdf_stream(file: UploadFile = File(...)):
     import httpx
 
     content = await file.read()
-    safe_name = (file.filename or "upload.pdf").replace(" ", "_")
 
     async def gen():
         def evt(stage: str, msg: str, **extra):
@@ -5515,11 +5660,10 @@ async def extract_company_from_pdf_stream(file: UploadFile = File(...)):
             with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
                 tmp.write(content); tmp_path = tmp.name
 
-            pdf_dir = Path("/documents/legal/uploads")
-            pdf_dir.mkdir(parents=True, exist_ok=True)
-            pdf_save_path = pdf_dir / safe_name
-            with open(pdf_save_path, "wb") as f:
-                f.write(content)
+            # The saved file is the provenance for every field extracted below,
+            # so the server names it — a client filename is not a path here.
+            pdf_save_path, stored_name = _store_uploaded_pdf(content, file.filename)
+            source_pdf_path = f"legal/uploads/{stored_name}"
             yield evt("save", f"Saved to {pdf_save_path}")
 
             try:
@@ -5618,8 +5762,16 @@ async def extract_company_from_pdf_stream(file: UploadFile = File(...)):
                 except Exception as e:
                     yield evt("warn", f"Myanmar name extraction failed: {e}")
 
+            # Carried inside the extracted record as well as on the event: the
+            # record is what gets posted back to /api/dashboard/add/company, so
+            # the link to the filing travels with the data it was read from and
+            # cannot be dropped on the way.
+            extracted["source_pdf_path"] = source_pdf_path
+            extracted["pdf_url"] = f"/documents/legal/uploads/{stored_name}"
+
             yield evt("done", "Extraction complete", success=True, data=extracted,
-                      pdf_url=f"/documents/legal/uploads/{safe_name}")
+                      pdf_url=f"/documents/legal/uploads/{stored_name}",
+                      source_pdf_path=source_pdf_path)
         except json.JSONDecodeError as e:
             yield evt("error", f"AI returned invalid JSON: {e}", raw=(ai_text or "")[:500])
         except Exception as e:

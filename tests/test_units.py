@@ -858,6 +858,57 @@ def test_structural_contracts():
               f"(registry_{'loaded' if registered else 'UNAVAILABLE—tool check skipped'})")
 
 
+    # The documents tree must never be served without a token.
+    #
+    # app.mount("/documents", StaticFiles(...)) serves generated documents,
+    # uploaded DICA filings, the firm's templates and cached previews. The auth
+    # middleware returns early on any path not starting with "/api/", so all of
+    # it was public: measured 2026-08-06 against the running app, a real AGM
+    # minutes .docx came back 200 / 29,313 bytes with no token at all, on a
+    # container published to 0.0.0.0.
+    #
+    # PUBLIC_ROUTES listed "/documents/legal/" with the comment "Static file
+    # serving", which read like policy but never ran — that list is consulted
+    # after the /api/ early return.
+    #
+    # ORDER is the invariant, not the presence of a constant. A gate placed
+    # below the early return is exactly as dead as the comment it replaced, and
+    # would still pass a check that only greps for the name.
+    main_src = REPO / "app" / "main.py"
+    if not main_src.exists():
+        check("U17", "the documents tree is not served without a token", True,
+              "SKIPPED — app/main.py not present")
+    else:
+        m = main_src.read_text()
+        declared = re.search(
+            r"STATIC_PROTECTED_ROOTS\s*=\s*frozenset\(\{([\s\S]{0,400}?)\}\)", m)
+        covers_documents = bool(declared and '"documents"' in declared.group(1))
+
+        gate = re.search(r"if root in AGENTOS_PROTECTED_ROOTS or root in STATIC_PROTECTED_ROOTS", m)
+        early_return = re.search(r'if not path\.startswith\("/api/"\)', m)
+        ordered = bool(gate and early_return and gate.start() < early_return.start())
+
+        # The gate must read the cookie, or a plain <a href> download breaks:
+        # an anchor cannot set an Authorization header.
+        after_gate = m[gate.start():early_return.start()] if ordered else ""
+        uses_request_jwt = "_request_jwt(request)" in after_gate
+
+        # And the dead whitelist entry must not come back. Scoped to the
+        # PUBLIC_ROUTES literal: startup_sync holds a list of the same directory
+        # paths for mkdir, and a file-wide scan flags those instead — failing on
+        # correct code, which is how U15 broke once already.
+        routes_block = re.search(r"PUBLIC_ROUTES\s*=\s*\[([\s\S]*?)\n\]", m)
+        no_dead_entry = bool(routes_block) and not re.search(
+            r'^\s*"/documents', routes_block.group(1), re.M)
+
+        check("U17", "the documents tree is not served without a token",
+              covers_documents and ordered and uses_request_jwt and no_dead_entry,
+              f"declares_documents={covers_documents} "
+              f"gate_before_api_early_return={ordered} "
+              f"reads_cookie_via_request_jwt={uses_request_jwt} "
+              f"no_public_documents_entry={no_dead_entry}")
+
+
 def main():
     for fn in (
         test_placeholders,

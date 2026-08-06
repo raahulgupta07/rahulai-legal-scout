@@ -1,0 +1,31 @@
+-- Migration 020 — remember which DICA filing a company record came from
+--
+-- A company is created by uploading its DICA extract PDF and letting an AI step
+-- read the fields out of it. The PDF was written to /documents/legal/uploads/
+-- and then forgotten: nothing on the company row said which file the data had
+-- been derived from. For a legal product that link IS the provenance — a lawyer
+-- reading a registered office address or a shareholding has no way to check it
+-- against the filing it was copied out of, and no way to tell a hand-typed row
+-- from an extracted one.
+--
+-- source_pdf_path stores a path RELATIVE to the documents root, e.g.
+--   legal/uploads/20260806T101500123456_DICA_Extract_ARCTIC_SUN.pdf
+-- so it resolves the same way regardless of where the volume is mounted, and it
+-- maps directly onto the existing /documents/legal/{subdir}/{filename} route.
+-- The stored name is minted by the server at upload time; the client's filename
+-- is never used as a path.
+--
+-- This is deliberately NOT the existing `pdf_url` column. pdf_url is whatever
+-- the browser echoed back into the save body — it is a display URL, it can be
+-- absent on any save that did not come from an extraction, and nothing
+-- re-checks that it points at a file that exists. source_pdf_path is only ever
+-- written after the server has resolved the value inside the uploads directory
+-- and confirmed the file is there.
+--
+-- No backfill. Existing rows were saved before the path was recorded, and the
+-- upload directory holds files under client-supplied names that cannot be
+-- matched back to a company without guessing. A null here means "we do not know
+-- which filing this came from", which is the truth; a guessed path would read
+-- as provenance while being nothing of the kind.
+
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS source_pdf_path TEXT;
