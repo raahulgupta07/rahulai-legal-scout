@@ -85,13 +85,15 @@ EXA_API_KEY=...           # Optional — only loaded when set, never embedded in
 | File | Purpose |
 |------|---------|
 | `app/main.py` | FastAPI app, 50+ endpoints, auth, admin, training |
-| `scout/agent.py` | AI agent definition, 27+ tools, system prompt (Task Continuity rules, Legal-Skills L1 block via `_build_legal_skills_block()`), prompt injection sanitizer |
+| `scout/agent.py` | AI agent definition, 45 registered tools, system prompt (Task Continuity rules, Legal-Skills L1 block via `_build_legal_skills_block()`, **generated tool inventory** via `_build_tool_inventory()`), prompt injection sanitizer, `send_email_tool` (queues only), `_audit_prompt_tool_contract()` which **raises at import** on a mismatch |
 | `scout/tools/ask_questions.py` | HITL clarify tool `ask_questions(questions_json, answers)` — Agno `requires_user_input` pause/resume. NEVER name a tool `ask_user`/`get_user_input` (agno reserves them and hijacks resume → provider 400) |
 | `scout/tools/legal_skills.py` | `load_skill(name)` / `list_skills` — L2 skill bodies loaded on demand from `legal_skills` table |
 | `scout/tools/people_picker.py` | Signer/member selection via in-chat picker cards |
+| `scout/knowledge/routing/intents.json` | ★ Interpolated into the system prompt as DATA. A wrong tool name here is invisible to any source search — `generate_document_tool` sat in it for weeks as the primary source for "Create legal document" |
+| `tests/test_units.py` | **137 assertions** over source, DB and the served bundle. Runs INSIDE the container only: `docker exec scout-api python3 /app/tests/test_units.py` |
 | `tests/tracker_layer1.py` | 25 deterministic assertions off `/api/documents/fill-view` — the real regression gate |
 | `tests/tracker_layer2.py` | 14 chat runs; asserts the agent ASKS rather than guesses |
-| `tests/tracker_layer3.py` | Drives whole conversations to a generated `.docx`, unzips `word/document.xml` and proves the answers landed |
+| `tests/tracker_layer3.py` | Drives whole conversations to a generated `.docx`, unzips `word/document.xml` and proves the answers landed. ★ Like the others, a Python client — it never executes frontend code |
 | `db/migration_016_people_father_name.sql` | `people.father_name` — Myanmar drafting names a person against their father; NOT in the DICA extract, hand-entered |
 | `scout/tools/people_sync.py` | Projects `companies.directors` + individual `members` into the People register. `sync_company_people()` runs inside `add_company()` (same conn, caller commits); `sync_all_companies()` backs `POST /api/people/sync-from-companies`. Dedup: NRC → name+DOB → name-with-no-NRC. Merge is FILL-BLANKS-ONLY (hand edits always win). Director+shareholder collapses to role `both`; corporate members skipped |
 | `scout/tools/smart_doc.py` | Document generation, placeholder fill (thread-safe, no globals). Calls `expand_repeat_regions()` at the top of `fill_template_with_validation` before the highlight fill |
@@ -121,6 +123,9 @@ EXA_API_KEY=...           # Optional — only loaded when set, never embedded in
 | `db/migration_013_legal_skills.sql` | `legal_skills` table (name, description, body, category, source, enabled) |
 | `db/migration_015_people_extra_fields.sql` | `people.business_occupation` (DICA publishes it per director) + `people.country_of_residence` (hand-entered; consent forms split resident/non-resident) |
 | `db/migration_014_seed_legal_skills.sql` | 12 seeded skills (7 adapted from anthropics/claude-for-legal, Apache-2.0 attributed; 4 native Myanmar playbooks; 1 practice profile) |
+| `db/migration_017_party_selection_session.sql` | Scopes picker selections to the conversation. Without it a director chosen in one chat reappeared unasked in another 24 minutes later and landed in generated minutes |
+| `db/migration_018_purge_foreign_legal_references.sql` | Clears Indian company-law citations from all 15 templates; replaces `DIN Application` with the DICA director particulars filing |
+| `db/migration_019_email_approval_gate.sql` | `email_logs` gains `session_id`, `decided_at`, `decided_by_email`; status carries `queued`/`sent`/`failed`/`discarded` |
 
 ### Frontend
 | File | Purpose |
@@ -140,7 +145,10 @@ EXA_API_KEY=...           # Optional — only loaded when set, never embedded in
 | `agent-ui/src/components/chat/ChatArea/*` | Blank state (greeting+grid+glow, composer centered), typewriter-smoothed streaming, Analyzing pill + tool timeline, hover-only timestamps |
 | `agent-ui/src/components/chat/AskUserCard.tsx` + `AskUserCardList.tsx` | Clickable question cards: chips auto-submit single-pick, multi-select, free-text, "Other…"; answered → locked w/ green banner |
 | `agent-ui/src/components/chat/askUserPayload.ts` | `ASK_USER_TOOL='ask_questions'` + legacy read-only match set |
-| `agent-ui/src/hooks/useAIStreamHandler.tsx` | rAF typewriter (buffers bursty OpenRouter tokens ~120 chars/s), RunPaused → picker/ask cards, silent-stop auto-`continue` nudge (once per run_id) |
+| `agent-ui/src/hooks/useAIStreamHandler.tsx` | rAF typewriter (buffers bursty OpenRouter tokens ~120 chars/s), RunPaused → picker/ask cards, silent-stop nudge (capped at `MAX_CONSECUTIVE_NUDGES=3`), `buildClosingFromTool` / `buildApprovalFromPreview`. ★ `didToolWork` counts `ToolCallStarted` via `toolsThisRunRef` — `RunCompleted` carries NO `tools` key, so reading `chunk.tools` there was permanently false |
+| `agent-ui/src/hooks/useAIResponseStream.tsx` | SSE reader. ★ Counts delivered chunks and THROWS on zero — a 200 with an HTML body drains fine, yields no events, and used to paint a blank bubble. `!response.ok` reads text before JSON |
+| `agent-ui/src/components/chat/ApprovalPrompt.tsx` | The approval a stalled `preview_doc` owed. NOT an `AskUserCard` — the run has completed, so there is no pause to resume; the choice is sent as an ordinary next message |
+| `agent-ui/src/components/chat/QueuedEmailCard.tsx` | Send / Discard for an email the agent queued. Recipient and attachment shown in full, never truncated — they decide whether sending is safe |
 | `agent-ui/src/hooks/useSessionLoader.tsx` | History rehydration of pauses: match by tool NAME; answers live in `user_input_schema` (`result` is null); answered→locked, pending→resumable |
 | `agent-ui/src/api/os.ts` | `buildResumeRequest` (echo WHOLE `user_input_schema`, fill only target fields), `buildContinueRunRequest`, `buildAskUserContinueRequest` |
 | `agent-ui/src/components/ui/typography/*` | Chat type scale: body 14px/1.625, headings capped 14–16px semibold, code chips, 11px uppercase table headers |
@@ -169,10 +177,13 @@ EXA_API_KEY=...           # Optional — only loaded when set, never embedded in
 | Tool | Purpose |
 |------|---------|
 | `generate_document` | Fill template with company data, produce `.docx` |
-| `create_document` | Create a new document record |
-| `prepare_document` | Preview/prepare document before final generation |
-| `preview_document` | Preview document with highlighted placeholders |
-| `analyze_template` | Analyze a Word template's structure |
+| `preview_doc` | Preview document with highlighted placeholders. ★ The REGISTERED name — the export-dict key is `preview_document`, and the prompt said so for weeks, naming a tool that did not exist |
+| `prepare_document` | Field analysis without a rendered preview. Kept registered, but OFF the happy path — `preview_doc` returns the same analysis plus the preview |
+| `analyze_template_tool` | Analyze a Word template's structure (registered name; not `analyze_template`) |
+
+★ `create_document` is **deregistered**. It was `return _generate_document(...)` — byte-identical to `generate_document` — and `prepare_document` is a strict prefix of the same call. Three doors to one room made the model pick differently run to run.
+
+★ The authoritative list is **generated from the registry** into the prompt by `_build_tool_inventory()` (`scout/agent.py`). This table is documentation; that block is the contract, and startup raises if the prompt names a tool that is not registered.
 
 ### Company Lookup
 | Tool | Purpose |
@@ -220,7 +231,7 @@ EXA_API_KEY=...           # Optional — only loaded when set, never embedded in
 | Tool | Purpose |
 |------|---------|
 | `get_clarification_info` | Clarify ambiguous requests |
-| `send_email` | Email with optional document attachment (requires SMTP) |
+| `send_email_tool` | **QUEUES** an email for the user to approve. Does NOT send — the agent has no path to SMTP and no `confirmed` argument. Delivery is `POST /api/email/queued/{id}/send` under the user's own JWT |
 | `read_file` / `list_files` / `save_file` | File operations in documents dir |
 | `search_content` | Search within document file contents |
 | `web_search_exa` | Web search via Exa API (optional, if `EXA_API_KEY` set) |
@@ -379,10 +390,15 @@ GET  /api/dashboard/field-registry            # Auto-discovered user_input field
 POST /api/dashboard/field-registry/refresh    # Rebuild registry from templates table (auto-runs after training)
 GET  /api/templates/preview-pdf/{name}        # docx→PDF (LibreOffice). Accepts ?token= or Authorization header
 GET  /api/documents/preview-pdf/{name}        # output docx→PDF preview. Accepts ?token= or Authorization header
+GET  /api/email/queued                        # Emails the agent queued, awaiting approval (auth)
+POST /api/email/queued/{id}/send              # THE ONLY path to SMTP for agent-composed mail (user's JWT)
+POST /api/email/queued/{id}/discard           # Reject a queued email (auth)
 POST /agents/scout/runs                       # AI chat (streaming)
 POST /api/suggest-followups                    # LLM-powered follow-up suggestions
 GET  /health                                  # Health check
 ```
+
+★ **Route order matters.** Everything above must be defined BEFORE `@app.get("/{full_path:path}")` in `app/main.py`. Registered after it, a GET route returns the frontend's HTML with a **200** — and POST on the same path still works, because the catch-all only claims GET. That half-working shape survives a status-code check; read the body.
 
 ---
 
@@ -555,7 +571,77 @@ All database connections use centralized `get_db_conn()` from `db/connection.py`
 - **Monitoring stack removed** from compose — only `scout-db` + `scout-api` ship.
 - **Download MIME fix** — `_file_response()` sets correct `media_type` + `Content-Disposition` so browsers (Safari especially) don't append `.txt` to `.docx`.
 
-## Current State (2026-08-04)
+## Current State (2026-08-06)
+
+**Correctness + safety release. COMMITTED** — 14 commits on `main`, working tree clean, baked into `scout:latest` on `http://localhost:8080`. Rollback tag `pre-cfos-improvements` at `9491f97`; images `scout:pre-phase1-…`, `pre-approval-…`, `pre-emailgate-…`, `pre-emptystream-20260806`. Nothing pushed — still no remote.
+
+Suite **137 PASS** (`docker exec scout-api python3 /app/tests/test_units.py`) · Layer 1 **25/25**.
+
+### ★★★ Indian company law was hardcoded in a Myanmar product
+
+`app/main.py:_get_legal_refs_from_name()` returned citations chosen by substring match on the template FILENAME:
+
+```
+"agm"/"egm"    → Companies Act 2013 - Section 100-104, SEBI Regulations
+"director"     → Companies Act 2013 - Section 152, SEBI (LODR) Regulations 2015
+"shareholder"  → Companies Act 2013 - Section 189, Companies (Mgmt & Admin) Rules 2014
+```
+
+The Companies Act 2013 is India's; SEBI has no jurisdiction in Myanmar. **All 15 templates held those constants exactly**, so the AI extraction step never once succeeded and this fallback supplied every citation in the product. Three bare `print()` calls were the only trace, and the same block set `jurisdiction = "Myanmar"` a few lines later.
+
+Fixed: the function returns `[]` and logs at ERROR; **Myanmar section numbers are deliberately NOT substituted** — writing them by hand repeats the bug in a harder-to-spot form. Correct references come from the deep-training legal step (which already prompts for Myanmar Companies Law + DICA) and are a draft for the firm's lawyers, not an authority. Migration 018 cleared the 15 rows and replaced `DIN Application` (an Indian filing) with the DICA director particulars filing. `U12` guards it via `ast`, skipping docstrings — a line-based version failed on its own fix.
+
+⚠️ `legal_references` is now EMPTY on all 15 templates by design. Re-run training to repopulate; the new ERROR logging shows whether that step works or falls back again.
+
+### ★★★ The agent can no longer send email
+
+`send_email_tool` used to reach SMTP directly on the agent's own decision — recipient, subject, body and attachment all chosen by the model, with no confirmation and no audit row. It now only **queues** to `email_logs` (status `queued`). Delivery is `POST /api/email/queued/{id}/send`, which requires the **user's** JWT — the agent has no session and no token. There is deliberately no `confirmed` argument: a flag set by the model whose judgement is being checked is not an approval.
+
+- Row is claimed (`status='sending'`) in the same UPDATE that reads it — two clicks cannot send twice, and email cannot be recalled.
+- A delivery **exception** leaves it `failed`, never re-queued (SMTP may have accepted before the error). **Unconfigured SMTP** is different — nothing was attempted, so it returns to `queued`.
+- Attachment path re-checked against the documents dir at send time, not only at queue time.
+- `"a@b.com, attacker@evil.com"` is refused, not split.
+- ★ These endpoints must stay **ABOVE** `@app.get("/{full_path:path}")`. Defined below it, `GET /api/email/queued` returned the frontend's HTML with a **200** — queue permanently empty, no approval possible — while the POSTs still worked, because the catch-all only claims GET.
+- **Not verified: real delivery.** SMTP is unconfigured here, so the success path stops at the SMTP connection.
+
+### ★★ The tool list is generated; a mismatch refuses to boot
+
+Four prompt/tool mismatches shipped while the list was hand-written prose guarded by a log line: `generate_dica_extract` (never registered), `list_companies` (registered as `list_all_companies`), `preview_document` (export key; `@wraps` made it `preview_doc`), and `generate_document_tool` — which lives in `scout/knowledge/routing/intents.json` and reaches the prompt as **DATA**, invisible to any source search.
+
+`_build_tool_inventory()` now renders the list from the live registry into the prompt. Startup **raises** on a mismatch (`STARTUP_STRICT_TOOLS=0` downgrades it, for incidents only). Audit and inventory share `_registered_tool_names()`.
+
+★ Purposes come from `.description`, **not** `__doc__`: an agno-wrapped tool is a `Function` instance whose `__doc__` is the class docstring, which put "Model for storing functions that can be called by an agent" on 24 of 45 tools.
+
+### ★★ Fixing `preview_document` made the metric worse — correctly
+
+The prompt named a tool that did not exist, so **"Step 3: PREVIEW FIRST (Required!)" never ran** and the model went straight to generation. Fixing the name made it execute — and Layer 3 stalls went 7 → 13 across 6 case-runs, with one case producing no document. The baseline was cheaper because a required step was broken.
+
+| | runs | PASS | NO-DOC | stalls |
+|---|---|---|---|---|
+| baseline (preview unreachable) | 6 | 6 | 0 | 7 |
+| after name fix | 6 | 5 | 1 | 13 |
+| after Option A | 6 | 6 | 0 | 8 |
+
+`create_document` was deregistered — byte-identical to `generate_document`; `prepare_document` is a strict prefix of it. Happy path is now `preview_doc → ask_questions → generate_document`.
+
+### ★★ Empty turns are now closed from the tool result
+
+`generate_document` ended the turn with **zero content 10 of 10 times** it was the last tool. The old recovery nudged with a synthetic `continue`, buying a second full inference to recover a sentence the tool result already contained.
+
+- `buildClosingFromTool` renders it (message + fill count + markdown link). **Only a finished document may close a turn** — the same tool returns a readable `success:false` message ("Choose the resigning director…") that would leave the user told to pick someone with no picker card drawn.
+- `preview_doc` gets `buildApprovalFromPreview` instead: the preview plus the approval card it owed. **Not an `AskUserCard`** — those resume a PAUSED run; this run completed, so the choice is sent as an ordinary next message.
+- Against 25 real tool results: `generate_document [done]` 15 → closed, `[awaiting]` 2 → nudge, `preview_doc` 8 → preview+approval.
+- A stream delivering **zero chunks** now throws instead of painting a blank bubble (a 200 with an HTML body drains fine and yields no events).
+
+### ★ Verification landmines (cost real time on 2026-08-06)
+
+- **`docker exec` without `-i` swallows heredoc stdin** — the script never runs, exits 0, prints nothing. A "passing" mutation test that never executed.
+- **Silencing a build's stderr leaves a stale artifact** — `esbuild … >/dev/null 2>&1` failed, the old `.mjs` stayed, and the next run tested old code.
+- **A source-regex assertion can fail on CORRECT code** — U15 allowed 300 chars between `if (!response.ok)` and `response.text()`; a comment pushed it to 347.
+- **None of the three tracker suites executes frontend code.** They are Python clients, so anything in `agent-ui/` is invisible to a Layer 3 number. Verify frontend by running the function over real tool results from `ai.agno_sessions` and grepping the built bundle.
+- **A bake is ~4 min of downtime on the only instance.** A message sent during one comes back as a blank bubble with **no run persisted** — check `ai.agno_sessions` before blaming the agent.
+
+## Previous State (2026-08-04)
 
 **Bug-sweep release.** ~20 defects closed, three test suites built, everything baked into `scout:latest` and running on `http://localhost:8080`. **UNCOMMITTED** — the image and the working tree are the only copies.
 
@@ -594,13 +680,29 @@ Two tools the system prompt told the model to call were not registered — `gene
 
 Layer 2/3 failures move between cases run to run; do not treat one as a regression until it reproduces. Runs are tagged with `user_id` so they appear in the app's own sidebar.
 
-### Known open
+### Known open (as of 2026-08-06)
 
-- The model still sometimes ends a turn without a closing sentence. Reasoning is now visible so nothing is hidden, but a prompt fix is outstanding.
+**Unverified rather than broken:**
+- **No frontend change has been confirmed in a real browser.** The closing render, the approval card and the queued-email card are proven against real tool results and present in the served bundle, but never clicked. Browser automation has never connected in this project, and the three tracker suites are Python clients that cannot execute `agent-ui/` code.
+- **Real email delivery is unproven** — SMTP is unconfigured, so the send path stops at the SMTP connection. Everything before that is tested.
+
+**Open work:**
+- `legal_references` is empty on all 15 templates by design. Re-run training to repopulate with Myanmar/DICA citations, then have the firm's lawyers confirm them.
+- The client's DICA extract PDF is still reachable in earlier git commits. No remote is configured, so a history rewrite is cheapest now. The 6.6MB client `.docx` commit (`544d23f`) can go in the same pass.
+- Document packs: new-company setup still asks *meeting date* five times.
+- A turn that ends empty with **zero** tool calls still shows a blank bubble — `didToolWork` is false, so neither the nudge nor the out-of-retries message fires. Not seen in practice; flagged rather than guarded blind.
+- The model still sometimes ends a turn without a closing sentence. Reasoning is visible so nothing is hidden, and finished documents now close themselves, but a prompt fix is outstanding.
 - `collect_slot_requests` suppression extended but not exhaustive.
 - Python-repr parser retained in `useArtifact.ts` — required for sessions stored before tool results became JSON.
 - "Director and Shareholder Consent Form" template does not exist; tracker case B5 blocked.
 - The client's OneDrive master copy of *Notice of AGM to Shareholders* still lacks `[director_name]` — re-uploading reintroduces a fixed bug.
+- `intents.json` `known_locations` still points at `documents/legal/data/`, but the product is DB-only. Stale routing hint, low impact.
+
+### Considered and rejected: porting to Cloudflare OS (2026-08-06)
+
+Asked whether Legal Scout should move into `cloudflare/cloudflare-os`. **No** — the parts that don't fit are the parts that *are* the product: `python-docx` and the LibreOffice PDF step cannot run on Workers, Postgres + pgvector has no equivalent in KV/R2, and all 27 Agno tools plus the HITL resume contract would be rewritten from zero. Its per-user Gadget model also solves a problem one law firm with shared registers does not have.
+
+Worth borrowing instead: their **Gatekeeper** pattern (approval + audit around external calls) — which is what the email gate above is. Their **Code Mode** idea (don't route data through the model just to copy it) is what the closing render does.
 
 ## Previous State (2026-07-27)
 
