@@ -427,8 +427,30 @@ def prepare_document_data(template_name: str, company_name: str, documents_dir: 
                     "meeting_location": c.get("address", ""),
                     "directors": director_names,
                     "director_name": dirs_split[0] if dirs_split else "TBD",
-                    "authorized_director_name": dirs_split[0] if dirs_split else "TBD",
-                    "authorized director_name": dirs_split[0] if dirs_split else "TBD",
+                    # `authorized_director_name` / `authorized director_name` are
+                    # NOT seeded here any more. They are the representative slot
+                    # — the person signing on behalf of a CORPORATE MEMBER — and
+                    # seeding them from this company's directors[0] was wrong
+                    # twice over.
+                    #
+                    # It named the wrong board. A corporate member is signed for
+                    # by ITS OWN directors, so for CM FOODS (sole member CITY
+                    # MART HOLDING) the value came from CM FOODS' register, not
+                    # CITY MART's.
+                    #
+                    # And it suppressed the question. resolve_slot treats a value
+                    # present in `data` as an answer, so collect_slot_requests
+                    # stopped asking: measured on CM FOODS, the requests went
+                    # from ['new_director', 'representative'] with empty data to
+                    # ['new_director'] once the company defaults were merged in.
+                    # The user was never offered the choice, and directors[0] of
+                    # the wrong company signed. That is the same shape as the
+                    # slot_resolver fallback that was removed for guessing.
+                    #
+                    # Unseeded, the slot resolves to nothing, the picker is
+                    # raised against the MEMBER company's board, and
+                    # repeat_regions._corp_representative vets whatever comes
+                    # back against that board before printing it.
                     "individual_shareholder_1_name": ind_split[0] if len(ind_split) > 0 else "TBD",
                     "individual_shareholder_2_name": ind_split[1] if len(ind_split) > 1 else "TBD",
                     "individual shareholder_1_name": ind_split[0] if len(ind_split) > 0 else "TBD",
