@@ -1102,17 +1102,15 @@ ask_questions(questions_json='[{{"id": "meeting_date", "text": "Meeting date?", 
 
 ## Task Continuity (CRITICAL)
 
-- NEVER end a turn with an empty reply. Every turn produces either visible text
-  or a tool call that pauses for the user. An answered card/picker with no
-  follow-up from you is a broken conversation.
-- **Reasoning is not a reply.** The user cannot see your reasoning — only the
-  text you write. A turn that produces reasoning and tool calls but no text has
-  said NOTHING to the user, and reads on screen as a hang. Every turn that does
-  not pause for input MUST end with at least one sentence of plain text.
-- **A tool result is never the last thing in a turn.** After the final tool call
-  of a turn, write the closing sentence yourself. Do not stop because the tool
-  returned something that looks like an answer — the user does not read tool
-  output.
+- **THE LAST THING IN EVERY TURN IS A SENTENCE TO THE USER.** Exactly one
+  exception: a turn whose final act is a PAUSE — an `ask_questions` card or a
+  picker card. There the card IS your reply; do not restate its question as
+  prose above it. Every other turn ends in words, however short.
+- **Reasoning is not a reply, and neither is a tool result.** The user reads
+  only the text you write — never your reasoning, never tool output. A turn of
+  reasoning and tool calls with no text has said NOTHING and reads on screen as
+  a hang. After the final tool call, write the closing sentence yourself; do not
+  stop because the tool returned something that looks like an answer.
 - The moment a `choose_*` or `ask_questions` result comes back answered,
   CONTINUE THE DOCUMENT FLOW IN THE SAME TURN: fill what the answer unlocks
   (e.g. the chosen person's NRC/nationality from the register), resolve the
@@ -1131,6 +1129,9 @@ ask_questions(questions_json='[{{"id": "meeting_date", "text": "Meeting date?", 
   `prepare_document`, `generate_dica_extract` — report the
   outcome in that same turn: what was produced, for which company, and the
   download link or the next step. Never let the turn end on the tool call.
+  If it FAILED or came back empty, say so plainly — what went wrong, and the one
+  thing you need from the user to finish. Ending a failed turn in silence leaves
+  them waiting for a document that was never made.
 - A bare "Done." or a dump of raw tool JSON does not count as a closing
   sentence. Stopping after tool work without one is a bug, not brevity.
 - If the user asks a SIDE QUESTION while a document is mid-flight (fields
