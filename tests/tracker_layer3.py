@@ -310,6 +310,57 @@ CASES = [
         "expect_after": [{"marker": "represented by its authorized director",
                           "value": "PHYOE MIN KYAW"}],
     },
+    {
+        # HARDEST. A corporate member TWO levels up, where the two boards are
+        # genuinely different sets of people.
+        #
+        # CM FOODS' sole member is CITY MART HOLDING, a company, so CITY MART's
+        # own board signs. CM FOODS' directors are MIN MIN, SOE MOE THU and
+        # WIN WIN TINT; CITY MART's are KYAW THU SOE, MIN MIN, MYO MIN KYAW,
+        # PHYOE MIN KYAW and WIN WIN TINT. SOE MOE THU therefore sits on the
+        # DOCUMENT's board and NOT on the signing company's — he is exactly the
+        # person the board guard exists to keep off that line, and he is the one
+        # a positional fallback over the wrong company would reach for.
+        #
+        # KYAW THU SOE is the mirror: on CITY MART's board, NOT a CM FOODS
+        # director. A guard that simply preferred "someone from this document's
+        # company" would reject him wrongly, so the case asserts he IS accepted.
+        "id": "E4",
+        "prompt": ("Prepare a shareholders resolution in writing for director "
+                   "appointment for CM Foods Company Limited"),
+        "person": "KYAW THU SOE",
+        "person_for": {"authoriz": "KYAW THU SOE", "represent": "KYAW THU SOE",
+                       "signator": "KYAW THU SOE",
+                       "new director": "MYO MIN KYAW", "appoint": "MYO MIN KYAW"},
+        "answers": {"date": "2026-11-05", "identification": "NRC", "pronoun": "he"},
+        "default_answer": "",
+        "expect_ask": ["authoriz|represent|signator"],
+        "expect_in_doc": ["KYAW THU SOE", "CITY MART HOLDING COMPANY LIMITED"],
+        # A CM FOODS director who is NOT on CITY MART's board. If he appears at
+        # all in a document whose only signatory is CITY MART's representative,
+        # the wrong register was consulted.
+        "forbid_in_doc": ["SOE MOE THU"],
+        "expect_count": {"CITY MART HOLDING COMPANY LIMITED": 1},
+        "expect_after": [{"marker": "represented by its authorized director",
+                          "value": "KYAW THU SOE"}],
+    },
+    {
+        # The contrast that makes E3/E4 mean something. Two members, both
+        # people, so the corporate row group must be DELETED outright — no
+        # representative line at all. Without this, a bug that collapsed every
+        # member list to a single corporate block would still pass E3 and E4.
+        "id": "E5",
+        "prompt": ("Prepare a shareholders resolution in writing for director "
+                   "appointment for Commerce Ace Company Limited"),
+        "person": "WIN WIN TINT",
+        "person_for": {"new director": "MYO MIN KYAW", "appoint": "MYO MIN KYAW"},
+        "answers": {"date": "2026-11-12", "identification": "NRC", "pronoun": "she"},
+        "default_answer": "",
+        "expect_in_doc": ["WIN WIN TINT", "MIN MIN", "COMMERCE ACE COMPANY LIMITED"],
+        # Neither member is a company, so this template row must not survive.
+        "forbid_in_doc": ["Represented by its authorized director"],
+        "expect_count": {"WIN WIN TINT": 1, "MIN MIN": 1},
+    },
 ]
 
 
