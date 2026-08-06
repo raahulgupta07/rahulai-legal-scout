@@ -291,13 +291,24 @@ CASES = [
         "prompt": ("Prepare a shareholders resolution in writing for director "
                    "appointment for City Mart Holding Company Limited"),
         "person": "PHYOE MIN KYAW",
-        "person_for": {"authoriz": "PHYOE MIN KYAW", "represent": "PHYOE MIN KYAW"},
+        "person_for": {"authoriz": "PHYOE MIN KYAW", "represent": "PHYOE MIN KYAW",
+                       "signator": "PHYOE MIN KYAW"},
         "answers": {"date": "2026-10-01", "new director": "AUNG KYAW MOE",
                     "identification": "NRC", "pronoun": "he"},
         "default_answer": "",
-        "expect_ask": ["authoriz"],
+        "expect_ask": ["authoriz|represent|signator"],
         "expect_in_doc": ["PHYOE MIN KYAW", "CITY HOLDINGS LIMITED"],
         "forbid_in_doc": ["MIN MIN"],
+        # CITY MART has exactly ONE member. It signed twice for weeks — once
+        # correctly through its representative, then again on the individual
+        # line — and every other assertion in this case passed.
+        "expect_count": {"CITY HOLDINGS LIMITED": 1},
+        # …and the person on the representative line must be the person who was
+        # CHOSEN. PHYOE MIN KYAW is also the appointed director here, so he is in
+        # the document either way — which is exactly how two runs passed with
+        # KYAW THU SOE (directors[0]) signing for the member.
+        "expect_after": [{"marker": "represented by its authorized director",
+                          "value": "PHYOE MIN KYAW"}],
     },
 ]
 
@@ -363,10 +374,44 @@ def run_case(token, user_id, case):
     # confidently wrong signatory passes every positive assertion there is.
     forbidden = [v for v in case.get("forbid_in_doc", []) if v.lower() in text.lower()]
 
+    # A party may appear only as many times as it is entitled to sign. E3 passed
+    # while its document was WRONG: a company with one corporate member rendered
+    # two signature blocks — the member through its representative, then again on
+    # the individual line — because the signature table was never expanded and
+    # both slots fell through to the flat per-company fill. Every positive
+    # assertion held; nothing counted.
+    overcounted = []
+    for needle, want in (case.get("expect_count") or {}).items():
+        got = text.lower().count(needle.lower())
+        if got != want:
+            overcounted.append(f"{needle!r} x{got} (want {want})")
+
+    # A name has to be on the RIGHT LINE, not merely somewhere in the document.
+    # E3 passed twice with the wrong person on the representative line, because
+    # the person it names is also the appointed director and so appears anyway.
+    # `expect_after` pins a value to the text that follows a marker.
+    misplaced = []
+    for spec in (case.get("expect_after") or []):
+        marker, value = spec["marker"].lower(), spec["value"].lower()
+        window = spec.get("within", 160)
+        low = text.lower()
+        at = low.find(marker)
+        if at < 0:
+            misplaced.append(f"marker {spec['marker']!r} not in document")
+        elif value not in low[at + len(marker): at + len(marker) + window]:
+            near = text[at + len(marker): at + len(marker) + window]
+            near = " ".join(near.split())[:60]
+            misplaced.append(f"{spec['value']!r} not after {spec['marker']!r} (found: {near!r})")
+
     # Some questions must actually be PUT to the user. If the agent stops asking
     # and starts assuming again, the document can still come out looking fine.
+    # An entry may list alternatives as "a|b|c": the model's WORDING varies run to
+    # run ("authorized director" / "signatory" / "representative") while the
+    # question being asked is the same one, and pinning one spelling fails the
+    # case for a reason that has nothing to do with the product.
     joined = " | ".join(transcript).lower()
-    unasked = [v for v in case.get("expect_ask", []) if v.lower() not in joined]
+    unasked = [v for v in case.get("expect_ask", [])
+               if not any(alt in joined for alt in v.lower().split("|"))]
 
     # The harness announcing its own fallback means the person the case named was
     # never offered — the run proves nothing about who gets chosen.
@@ -377,6 +422,10 @@ def run_case(token, user_id, case):
         problems.append(f"missing from document: {missing}")
     if forbidden:
         problems.append(f"FORBIDDEN name present in document: {forbidden}")
+    if overcounted:
+        problems.append(f"wrong number of occurrences: {overcounted}")
+    if misplaced:
+        problems.append(f"right name, wrong line: {misplaced}")
     if unasked:
         problems.append(f"never asked about: {unasked}")
     if fell_back:

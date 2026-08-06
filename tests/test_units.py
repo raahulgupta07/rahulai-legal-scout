@@ -382,6 +382,106 @@ def test_repeat_regions():
     eq("U9l", "an explicit individual label beats a company-looking name",
        rr._is_corporate({"type": "individual", "name": "LIMITED HOLDINGS"}), False)
 
+    # --- U18 ---------------------------------------------------------------
+    # The signature table in several templates has NO header row: the
+    # "Members to sign…" cue is an ordinary paragraph ABOVE it and row 0 is
+    # already a signatory unit. The gate only ever read row 0, so those tables
+    # were skipped whole, both slots fell through to the flat per-company fill,
+    # and a company with ONE corporate member was rendered signing TWICE — once
+    # through its representative, once again on the individual line.
+    #
+    # Built synthetically rather than read from documents/legal/templates:
+    # that directory is a bind mount the firm edits, so a test reading it
+    # asserts against whatever is on disk today.
+    from docx import Document as _Docx
+
+    def _signing_doc():
+        d = _Docx()
+        d.add_paragraph("Members to sign if they agree with all resolutions included above")
+        t = d.add_table(rows=4, cols=1)
+        t.cell(0, 0).text = "[corporate shareholder_name] (Represented by its authorized director)"
+        t.cell(1, 0).text = "[authorized director_name]"
+        t.cell(2, 0).text = "[individual shareholder_name]"
+        t.cell(3, 0).text = "Date: [date]"
+        return d, t
+
+    d, t = _signing_doc()
+    eq("U18a", "a headerless signature table is still recognised",
+       rr._signing_rows_to_scan(t) is not None, True)
+
+    # An ordinary table with no signing cue above it must stay untouched.
+    plain = _Docx()
+    plain.add_paragraph("Shareholding structure")
+    pt = plain.add_table(rows=2, cols=1)
+    pt.cell(0, 0).text = "[individual shareholder_name]"
+    pt.cell(1, 0).text = "Date: [date]"
+    eq("U18b", "a table with no signing cue above it is not claimed",
+       rr._signing_rows_to_scan(pt), None)
+
+    eq("U18c", "'Represented by' marks a corporate signatory group",
+       bool(rr._CORP_SIGN_RE.search("(Represented by its authorized director)")), True)
+
+    # One corporate member -> exactly ONE signatory block, and its name appears
+    # exactly once. Two would be the shipped bug.
+    d, _t = _signing_doc()
+    member = {"name": "CITY HOLDINGS LIMITED", "type": "Company"}
+    synth = rr.expand_repeat_regions(
+        d,
+        {"members": [member], "authorized_director_name": "PHYOE MIN KYAW"},
+    )
+    vals = list(synth.values())
+    eq("U18d", "the sole corporate member signs exactly once",
+       vals.count("CITY HOLDINGS LIMITED"), 1)
+    # …and the representative is the person who was CHOSEN, not a register
+    # ordering. `authorized_director_name` is the key the picker writes; it was
+    # absent from the lookup list, which sent this to the positional fallback.
+    eq("U18e", "the chosen representative is used, not a positional guess",
+       "PHYOE MIN KYAW" in vals, True)
+
+    # The three real custom_data shapes observed on live runs (documents 73–75).
+    # The same slot arrives under two spellings and EITHER can hold the answer,
+    # so the pick is on content: a candidate equal to `director_name` is the
+    # untouched per-company default, one that differs is somebody's choice.
+    corp = {"name": "CITY HOLDINGS LIMITED", "type": "Company"}
+    eq("U18h", "the space spelling wins when the underscore one is the default",
+       rr._corp_representative(corp, {
+           "director_name": "KYAW THU SOE",
+           "authorized director_name": "PHYOE MIN KYAW",
+           "authorized_director_name": "KYAW THU SOE"}),
+       "PHYOE MIN KYAW")
+    eq("U18i", "the underscore spelling is honoured when it holds the answer",
+       rr._corp_representative(corp, {
+           "director_name": "KYAW THU SOE",
+           "authorized_director_name": "PHYOE MIN KYAW"}),
+       "PHYOE MIN KYAW")
+    eq("U18j", "a candidate matching the default is still used, never re-guessed",
+       rr._corp_representative(corp, {
+           "director_name": "PHYOE MIN KYAW",
+           "authorized_director_name": "PHYOE MIN KYAW"}),
+       "PHYOE MIN KYAW")
+    # `corporate_shareholder_3_name` is the MEMBER's own name. It used to be read
+    # as a representative, putting the company on its own signature line.
+    # (The register fallback below it may still supply a director here — what must
+    # never come back is the company itself.)
+    eq("U18k", "the corporate member is never its own authorised director",
+       rr._corp_representative(corp, {"corporate_shareholder_3_name": "CITY HOLDINGS LIMITED"})
+       != "CITY HOLDINGS LIMITED", True)
+
+    # Five individual members -> five blocks, no repeats.
+    d, _t = _signing_doc()
+    people = [{"name": n, "type": "Individual"} for n in
+              ("PHYOE MIN KYAW", "MYO MIN KYAW", "MIN MIN", "WIN WIN TINT", "ZAW MIN LATT")]
+    synth = rr.expand_repeat_regions(d, {"members": people})
+    got = [v for v in synth.values() if v]
+    eq("U18f", "every individual member gets exactly one block",
+       sorted(got), sorted(p["name"] for p in people))
+
+    # Empty data must remain a no-op on every template shape.
+    d, t = _signing_doc()
+    before = len(t.rows)
+    rr.expand_repeat_regions(d, {})
+    eq("U18g", "no party data leaves the table untouched", len(t.rows), before)
+
 
 # ===========================================================================
 # U10 Fill-in view labels
