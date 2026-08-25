@@ -24,6 +24,28 @@ AI-powered legal document automation system for Myanmar corporate law. Generate 
 
 ## Quick Install (Any Server with Docker)
 
+> **Read this box before you start — three things will trip you up.**
+>
+> 1. **Do not run `./install.sh`.** It is leftover scaffolding from a different
+>    product ("Weizza Dash"). It looks for a `.env.production` that does not
+>    exist, demands an `OPENAI_API_KEY` this app never uses, and prints the wrong
+>    URLs. It exits 1. Use `./scripts/setup.sh` instead.
+> 2. **Ignore `example.env`.** It is stale — it lists `OPENAI_API_KEY` and
+>    `DB_USER=ai`. The app is OpenRouter-only and the DB user is `scout`.
+>    There is no `.env.example` file at all; `scripts/setup.sh` is the source of truth.
+> 3. **Templates on disk are not templates in the database.** The 15 `.docx`
+>    masters ship in `documents/legal/templates/` and are bind-mounted into the
+>    container, but nothing registers them into the `templates` table on boot.
+>    A fresh install shows an empty template list until you upload them through
+>    `/admin/templates` or run the one-shot sync shown in **Setup Order** below.
+
+The repositories are **private**. Get a GitHub invite before cloning.
+
+| Remote | URL |
+|---|---|
+| `origin` | `https://github.com/raahulgupta07/CHLLegalScout.git` |
+| `airg` | `git@github.com:raahulgupta07/airg-legal-scout.git` |
+
 ### Step 1: Clone
 
 ```bash
@@ -34,10 +56,13 @@ cd CHLLegalScout
 ### Step 2: Configure
 
 ```bash
-cp .env.example .env
+./scripts/setup.sh
 ```
 
-Edit `.env` with your values:
+Interactive. Generates `JWT_SECRET_KEY` and `DB_PASS` for you, prompts for your
+OpenRouter key and admin credentials, and writes `.env`. Run it once.
+
+To write `.env` by hand instead, these are the values it sets:
 
 ```bash
 # REQUIRED — Get from https://openrouter.ai/keys
@@ -68,7 +93,9 @@ DB_DATABASE=legalscout
 docker compose up -d --build
 ```
 
-First build takes ~5 minutes (downloads images, installs dependencies). After that, starts in seconds.
+First build takes **10-20 minutes** — it compiles the Next.js frontend and installs
+LibreOffice. Subsequent builds start in seconds if `package.json` and
+`requirements.txt` are unchanged.
 
 ### Step 4: Verify
 
@@ -115,7 +142,7 @@ curl http://localhost:${PORT:-80}/health
 
 # 4. Verify migrations applied
 docker compose exec scout-api python -m db.migrate --status
-# Expected: 14/14 applied
+# Expected: all 29 migrations marked [x] applied, none PENDING
 
 # 5. Verify admin auto-created
 docker compose exec scout-db psql -U scout -d legalscout -c "SELECT email, role FROM users;"
@@ -143,7 +170,10 @@ If all 6 pass → app ready for use.
 | OS | Linux x64 / macOS arm64 | Ubuntu 22.04 LTS |
 | Docker | 24+ | latest |
 
-**Build time**: ~5 minutes first build (downloads ~2 GB layers). Subsequent builds < 1 min if package files unchanged.
+**Build time**: 10-20 minutes on first build (~2 GB of layers, plus the frontend
+compile and the LibreOffice install). Subsequent builds < 1 min if package files
+unchanged. The build itself is the memory-hungry step — the 4 GB minimum below is
+the *runtime* floor; give the build 8 GB.
 
 ---
 
@@ -152,7 +182,20 @@ If all 6 pass → app ready for use.
 After Docker comes up, the app is empty. Follow this exact order:
 
 1. **Login** as admin → http://localhost:${PORT}/login
-2. **Upload templates** → `/admin/templates` → Upload `.docx` files (already shipped: 15 sample templates in `./documents/legal/templates/` mounted automatically)
+2. **Register the templates.** 15 masters ship in `./documents/legal/templates/`
+   and that folder is bind-mounted into the container, but the app does not scan
+   it at boot — the `templates` table starts empty. Either upload the `.docx`
+   files through `/admin/templates` → **Upload**, or register all of them at once:
+
+   ```bash
+   docker compose exec scout-api python scripts/sync_templates.py
+   ```
+
+   It prints one `Added:` line per template, then a summary. On a fresh install
+   expect `Synced: 15 added, 0 removed`; re-running it prints
+   `Templates in sync (15 in DB, 15 on disk)`. Confirm 15 before moving on.
+   (The script has no caller anywhere in the codebase — it is run by hand,
+   exactly here.)
 3. **Add companies** → `/admin/companies` → Either:
    - Upload DICA PDF (AI extracts all fields automatically with streaming logs), OR
    - Click "Manual Entry" → fill the form
@@ -208,15 +251,8 @@ sudo git clone https://github.com/raahulgupta07/CHLLegalScout.git legalscout
 sudo chown -R $USER:$USER /opt/legalscout
 cd /opt/legalscout
 
-# Create .env
-cp .env.example .env
-
-# Generate secrets and edit
-echo "JWT_SECRET_KEY=$(openssl rand -hex 32)"
-echo "DB_PASS=$(openssl rand -base64 24)"
-
-nano .env
-# Paste your OPENROUTER_API_KEY, generated secrets, admin credentials
+# Create .env — generates the secrets, prompts for key + admin credentials
+./scripts/setup.sh
 ```
 
 ### Step 4: Deploy
@@ -285,8 +321,7 @@ sudo usermod -aG docker $USER
 # Clone and configure
 git clone https://github.com/raahulgupta07/CHLLegalScout.git
 cd CHLLegalScout
-cp .env.example .env
-nano .env   # Fill in your values
+./scripts/setup.sh   # generates secrets, prompts for OpenRouter key + admin login
 
 # Deploy
 docker compose up -d --build
@@ -514,6 +549,17 @@ User chats "Create AGM for ARCTIC SUN"
 | `DB_DATABASE` | No | Database name (default: `legalscout`) |
 | `PORT` | No | External port (default: `80`) |
 
+**Feature flags** — all read from `.env`, all off/safe by default. Leave them at
+their defaults on a first install; turn one on only deliberately.
+
+| Flag | Default | Effect when on |
+|---|---|---|
+| `SKIP_AI_TRAINING` | `true` | `false` re-runs template analysis on training. Default `true` means templates arrive un-analyzed |
+| `LEGAL_SCOUT_MEMORY` | `false` | Session and company memory |
+| `SCOUT_EFFECTS_LEDGER` | `false` | Audit ledger of side effects |
+| `LEGAL_SCOUT_ROUTINES` | `false` | Data-defined numbered sequences |
+| `LEGAL_SCOUT_SKILL_ROUTING` | `false` | Attaches the governing playbook to a template match instead of relying on the model to call `load_skill` |
+
 **Everything else is configured from the admin UI:**
 AI models, email/SMTP, S3 storage, timezone.
 
@@ -616,7 +662,7 @@ CHLLegalScout/
 │       └── previews/             # Cached PDF previews
 ├── compose.yaml                  # Docker Compose
 ├── Dockerfile                    # Multi-stage build (Node 22 + Python 3.12)
-├── .env.example                  # Environment template
+├── example.env                   # STALE — ignore, use scripts/setup.sh
 ├── DEPLOY.md                     # Deployment guide
 └── CLAUDE.md                     # Technical documentation
 ```
