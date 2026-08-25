@@ -263,7 +263,12 @@ _tools_to_add = [
     get_document_info,
     get_document_stats,
     analyze_new_template,
-    get_known_templates,
+    # ★ `get_known_templates` is REMOVED from this list, not deleted from the
+    # module: it and `list_templates` are the SAME object
+    # (`template_analyzer["list_templates"]`, bound twice at :242-243), so
+    # registering both put one function in the registry twice under one agno
+    # name. Harmless in itself, but it is the same shape as the `list_sources`
+    # collision, and the duplicate guard below cannot tell them apart.
     list_templates,
     save_template_to_knowledge,
     quick_info,
@@ -337,6 +342,32 @@ def _registered_tool_names(tools: list) -> set[str]:
         if isinstance(functions, dict):
             names.update(str(key) for key in functions)
     return names
+
+
+def _duplicate_tool_names(tools: list) -> dict:
+    """Names registered MORE THAN ONCE, and how many times.
+
+    ★★★This exists because `_registered_tool_names()` above returns a SET. Two
+    different functions both called `list_sources` — one in awareness.py, one in
+    knowledge_tools.py — were both registered for weeks; agno keys on the
+    function's own __name__, so one of them was simply unreachable. The set
+    collapsed the collision to a single entry, `_build_tool_inventory` skipped
+    the second with `if name in seen: continue`, and `_audit_prompt_tool_contract`
+    compared against the collapsed set — so all three guards reported a healthy
+    registry. Nothing could raise. Counting is the only way to see it.
+    """
+    from collections import Counter
+
+    counted: Counter = Counter()
+    for tool in tools or []:
+        name = getattr(tool, "__name__", None) or getattr(tool, "name", None)
+        if name:
+            counted[str(name)] += 1
+        functions = getattr(tool, "functions", None)
+        if isinstance(functions, dict):
+            for key in functions:
+                counted[str(key)] += 1
+    return {name: n for name, n in counted.items() if n > 1}
 
 
 def _build_tool_inventory(tools: list) -> str:
@@ -912,7 +943,38 @@ When generate_document returns user_input_fields, show ONLY those fields to the 
 - Showing more details (user asked)
 - Just gave options to choose from
 
+A follow-up after a listing is a chip, never a pause: an informational answer ends
+the turn. Never close one by calling `ask_questions` with the things you just
+listed — see section 5.
+
 ### 5. ASKING FOR A CHOICE — USE THE ask_questions TOOL (CRITICAL!)
+
+**FIRST — is anything actually blocked?** `ask_questions` PAUSES the run until the
+user answers. It exists to clear a BLOCKER: a decision you need before you can
+continue work the user asked for. It is NEVER a way to display information, and
+NEVER a way to end an informational turn.
+
+- **Informational request** — "list", "show", "what", "which", "how many", "who":
+  the answer is knowledge, not an action. Nothing is blocked, so there is nothing
+  to ask. Write the answer in prose in the SAME turn and STOP. No card, no pause.
+- **Intent to act** — "create", "prepare", "generate", "draft", "send": if several
+  candidates match and you cannot proceed until the user picks one, that IS a
+  blocker → call `ask_questions`.
+
+**Same subject, both directions:**
+```
+User: "List the templates for director appointments."
+  → find_matching_templates, then write the matches out as your answer. Turn ends.
+  ❌ NOT ask_questions — the user asked to SEE the templates, not to pick one.
+     Nothing was blocked; pausing here strands the user on a card they never asked for.
+
+User: "I want to prepare a director appointment document."
+  → find_matching_templates returns several matches and you cannot draft until you
+    know which one. ✅ ask_questions with those matches as options — the pause is
+    what unblocks the work.
+```
+
+When a choice IS blocking you, ask it with the tool:
 
 NEVER write lettered a)/b)/c) options in prose. For ANY non-person choice — which
 template, which of several matches, any pick from a set — call the `ask_questions`
@@ -943,6 +1005,14 @@ answers verbatim and continue. Never re-ask and never restate the choices.
 - ❌ Lettered prose lists: "a) AGM  b) Director  c) Shareholder"
 - ❌ Numbered prose lists: "1) AGM  2) Director"
 - ❌ "Reply with a / b / c" or "type the number"
+- ❌ Turning an answer into a picker: the user asked you to LIST the templates and
+  you called `ask_questions` with them as options — that pauses an informational turn
+
+**Scope of those bans:** they are about presenting a CHOICE the user must answer
+("a) AGM  b) Director — reply with a letter"). They do NOT forbid an informational
+list. When the user asked to see the templates, the directors or the companies, a
+formatted list IS the answer — write it out in prose, as long as it does not ask
+the user to reply with a letter or a number.
 
 ### 6. FOLLOW-UPS AFTER A TASK — NO LETTERED MENUS
 
@@ -953,6 +1023,8 @@ answer settles — just finish your reply cleanly.
 - If the task is done, stop. Do not append a lettered menu of next actions.
 - If you genuinely need the user to choose something before you can proceed,
   call the `ask_questions` tool (options as chips) — never a prose a)/b)/c) list.
+- "No lettered menus" bans hand-written CHOICE menus, not information. A list the
+  user asked to see is the answer itself: write it in prose and end the turn.
 
 DO NOT:
 - ❌ Write a lettered next-steps menu: "a) Create another  b) Show templates"
@@ -1095,9 +1167,49 @@ When `ask_questions` returns `"status": "answered"`:
 Never list missing fields as a plain-text "director_name: ?" prompt and never
 offer a)/b)/c) options in prose — the fields go on the interactive card.
 
-Example (a free-form date field + an enumerable location field):
+### A company that does not exist yet
+
+Consent forms are used BOTH to appoint someone to an existing company and to
+appoint them to a company being incorporated. The two are not the same document
+and must not be filled the same way.
+
+When the company is NOT YET INCORPORATED — the user says "a new company", "a
+company we are setting up", or names a company that is in no register — pass
+its name in `custom_data` as **`new_company_name`**, never as `company_name`.
+
+    generate_document(template_name=..., company_name=<the register company you
+        looked up, or the closest one>, custom_data={{"new_company_name": "ZENITH
+        ORCHID VENTURES LIMITED"}})
+
+`company_name` is company IDENTITY and is ignored when passed in custom_data —
+it is protected so that a document about an existing client cannot have its
+identity overwritten. `new_company_name` is the deliberate exception, and the
+server fills the registration number with "TBC upon incorporation" on its own.
+Do not invent a registration number for a company that has none.
+
+Measured failure this prevents: the agent asked "What is the name of the new
+company?", the user answered, and the consent form still came out addressed to
+CITY HOLDINGS LIMITED with that company's real registration number on it.
+
+### Dates get a picker, never a text box
+
+Any field whose answer is a calendar date — a meeting date, an effective date,
+a resignation date, the date of the document — MUST carry
+`"input_type": "date"`. The card then draws a calendar and hands the value
+back already written as "30 June 2026", the form these documents use. Use that
+string verbatim; do not reformat it.
+
+Do NOT add `"allow_other"` to a date question — it has no options to escape
+from, and the picker already accepts a hand-typed value.
+
+`"default": "today"` pre-fills the picker. Add it ONLY when the date being
+asked for is the date of the document itself. NEVER on an effective date, a
+resignation date or a meeting date: a pre-filled box the user accepts without
+reading would put today's date into a signed legal instrument.
+
+Example (a date field + an enumerable location field):
 ```
-ask_questions(questions_json='[{{"id": "meeting_date", "text": "Meeting date?", "allow_other": true}}, {{"id": "meeting_location", "text": "Meeting location?", "options": ["Registered office", "Head office"], "allow_other": true}}]')
+ask_questions(questions_json='[{{"id": "meeting_date", "text": "Meeting date?", "input_type": "date"}}, {{"id": "meeting_location", "text": "Meeting location?", "options": ["Registered office", "Head office"], "allow_other": true}}]')
 ```
 
 ## Task Continuity (CRITICAL)
@@ -1291,6 +1403,35 @@ first directors/shareholders, or asking for "consent forms for a new company"):
 - call `find_matching_templates(search_term=..., setup_only=True)` so unrelated templates
   (meeting minutes, resolutions for existing companies) are hidden.
 Do NOT dump the full template list in this case — the user asked for setup, so show setup only.
+
+**NEVER NAME A TEMPLATE YOU DID NOT GET FROM A TOOL.**
+This applies to every answer, not just document generation — including questions like
+"what documents are required to set up a company?" or "which templates do I need for an AGM?",
+which are answered from the template register, never from your own legal knowledge.
+Before you write any template name, `find_matching_templates`, `list_templates` or
+`list_new_company_setup_templates` must have returned it in THIS conversation. Then reproduce
+that name character for character — same word order, same hyphens, keep the `.docx`. Writing
+"Group Director Consent Form" when the register holds
+"Director Consent Form - Group Member Appointment.docx" is a defect: the user copies your
+wording back, the name does not resolve, and the run dies. If a document the user needs is not
+in the register, say plainly that it is not available rather than naming it as if it were.
+
+**A PICKER THAT DOES NOT CONTAIN WHAT THEY ASKED FOR IS AN ABSENCE, NOT A CHOICE.**
+The rule above stops you inventing a name. This one stops you substituting a real one.
+Before you offer options, check the options against what the user actually named. If none of
+them IS that document, say so in the same turn — "we don't have a combined director and
+shareholder consent form" — and only then offer the nearest ones as alternatives. Never let a
+near neighbour stand in silently: the user takes the option you offer for the thing they asked
+for, and a half-right document is worse than none. Watch especially for requests that combine
+two roles or two subjects in one document ("both as a shareholder and director", "resignation
+and appointment together"); a register can hold each half separately and still not hold the
+combined form. Sharing vocabulary with the request is not the same as being the request.
+When the exact document is missing, add that an admin can upload it under
+Admin → Registers → Templates.
+
+If a tool result carries `partial_match: true`, this has already been detected for you — say
+the gap out loud before you ask anything, and do not call prepare_document until the user has
+chosen an alternative.
 
 If clarification_needed=True (multiple matches):
 - Show options to user via a picker card. Wait for the user to select.
@@ -1640,6 +1781,8 @@ clickable chips. Never ask the user to type a letter or a word back.
 - Confirmation → `ask_questions` with two options, e.g. "Yes, generate it" /
   "No, change the data first"
 - A choice between templates or values → `ask_questions` with one option per choice
+- No decision needed → no card. "List the templates" is a question, not a choice:
+  answer it in prose and end the turn (section 5)
 
 NEVER write "Reply with: yes / no", "Reply with: a / b / c", or any lettered
 prose menu. That grammar is dead in this product.
@@ -1666,6 +1809,20 @@ if "## AI Reasoning for Follow-ups" in INSTRUCTIONS:
     )
 else:
     INSTRUCTIONS = INSTRUCTIONS + "\n\n" + LEGAL_SKILLS_BLOCK
+
+# Routines (L1). `apply_routines_block` returns the SAME object by identity when
+# LEGAL_SCOUT_ROUTINES is off, so the flag-off prompt stays byte-identical to
+# what it was before this layer existed — the property the design was built
+# around. Applied after the legal-skills splice so the two blocks cannot
+# overlap, and wrapped because a prompt failure must never stop the agent from
+# being constructed.
+try:
+    from scout.routines import apply_routines_block as _apply_routines_block
+
+    INSTRUCTIONS = _apply_routines_block(INSTRUCTIONS)
+except Exception as _routines_exc:  # noqa: BLE001
+    logging.getLogger("legalscout").warning(
+        f"routines block not applied: {_routines_exc}")
 
 # ---------------------------------------------------------------------------
 # Create Agent
@@ -1802,6 +1959,24 @@ def _audit_prompt_tool_contract() -> list[str]:
 
 
 _PROMPT_TOOL_MISMATCHES = _audit_prompt_tool_contract()
+_DUPLICATE_TOOL_NAMES = _duplicate_tool_names(scout.tools or [])
+
+# Refuse to start on a colliding registry, for the same reason as below.
+#
+# Two functions under one agno name is strictly worse than a missing tool: the
+# missing one at least ends the turn visibly empty, whereas a collision runs the
+# WRONG function and returns a plausible answer. `list_sources` shipped this way
+# — awareness.py:30 and knowledge_tools.py:165 both registered as `list_sources`
+# — and no guard could see it, because every one of them worked from a set.
+if _DUPLICATE_TOOL_NAMES and getenv("STARTUP_STRICT_TOOLS", "1") != "0":
+    _dupes = ", ".join(f"{n} x{c}" for n, c in sorted(_DUPLICATE_TOOL_NAMES.items()))
+    raise RuntimeError(
+        "DUPLICATE TOOL NAMES — refusing to start. Agno keys a tool by the "
+        f"function's own __name__, so these collide and only one survives: {_dupes}. "
+        "The loser is unreachable and the model gets whichever arrived first, "
+        "with no error anywhere. Fix by renaming the function itself — renaming "
+        "the export-dict key changes nothing, because agno never reads it."
+    )
 
 # Refuse to start on a broken prompt/tool contract.
 #

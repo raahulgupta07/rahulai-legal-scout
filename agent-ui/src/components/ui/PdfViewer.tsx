@@ -10,6 +10,9 @@ interface PdfViewerProps {
 
 export default function PdfViewer({ url, className = '' }: PdfViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null)
+  // The worker we construct ourselves, so it can be terminated on unmount —
+  // a module Worker is a real thread and leaks if nobody stops it.
+  const workerRef = useRef<Worker | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -22,7 +25,46 @@ export default function PdfViewer({ url, className = '' }: PdfViewerProps) {
     const render = async () => {
       try {
         const pdfjsLib: any = await import('pdfjs-dist')
-        pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs'
+        // ★★★Own the worker explicitly — do NOT let pdf.js pick a global.
+        //
+        // MEASURED IN THE BROWSER, not inferred: this page carries
+        // `globalThis.pdfjsLib` at version 5.2.133 and a matching
+        // `globalThis.pdfjsWorker`, injected by a BROWSER EXTENSION. There are
+        // no foreign <script> tags — it is injected into the page context. When
+        // pdf.js sets up its worker it reuses an existing
+        // `globalThis.pdfjsWorker.WorkerMessageHandler` if one is there, so our
+        // bundled 4.0.379 API was talking to the extension's 5.2.133 worker:
+        //   The API version "4.0.379" does not match the Worker version "5.2.133"
+        // Nothing server-side could fix that, and no amount of cache-clearing
+        // would either — the earlier cache theory was wrong.
+        //
+        // Constructing the Worker ourselves and handing it over as `workerPort`
+        // bypasses the global lookup entirely, so whatever an extension puts on
+        // the page is irrelevant.
+        let ownWorker: Worker | null = null
+        try {
+          ownWorker = new Worker(
+            `/pdf.worker.min.mjs?v=${pdfjsLib.version}`,
+            { type: 'module' }
+          )
+          pdfjsLib.GlobalWorkerOptions.workerPort = ownWorker
+          workerRef.current = ownWorker
+        } catch {
+          /* No module-worker support — fall through to workerSrc below. */
+        }
+
+        // ★ The worker URL carries the library's OWN version.
+        //
+        // It used to be the bare '/pdf.worker.min.mjs'. That path never changes,
+        // the server sent no Cache-Control, and localhost:8080 hosts a different
+        // app on this machine every few weeks — so a browser could hand pdf.js a
+        // worker cached from something else entirely and fail with
+        //   The API version "4.0.379" does not match the Worker version "5.2.133"
+        // while the server was serving 4.0.379 the whole time. Keying the URL to
+        // pdfjsLib.version means a mismatched cache entry cannot be reused,
+        // because the bundle only ever requests the version it was built with.
+        pdfjsLib.GlobalWorkerOptions.workerSrc =
+          `/pdf.worker.min.mjs?v=${pdfjsLib.version}`
 
         const tok = typeof window !== 'undefined' ? (localStorage.getItem('ls_token') || '') : ''
         const res = await fetch(url, tok ? { headers: { Authorization: `Bearer ${tok}` } } : {})
@@ -42,7 +84,39 @@ export default function PdfViewer({ url, className = '' }: PdfViewerProps) {
         }
         const buf = await res.arrayBuffer()
 
-        const pdf = await pdfjsLib.getDocument({ data: buf }).promise
+        // ★ Self-heal a poisoned worker cache.
+        //
+        // Keying the URL to the version stops a stale entry being MATCHED, but
+        // it cannot help a browser that already holds one for the path an older
+        // bundle asked for. If pdf.js still reports a version mismatch, refetch
+        // the worker with cache:'reload' — which bypasses the HTTP cache and
+        // revalidates against the server — and hand pdf.js a blob URL, which
+        // has no cache entry by construction. Retried exactly once: a second
+        // failure is a real problem and must surface, not loop.
+        const load = async () => {
+          try {
+            return await pdfjsLib.getDocument({ data: buf.slice(0) }).promise
+          } catch (e: any) {
+            const msg = String(e?.message || e)
+            if (!/does not match the Worker version/i.test(msg)) throw e
+            const wres = await fetch(
+              `/pdf.worker.min.mjs?v=${pdfjsLib.version}`,
+              { cache: 'reload' }
+            )
+            if (!wres.ok) throw e
+            const blobUrl = URL.createObjectURL(
+              new Blob([await wres.arrayBuffer()], { type: 'text/javascript' })
+            )
+            pdfjsLib.GlobalWorkerOptions.workerSrc = blobUrl
+            try {
+              return await pdfjsLib.getDocument({ data: buf.slice(0) }).promise
+            } finally {
+              URL.revokeObjectURL(blobUrl)
+            }
+          }
+        }
+
+        const pdf = await load()
         if (cancelled || !containerRef.current) return
         containerRef.current.innerHTML = ''
 
@@ -79,6 +153,15 @@ export default function PdfViewer({ url, className = '' }: PdfViewerProps) {
     render()
     return () => {
       cancelled = true
+      // A module Worker is a real thread; unmounting the viewer must stop it.
+      if (workerRef.current) {
+        try {
+          workerRef.current.terminate()
+        } catch {
+          /* already gone */
+        }
+        workerRef.current = null
+      }
     }
   }, [url])
 

@@ -19,6 +19,12 @@ resolved against ``company_people`` / ``people`` / ``document_signatories``
 (migration 011), never frozen to an array position at training time.
 """
 
+# ★ Required on python 3.9: `validate_mapping_entry` is annotated
+# `tuple[bool, str | None]`, evaluated at def time without this. Third file in
+# this chain — see the systemic note in CLAUDE.md; 9 more still carry it.
+from __future__ import annotations
+
+
 import re
 
 SLOT_KINDS = frozenset({

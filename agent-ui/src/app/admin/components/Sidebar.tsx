@@ -105,8 +105,8 @@ export default function DashboardSidebar() {
       <div className="flex items-center justify-between gap-2 px-3 h-12 border-b border-[var(--border)]">
         {!collapsed && (
           <div className="flex items-center gap-2 min-w-0">
-            <span className="w-6 h-6 shrink-0 grid place-items-center bg-[var(--ink)] text-[var(--text-inverse)] text-[length:var(--text-2xs)] font-semibold rounded-[var(--radius-sm)]">
-              LS
+            <span className="w-6 h-6 shrink-0 grid place-items-center overflow-hidden bg-[var(--ink)] rounded-[var(--radius-sm)]">
+              <img src="/logo.png" alt="" className="h-[18px] w-[18px] object-contain" />
             </span>
             <span className="font-[family-name:var(--font-display)] text-[length:var(--text-sm)] font-semibold text-[var(--text)] truncate">
               Legal Scout

@@ -31,9 +31,14 @@ import useChatActions from '@/hooks/useChatActions'
 import { useStore } from '@/store'
 import { cn } from '@/lib/utils'
 import { focusRing } from '@/components/ui/kit'
+import ChangelogPanel from '@/components/shell/ChangelogPanel'
 
 const COLLAPSE_KEY = 'ls_rail_collapsed'
-const APP_VERSION = 'v2'
+// ★ Was a hardcoded 'v2', which never moved through five releases and told
+// nobody which build they were looking at. The real number lives in /VERSION
+// and is served by GET /api/version; anything else is a second source of
+// truth that silently goes stale.
+const APP_VERSION_FALLBACK = ''
 
 interface NavItem {
   name: string
@@ -72,9 +77,40 @@ export default function AppRail({ onNavigate, forceExpanded }: AppRailProps) {
   const [storedCollapsed, setStoredCollapsed] = useState(false)
   const [userRole, setUserRole] = useState('user')
   const [user, setUser] = useState({ name: 'User', email: '' })
+  const [appVersion, setAppVersion] = useState(APP_VERSION_FALLBACK)
+  const [showChangelog, setShowChangelog] = useState(false)
+
+  // The version the SERVER is running, not one baked into this bundle — a
+  // constant compiled in here would report the frontend's build while the
+  // API could be on a different image entirely. Fails quiet: on error the
+  // label just reads "Legal Scout" rather than showing a wrong number.
+  useEffect(() => {
+    let cancelled = false
+    const load = async () => {
+      try {
+        const tok =
+          typeof window !== 'undefined' ? localStorage.getItem('ls_token') || '' : ''
+        const res = await fetch(
+          '/api/version',
+          tok ? { headers: { Authorization: `Bearer ${tok}` } } : {}
+        )
+        if (!res.ok) return
+        const data = await res.json()
+        if (!cancelled && typeof data?.version === 'string' && data.version !== 'unknown') {
+          setAppVersion(data.version)
+        }
+      } catch {
+        /* leave the label bare */
+      }
+    }
+    load()
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const { clearChat, focusChatInput, initialize } = useChatActions()
-  const { selectedEndpoint, isEndpointActive, hydrated, mode, setMessages } =
+  const { selectedEndpoint, hydrated, mode, setMessages } =
     useStore()
 
   const collapsed = forceExpanded ? false : storedCollapsed
@@ -161,11 +197,14 @@ export default function AppRail({ onNavigate, forceExpanded }: AppRailProps) {
         )}
       >
         <div className="flex min-w-0 items-center gap-2">
+          {/* The mark is white artwork on transparency, so it keeps the ink
+              square it has always sat on — that square is what makes it read
+              in both themes. */}
           <span
             aria-hidden
-            className="grid h-6 w-6 shrink-0 place-items-center rounded-[var(--radius-md)] bg-[var(--ink)] text-[10px] font-semibold text-[var(--text-inverse)]"
+            className="grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-[var(--radius-md)] bg-[var(--ink)]"
           >
-            LS
+            <img src="/logo.png" alt="" className="h-[18px] w-[18px] object-contain" />
           </span>
           {!collapsed && (
             <span className="truncate text-[13px] font-semibold text-[var(--text)]">
@@ -267,7 +306,21 @@ export default function AppRail({ onNavigate, forceExpanded }: AppRailProps) {
       {/* 5 — Chat history: the only scrolling region */}
       {!collapsed && (
         <div className="min-h-0 flex-1 overflow-hidden">
-          {mounted && isEndpointActive && <Sessions />}
+          {/*
+            Mounted whenever the rail is. It used to be gated on
+            `isEndpointActive`, which starts FALSE in the store and only flips
+            true once initialize() has finished — so on every page load this
+            slot rendered nothing at all, and if initialize() was slow or
+            failed it stayed blank permanently. "My chat history disappears
+            when I refresh" was this.
+
+            Worse, the gate made its own explanation unreachable: Sessions
+            renders a skeleton while `isEndpointLoading`, and SessionBlankState
+            has a `case !isEndpointActive` that says "Endpoint offline" — both
+            written for exactly the states the gate refused to mount them in.
+            Sessions owns those states; the parent must not pre-empt them.
+          */}
+          {mounted && <Sessions />}
         </div>
       )}
       {collapsed && <div className="flex-1" />}
@@ -313,11 +366,29 @@ export default function AppRail({ onNavigate, forceExpanded }: AppRailProps) {
           </div>
           {!collapsed && (
             <p className="mt-1 px-1 text-[10px] text-[var(--text-muted)]">
-              Legal Scout {APP_VERSION}
+              Legal Scout{' '}
+              {appVersion && (
+                // Only the NUMBER is interactive. "Legal Scout" stays plain so
+                // this reads as a label containing a link, rather than a whole
+                // line of text that turns out to be a button.
+                <button
+                  type="button"
+                  onClick={() => setShowChangelog(true)}
+                  title="What's new"
+                  className={cn(
+                    'tabular-nums underline-offset-2 hover:text-[var(--brand)] hover:underline',
+                    focusRing
+                  )}
+                >
+                  v{appVersion}
+                </button>
+              )}
             </p>
           )}
         </div>
       )}
+
+      {showChangelog && <ChangelogPanel onClose={() => setShowChangelog(false)} />}
     </aside>
   )
 }

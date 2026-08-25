@@ -11,7 +11,11 @@ const SessionBlankState = () => {
   const { selectedEndpoint, isEndpointActive } = useStore()
   const [agentId] = useQueryState('agent')
 
-  const { icon: Icon, headline, detail } = (() => {
+  const {
+    icon: Icon,
+    headline,
+    detail
+  } = (() => {
     switch (true) {
       case !selectedEndpoint:
         return {
@@ -42,10 +46,7 @@ const SessionBlankState = () => {
 
   return (
     <div className="px-3 py-6">
-      <Icon
-        className="h-4 w-4 text-[var(--text-muted)]"
-        aria-hidden
-      />
+      <Icon className="h-4 w-4 text-[var(--text-muted)]" aria-hidden />
       <p className="mt-2 text-[length:var(--text-sm)] font-medium text-[var(--text-secondary)]">
         {headline}
       </p>

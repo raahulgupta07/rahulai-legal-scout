@@ -11,6 +11,7 @@ import {
   Plus,
   RefreshCw,
   Trash2,
+  UserMinus,
   UserPlus,
 } from "lucide-react"
 import apiClient, { authFetch } from "@/lib/api-client"
@@ -61,6 +62,13 @@ interface CompanyLink {
   share_class?: string | null
   appointed_date?: string | null
   resigned_date?: string | null
+  // Cessation is a property of the SEAT, not of the person: the same director
+  // leaves two boards on two different days for two different reasons. These sit
+  // beside the resigned_date they annotate. `cessation_recorded_by` is filled by
+  // the server from the admin's JWT and is read-only here — see
+  // db/migration_025_people_cessation.sql.
+  cessation_reason?: string | null
+  cessation_recorded_by?: string | null
 }
 
 interface Person {
@@ -77,6 +85,14 @@ interface Person {
   country_of_residence: string
   father_name: string
   companies?: CompanyLink[]
+}
+
+/** One recorded cessation: which seat was vacated, when, and why. The recorder
+ *  is not here — the server takes it from the acting admin's session. */
+interface CessationDraft {
+  link_key: string
+  cessation_date: string
+  cessation_reason: string
 }
 
 interface CompanyOption {
@@ -103,6 +119,28 @@ const EMPTY_PERSON: Person = {
   country_of_residence: "",
   father_name: "",
 }
+
+const EMPTY_CESSATION: CessationDraft = {
+  link_key: "",
+  cessation_date: "",
+  cessation_reason: "",
+}
+
+// The events the firm actually files for. Free text is kept as the last option
+// because "removed under s.156" and "died in office" are not the same filing and
+// a fixed list would push both into "Other" with no way to say which.
+const CESSATION_REASONS = [
+  "Resigned",
+  "Removed by shareholders' resolution",
+  "Term expired",
+  "Disqualified",
+  "Deceased",
+  "Other",
+]
+
+/** A link identifies a board seat by (company, role) — the same pair the
+ *  company_people unique index and its UPSERT use. */
+const linkKey = (l: CompanyLink) => `${l.company_id}::${l.role}`
 
 const ROLE_OPTIONS: { value: Role; label: string }[] = [
   { value: "director", label: "Director" },
@@ -153,6 +191,10 @@ export default function PeopleView() {
   })
   const [linking, setLinking] = useState(false)
   const [syncing, setSyncing] = useState(false)
+
+  const [cessationOpen, setCessationOpen] = useState(false)
+  const [cessationDraft, setCessationDraft] = useState<CessationDraft>({ ...EMPTY_CESSATION })
+  const [recordingCessation, setRecordingCessation] = useState(false)
 
   // ── Load people ──
   const fetchPeople = useCallback(async () => {
@@ -392,6 +434,77 @@ export default function PeopleView() {
       toast.error(e?.message || "Failed to link company")
     } finally {
       setLinking(false)
+    }
+  }
+
+  // ── Record a cessation ──
+  // Date, reason and recorder all describe ONE BOARD SEAT, so this is a single
+  // write to the link — the SAME endpoint as "Link company", which UPSERTs on
+  // (company_id, person_id, role). A person on two boards therefore carries two
+  // independent cessations; see db/migration_025_people_cessation.sql for why
+  // the reason is not a person column.
+  //
+  // ★ That UPSERT sets every column from EXCLUDED, so any field left out of the
+  // body is written as NULL. Shares, capital, share class and the appointed date
+  // are therefore echoed back from the link we are amending — omitting them
+  // would quietly erase the shareholding while recording a resignation. Measured:
+  // a body carrying only resigned_date blanked all four.
+  //
+  // `cessation_recorded_by` is deliberately NOT in the body. The server takes it
+  // from the acting admin's JWT. `ls_user.email` is in localStorage and would
+  // have been easy to send, but a recorder the client chooses is a claim, not an
+  // audit trail — and this row is what a regulator would be shown.
+  const openCessation = () => {
+    const open = links.filter((l) => !l.resigned_date)
+    setCessationDraft({
+      ...EMPTY_CESSATION,
+      link_key: open.length === 1 ? linkKey(open[0]) : "",
+    })
+    setCessationOpen(true)
+  }
+
+  const handleRecordCessation = async () => {
+    if (!detailPerson?.id) return
+    const link = links.find((l) => linkKey(l) === cessationDraft.link_key)
+    if (!link) {
+      toast.error("Choose the company this person has ceased to act for")
+      return
+    }
+    if (!cessationDraft.cessation_date) {
+      toast.error("A cessation date is required")
+      return
+    }
+    setRecordingCessation(true)
+    try {
+      const res = await authFetch(apiClient.linkCompanyPerson(link.company_id), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          person_id: detailPerson.id,
+          role: link.role,
+          number_of_shares: link.number_of_shares || "",
+          capital_amount: link.capital_amount || "",
+          share_class: link.share_class || "",
+          appointed_date: dateOrNull(link.appointed_date),
+          resigned_date: dateOrNull(cessationDraft.cessation_date),
+          cessation_reason: cessationDraft.cessation_reason.trim(),
+        }),
+      })
+      if (!res.ok) throw new Error(await errorMessage(res, "Failed to record the cessation"))
+      await assertSuccess(res, "Failed to record the cessation")
+
+      toast.success(`Cessation recorded for ${companyName(link)}`)
+      setCessationOpen(false)
+      setCessationDraft({ ...EMPTY_CESSATION })
+      // Reload rather than patching state locally: the recorder is decided by
+      // the server, so the only way to show the real value is to read it back.
+      await loadLinks(detailPerson.id)
+      await fetchPeople()
+    } catch (e: any) {
+      console.error("Record cessation error:", e)
+      toast.error(e?.message || "Failed to record the cessation")
+    } finally {
+      setRecordingCessation(false)
     }
   }
 
@@ -646,7 +759,12 @@ export default function PeopleView() {
           {/* Appointment and resignation dates are per-company, not per-person:
               the same director joins two boards on two different dates. Shown
               here read-only, sourced from the company links below. */}
-          {links.some((l) => l.appointed_date || l.resigned_date) && (
+          {/* Reason and recorder ride on the SAME row as the date they explain,
+              because all three belong to one board seat. A person on two boards
+              shows two independent lines here. */}
+          {links.some(
+            (l) => l.appointed_date || l.resigned_date || l.cessation_reason
+          ) && (
             <Card title="Appointment history" meta={<Badge tone="neutral">{links.length}</Badge>}>
               <DetailList
                 items={links.map((l) => [
@@ -654,7 +772,9 @@ export default function PeopleView() {
                   [
                     roleLabel(l.role),
                     l.appointed_date ? `appointed ${formatDate(l.appointed_date)}` : null,
-                    l.resigned_date ? `resigned ${formatDate(l.resigned_date)}` : null,
+                    l.resigned_date ? `ceased ${formatDate(l.resigned_date)}` : null,
+                    l.cessation_reason || null,
+                    l.cessation_recorded_by ? `recorded by ${l.cessation_recorded_by}` : null,
                   ]
                     .filter(Boolean)
                     .join(" · "),
@@ -667,9 +787,24 @@ export default function PeopleView() {
             title="Company links"
             meta={<Badge tone="neutral">{links.length}</Badge>}
             actions={
-              <Button variant="primary" size="sm" onClick={() => setLinkOpen(true)} icon={<Plus className="w-3.5 h-3.5" />}>
-                Link company
-              </Button>
+              <>
+                <Button
+                  size="sm"
+                  onClick={openCessation}
+                  disabled={links.length === 0}
+                  icon={<UserMinus className="w-3.5 h-3.5" />}
+                  title={
+                    links.length === 0
+                      ? "Link this person to a company first"
+                      : "Record the date this person stopped acting"
+                  }
+                >
+                  Record cessation
+                </Button>
+                <Button variant="primary" size="sm" onClick={() => setLinkOpen(true)} icon={<Plus className="w-3.5 h-3.5" />}>
+                  Link company
+                </Button>
+              </>
             }
             padded={false}
           >
@@ -728,6 +863,18 @@ export default function PeopleView() {
                     hideBelow: "md",
                     sortValue: (l) => dateSort(l.appointed_date),
                     render: (l) => formatDate(l.appointed_date),
+                  },
+                  {
+                    key: "ceased",
+                    header: "Ceased",
+                    hideBelow: "md",
+                    sortValue: (l) => dateSort(l.resigned_date),
+                    render: (l) =>
+                      l.resigned_date ? (
+                        <Badge tone="warn">{formatDate(l.resigned_date)}</Badge>
+                      ) : (
+                        <Badge tone="ok">Acting</Badge>
+                      ),
                   },
                   {
                     key: "actions",
@@ -814,6 +961,77 @@ export default function PeopleView() {
               mono
             />
           </FormGrid>
+        </Modal>
+
+        <Modal
+          open={cessationOpen}
+          onOpenChange={setCessationOpen}
+          title="Record a cessation"
+          description={`Record the date ${p.full_name} stopped acting, and on what authority.`}
+          size="md"
+          footer={
+            <>
+              <Button variant="ghost" onClick={() => setCessationOpen(false)}>
+                Cancel
+              </Button>
+              <Button
+                variant="primary"
+                onClick={handleRecordCessation}
+                loading={recordingCessation}
+                disabled={!cessationDraft.link_key || !cessationDraft.cessation_date}
+                icon={<UserMinus className="w-3.5 h-3.5" />}
+              >
+                Record cessation
+              </Button>
+            </>
+          }
+        >
+          <FormGrid>
+            <SelectField
+              label="Company"
+              wide
+              value={cessationDraft.link_key}
+              onChange={(v) => setCessationDraft({ ...cessationDraft, link_key: v })}
+              options={[
+                { value: "", label: "Choose the board seat being vacated" },
+                ...links.map((l) => ({
+                  value: linkKey(l),
+                  label: `${companyName(l)} — ${roleLabel(l.role)}${
+                    l.resigned_date ? ` (ceased ${formatDate(l.resigned_date)})` : ""
+                  }`,
+                })),
+              ]}
+            />
+            <TextField
+              label="Cessation date"
+              type="date"
+              required
+              value={toDateInput(cessationDraft.cessation_date)}
+              onChange={(v) => setCessationDraft({ ...cessationDraft, cessation_date: v })}
+              hint="Recorded against this company only"
+            />
+            <SelectField
+              label="Reason"
+              wide
+              value={cessationDraft.cessation_reason}
+              onChange={(v) => setCessationDraft({ ...cessationDraft, cessation_reason: v })}
+              options={[
+                { value: "", label: "Not stated" },
+                ...CESSATION_REASONS.map((r) => ({ value: r, label: r })),
+              ]}
+              hint="A resignation, a removal and a death are three different filings"
+            />
+          </FormGrid>
+
+          <div className="mt-4">
+            <Notice title="This takes effect immediately">
+              From the cessation date the person pickers stop offering{" "}
+              {p.full_name} for {"that company's"} documents, and a resolution can no longer
+              be signed in their name. Only this board seat is affected — any other company{" "}
+              {p.full_name} sits on is untouched. Your own account is recorded as the person
+              who changed the register.
+            </Notice>
+          </div>
         </Modal>
       </Page>
     )

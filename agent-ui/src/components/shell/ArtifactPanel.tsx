@@ -311,6 +311,7 @@ function Meter({
         <span className="font-[family-name:var(--font-mono)] text-[length:var(--text-xs)] font-semibold tabular-nums text-[var(--text)]">
           {filled}
           <span className="text-[var(--text-muted)]">/{total}</span>
+          <span className="ml-1.5 text-[var(--text-muted)]">{pct}%</span>
         </span>
       </div>
 

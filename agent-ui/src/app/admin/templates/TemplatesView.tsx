@@ -15,6 +15,8 @@ import {
 } from "lucide-react"
 import apiClient, { authFetch } from "@/lib/api-client"
 import { toast } from "sonner"
+import { useActivityTray } from "@/hooks/useActivityTray"
+import { kickTrainingPoll } from "@/hooks/useTrainingJob"
 import DocViewer from "@/components/ui/DocViewer"
 import { cn } from "@/lib/utils"
 import {
@@ -128,6 +130,12 @@ export default function TemplatesView() {
   const [terminalLogs, setTerminalLogs] = useState<TerminalLine[]>([])
   const [showLogModal, setShowLogModal] = useState(false)
   const [showTranscript, setShowTranscript] = useState(false)
+
+  // Starting a run no longer opens a modal over this page. The job already
+  // survived the tab closing; what it did not survive was the UI, because the
+  // only way to watch it covered the page it was training from. Progress goes
+  // to the docked tray instead, and the modal below stays for the transcript.
+  const openActivity = useActivityTray((s) => s.openTab)
 
   // Live view of the 15-step pipeline for the template being trained.
   const [steps, setSteps] = useState<PipelineStep[]>(freshSteps())
@@ -353,7 +361,7 @@ export default function TemplatesView() {
 
   const startTraining = async (trainAll = false) => {
     setTrainingComplete(false)
-    setShowLogModal(true)
+    openActivity("training")
     lastStatusRef.current = ""
     try {
       const res = await authFetch(apiClient.trainStart(), {
@@ -373,6 +381,9 @@ export default function TemplatesView() {
       setIsTraining(true)
       setQueuePos({ index: 0, total: data?.total || 0 })
       startPolling()
+      // Pull the tray's first status now — its idle interval is 20s, and a
+      // panel that appears a beat after the click reads as a dead button.
+      kickTrainingPoll()
     } catch (e: any) {
       console.error("Start training error:", e)
       toast.error(e?.message || "Could not start training")
@@ -518,7 +529,7 @@ export default function TemplatesView() {
       onOpenChange={setShowLogModal}
       size="lg"
       title="Template training"
-      description="Fifteen steps per template. Each one is an AI or database stage that the agent later reads from."
+      description="Sixteen stages per template, numbered 1 to 15 — 5.5 is a real half-step. Each one is an AI or database stage the agent later reads from."
       footer={
         <>
           {isTraining ? (
@@ -1075,7 +1086,7 @@ export default function TemplatesView() {
               )}
             </>
           }
-          description="Word templates the agent fills. Training reads each one through a fifteen-step pipeline so the agent knows what it is for and which fields it needs."
+          description="Word templates the agent fills. Training reads each one through a sixteen-stage pipeline so the agent knows what it is for and which fields it needs."
           actions={
             <>
               <Button
@@ -1159,7 +1170,7 @@ export default function TemplatesView() {
               description="A template is a Word document with placeholders the agent fills from company data."
               steps={[
                 { title: "Upload a .docx", body: "Placeholders can be written {{field}}, {field} or [field]." },
-                { title: "Train it", body: "Fifteen steps extract the fields, classify them and teach the agent what the document is for." },
+                { title: "Train it", body: "Sixteen stages extract the fields, classify them and teach the agent what the document is for." },
                 { title: "Generate", body: "Ask the agent in chat and it produces the filled document." },
               ]}
               action={

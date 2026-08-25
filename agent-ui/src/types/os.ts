@@ -124,6 +124,19 @@ export interface AskUserQuestion {
   multi_select?: boolean
   /** Adds an "Other…" chip that reveals a free-text input. */
   allow_other?: boolean
+  /**
+   * How a free-text answer is collected. 'date' renders a calendar picker and
+   * converts the ISO value to "30 June 2026" before it is submitted.
+   * Ignored when `options` are present — a chip list is already constrained.
+   */
+  input_type?: 'text' | 'date'
+  /**
+   * Optional starting value, set by the model. The only recognised value is
+   * 'today' on a date question. Deliberately opt-in: a date field that
+   * pre-fills itself would write today's date into a resignation letter the
+   * moment the user pressed Enter without looking.
+   */
+  default_value?: string
 }
 
 /** A single question's answer: one value, or many for multi-select. */
@@ -381,6 +394,20 @@ export interface ChatMessage {
     question: string
     options: string[]
   } | null
+  /**
+   * Token / cost / duration figures for the run that produced this message.
+   *
+   * Present on the AGENT message of a rehydrated run; absent on the user
+   * message, because the stored run reports one set of figures for the whole
+   * turn and attributing half of it to the prompt would be invented. Absent
+   * (rather than zeroed) whenever the run carried no `metrics` at all.
+   */
+  token_usage?: MessageTokenUsage | null
+  /**
+   * The run this message belongs to. Both messages of a rehydrated turn carry
+   * the same value, which is what lets a renderer group or de-duplicate them.
+   */
+  run_id?: string
 }
 
 export interface AttachmentData {
@@ -486,3 +513,121 @@ export interface ChatEntry {
     created_at: number
   }
 }
+
+/* ------------------------------------------------------------------ *
+ * Run metrics — what a stored run actually carries
+ *
+ * Measured against the live `GET /sessions/{id}/runs?type=agent&db_id=…`
+ * response on 2026-08-24, and against the saved paused-run captures. Every
+ * key below was observed; nothing here is inferred. All are optional because
+ * a PAUSED run's TOOL entries come back with `metrics: {}` (or null) even
+ * though the RUN itself is fully measured — token figures live on the run,
+ * never on the individual tool call.
+ * ------------------------------------------------------------------ */
+
+export interface RunMetrics {
+  input_tokens?: number
+  output_tokens?: number
+  total_tokens?: number
+  /** USD, already computed by the provider. */
+  cost?: number
+  cache_read_tokens?: number
+  reasoning_tokens?: number
+  /** Seconds. */
+  time_to_first_token?: number
+  /** Seconds. */
+  duration?: number
+}
+
+/**
+ * The per-message token figure the transcript renders.
+ *
+ * Deliberately NOT `RunMetrics` itself: a renderer should not have to know
+ * that `total_tokens` may be absent while `input_tokens` is present, nor that
+ * a user message has no metrics of its own. `null` means "this message has no
+ * usage figure", which is a different statement from `0`.
+ */
+export interface MessageTokenUsage {
+  input: number | null
+  output: number | null
+  /** `total_tokens` when the run reported one, else input+output when either exists. */
+  total: number | null
+  /** USD. */
+  cost: number | null
+  /** Wall-clock seconds for the run that produced this message. */
+  duration: number | null
+}
+
+/**
+ * One entry of `GET /sessions/{session_id}/runs`.
+ *
+ * ★ This is NOT `ChatEntry`. That interface describes an older
+ * `{message, response}` envelope this endpoint does not return, and the loader
+ * was reading `run.run_input` / `run.tools` through an `any` produced by
+ * `Array.isArray()` narrowing — so none of those field names were ever checked
+ * by the compiler.
+ *
+ * ★ `created_at` is a STRING here (`"2026-08-24T13:00:29Z"`), while the same
+ * field on a nested tool call is an epoch INT (`1787578823`). Both were
+ * measured on the live endpoint in the same response. Anything rendering a
+ * timestamp must normalise; `ChatMessage.created_at` is epoch seconds.
+ */
+export interface SessionRun {
+  run_id?: string
+  parent_run_id?: string | null
+  agent_id?: string
+  user_id?: string | null
+  status?: string
+  /** The user's own message for this run. */
+  run_input?: string | null
+  content?: string | object | null
+  reasoning_content?: string | null
+  reasoning_steps?: ReasoningSteps[] | null
+  /** ★ Top-level on this endpoint — NOT under `extra_data`, which is absent. */
+  reasoning_messages?: ReasoningMessage[] | null
+  references?: ReferenceData[] | null
+  metrics?: RunMetrics | null
+  tools?: ToolCall[] | null
+  /** ISO-8601 string on this endpoint; epoch seconds on other Agno payloads. */
+  created_at?: string | number | null
+  extra_data?: AgentExtraData | null
+  images?: ImageData[] | null
+  videos?: VideoData[] | null
+  audio?: AudioData[] | null
+  response_audio?: ResponseAudio | null
+}
+
+/* ------------------------------------------------------------------ *
+ * API result channel
+ *
+ * `getAllSessionsAPI` used to end in a bare `catch { return { data: [] } }`,
+ * so a 401, a 500, a dropped connection and a genuinely empty account all
+ * produced the identical value. An empty sidebar was therefore undiagnosable
+ * from the UI. These types force the caller to look.
+ * ------------------------------------------------------------------ */
+
+export type ApiErrorKind =
+  /** 401 — the JWT is missing or expired. Sign-in fixes it. */
+  | 'unauthorized'
+  /** 403 — signed in, not allowed. */
+  | 'forbidden'
+  /** 5xx — the server failed. */
+  | 'server'
+  /** Any other non-OK status. */
+  | 'http'
+  /** fetch() itself rejected: offline, DNS, CORS, aborted. */
+  | 'network'
+  /** 2xx whose body was not the JSON we expect (an HTML shell, typically). */
+  | 'parse'
+
+export interface ApiError {
+  kind: ApiErrorKind
+  /** HTTP status, or `null` when the request never produced a response. */
+  status: number | null
+  /** Short, human-readable. Safe to show in the UI. */
+  message: string
+}
+
+export type ApiResult<T> =
+  | { ok: true; data: T }
+  | { ok: false; error: ApiError }

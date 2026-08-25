@@ -99,8 +99,8 @@ export default function LoginPage() {
       {/* Header — logo left, live chip right, NO border */}
       <div className="mx-auto flex w-full max-w-[1500px] items-center justify-between px-11 py-4">
         <div className="flex items-center gap-3">
-          <span className="grid h-10 w-10 place-items-center rounded-[9px] bg-[#0F172A] text-[14px] font-bold text-white">
-            LS
+          <span className="grid h-10 w-10 place-items-center overflow-hidden rounded-[9px] bg-[#0F172A]">
+            <img src="/logo.png" alt="" className="h-[30px] w-[30px] object-contain" />
           </span>
           <div>
             <div className="text-[17px] font-bold text-[#0F172A]">

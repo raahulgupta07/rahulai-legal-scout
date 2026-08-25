@@ -1,125 +1,121 @@
 """
-Layer 2 of the client testing tracker — real chat runs through the agent API.
+Layer 2 of the client testing tracker — SCRIPTED, deterministic.
 
 Layer 1 proves the DATA is right: the blank exists, the candidates come from the
 right register, the date is not pre-filled. It cannot prove the BEHAVIOUR the
 tracker actually complains about — "the system is automatically picking up the
 first director", "not asked chair person", "auto filling the date".
 
-That behaviour is only observable by talking to the agent. This drives each
-tracker prompt through `POST /agents/scout/runs`, reads the SSE stream, and
-records what the agent did:
+That behaviour is observable only by talking to the agent, and until now this
+file did exactly that: 14 real chat runs against a paid model. CLAUDE.md records
+what that cost — "Layer 2/3 failures move between cases run to run; do not treat
+one as a regression until it reproduces." A suite whose failures cannot be
+trusted is not a gate.
 
-  PAUSED   — it stopped and asked (ask_questions card or a person picker).
-             For most cases this is the PASS condition: ask, do not guess.
-  ANSWERED — it replied without pausing. Fine for a listing question,
-             a failure for anything needing a signatory or a date.
-  ERROR    — the run failed.
+WHAT CHANGED
+------------
+The MODEL is replaced by `scout.testing.ScriptedAgentRuntime`. Everything else —
+the SSE parse, the PAUSED/ANSWERED/ERROR classification, and `verdict()`
+character for character — is the code that was here before. The suite is
+offline, needs no credentials and no container, and gives the same answer every
+time.
 
-Each case declares what it expects, so the verdict is mechanical rather than a
-human reading transcripts.
+WHAT IS UNDER TEST NOW
+----------------------
+Not the model. The verdict machinery, which is the part that decides whether a
+transcript counts as a regression. Every case therefore runs TWICE:
 
-Run:  ADMIN_PASSWORD=... python3 tests/tracker_layer2.py [case_id ...]
+  golden  — the agent behaves as the tracker requires. Must come out PASS.
+  mutant  — the agent commits exactly the defect this case exists to catch.
+            Must come out FAIL.
+
+A case that only ever ran its golden script would pass just as happily against a
+`verdict()` that returned "PASS" unconditionally. The mutant run is what makes
+the case mean something, so a mutant that does NOT fail is itself reported as a
+failure of this suite.
+
+Real model behaviour still needs watching; that lives in `tracker_layer2_live.py`,
+run on demand against a real stack.
+
+Run:  python3 tests/tracker_layer2.py [case_id ...]
 """
 
+import importlib.util
 import json
 import os
 import re
 import sys
-import time
-import urllib.request
 
-BASE = os.environ.get("SCOUT_BASE", "http://localhost:8080")
-EMAIL = os.environ.get("ADMIN_EMAIL", "admin@legalscout.com")
-PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
-TIMEOUT = int(os.environ.get("RUN_TIMEOUT", "240"))
+# ── loading the runtime ─────────────────────────────────────────────
+# Loaded by PATH, not as `from scout.testing import ...`.
+#
+# `scout/__init__.py` does `from scout.agent import scout`, and `scout/agent.py`
+# imports `agno.tools.mcp.MCPTools`, which raises unless the `mcp` package is
+# installed — it is not, on a dev laptop. So importing anything through the
+# `scout` package drags in the whole agent and fails before this file runs.
+# Loading the single module by file path keeps the suite runnable anywhere:
+# `scripted_runtime.py` is stdlib-only and imports nothing from the package.
+_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_SPEC = importlib.util.spec_from_file_location(
+    "scout_scripted_runtime",
+    os.path.join(_REPO, "scout", "testing", "scripted_runtime.py"),
+)
+_RT = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(_RT)
+
+Ask, Complete, Error = _RT.Ask, _RT.Complete, _RT.Error
+Pick, Text, ToolCall = _RT.Pick, _RT.Text, _RT.ToolCall
+ScriptedAgentRuntime, candidate = _RT.ScriptedAgentRuntime, _RT.candidate
 
 # Tools that mean the agent stopped to ask a human.
 ASK_TOOLS = {"ask_questions"}
 PICKER_HINT = re.compile(r"choose_|lookup_|picker", re.I)
 
 
-def login():
-    """Return (token, user_id). The user id tags each run so the test sessions
-    show up in the app's own chat sidebar rather than being stored invisibly."""
-    if not PASSWORD:
-        sys.exit("Set ADMIN_PASSWORD — this script will not hardcode a credential.")
-    body = json.dumps({"email": EMAIL, "password": PASSWORD}).encode()
-    req = urllib.request.Request(f"{BASE}/api/auth/login", data=body, method="POST")
-    req.add_header("Content-Type", "application/json")
-    with urllib.request.urlopen(req, timeout=60) as r:
-        out = json.loads(r.read().decode("utf-8", "replace"), strict=False)
-    token = out.get("token") or out.get("access_token")
-    if not token:
-        sys.exit(f"Login failed: {out}")
-    user = out.get("user") or {}
-    return token, user.get("id")
+def run_chat(runtime, message, session_id, user_id=None):
+    """Post one turn, consume the stream, summarise what the agent did.
 
-
-def _multipart(fields):
-    """Minimal multipart encoder — the runs endpoint takes form data, not JSON."""
-    boundary = "----scoutTracker"
-    parts = []
-    for k, v in fields.items():
-        parts.append(f"--{boundary}\r\nContent-Disposition: form-data; name=\"{k}\"\r\n\r\n{v}\r\n")
-    parts.append(f"--{boundary}--\r\n")
-    return boundary, "".join(parts).encode()
-
-
-def run_chat(token, message, session_id, user_id=None):
-    """POST one turn, consume the SSE stream, summarise what the agent did.
-
-    `user_id` matters for more than bookkeeping: the session list in the app is
-    filtered per user, so a run posted without it is stored but invisible in the
-    chat sidebar. Sending it lets an operator open any test run and read the
-    whole conversation in the normal interface.
+    The body below is the original — the only difference is where the stream
+    comes from. `ScriptedAgentRuntime.start()` returns an object that iterates
+    like the `urllib` response this used to read, byte line by byte line, so the
+    parser is under test rather than bypassed.
     """
-    fields = {"message": message, "stream": "true", "session_id": session_id}
-    if user_id is not None:
-        fields["user_id"] = str(user_id)
-    boundary, payload = _multipart(fields)
-    req = urllib.request.Request(f"{BASE}/agents/scout/runs", data=payload, method="POST")
-    req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
-    req.add_header("Authorization", f"Bearer {token}")
-
     tools, content, paused, questions, error = [], [], False, [], None
-    started = time.time()
 
-    with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
-        for raw in resp:
-            line = raw.decode("utf-8", "replace").strip()
-            if not line.startswith("data:"):
-                continue
-            try:
-                ev = json.loads(line[5:].strip(), strict=False)
-            except (ValueError, TypeError):
-                continue
+    for raw in runtime.start(message, session_id=session_id, user_id=user_id):
+        line = raw.decode("utf-8", "replace").strip()
+        if not line.startswith("data:"):
+            continue
+        try:
+            ev = json.loads(line[5:].strip(), strict=False)
+        except (ValueError, TypeError):
+            continue
 
-            name = ev.get("event")
-            if name == "ToolCallStarted":
-                tool = (ev.get("tool") or {}).get("tool_name") or ev.get("tool_name")
-                if tool:
-                    tools.append(tool)
-            elif name == "RunContent":
-                piece = ev.get("content")
-                if isinstance(piece, str):
-                    content.append(piece)
-            elif name == "RunPaused":
-                paused = True
-                for t in ev.get("tools") or []:
-                    tname = t.get("tool_name")
-                    if tname:
-                        tools.append(tname)
-                    args = t.get("tool_args") or {}
-                    raw_q = args.get("questions_json")
-                    if raw_q:
-                        try:
-                            for q in json.loads(raw_q, strict=False):
-                                questions.append(q.get("text", ""))
-                        except (ValueError, TypeError):
-                            questions.append(str(raw_q)[:120])
-            elif name in ("RunError", "RunCancelled"):
-                error = str(ev.get("content") or ev.get("error") or name)[:200]
+        name = ev.get("event")
+        if name == "ToolCallStarted":
+            tool = (ev.get("tool") or {}).get("tool_name") or ev.get("tool_name")
+            if tool:
+                tools.append(tool)
+        elif name == "RunContent":
+            piece = ev.get("content")
+            if isinstance(piece, str):
+                content.append(piece)
+        elif name == "RunPaused":
+            paused = True
+            for t in ev.get("tools") or []:
+                tname = t.get("tool_name")
+                if tname:
+                    tools.append(tname)
+                args = t.get("tool_args") or {}
+                raw_q = args.get("questions_json")
+                if raw_q:
+                    try:
+                        for q in json.loads(raw_q, strict=False):
+                            questions.append(q.get("text", ""))
+                    except (ValueError, TypeError):
+                        questions.append(str(raw_q)[:120])
+        elif name in ("RunError", "RunCancelled"):
+            error = str(ev.get("content") or ev.get("error") or name)[:200]
 
     return {
         "tools": tools,
@@ -127,7 +123,10 @@ def run_chat(token, message, session_id, user_id=None):
         "paused": paused,
         "questions": questions,
         "error": error,
-        "seconds": round(time.time() - started, 1),
+        # The live suite reported wall-clock seconds here. A scripted run has no
+        # duration worth reporting, and a timing field is the one thing that
+        # would stop two runs of this file being byte-identical.
+        "seconds": 0.0,
     }
 
 
@@ -174,6 +173,118 @@ CASES = [
 ]
 
 
+# ── scripts ─────────────────────────────────────────────────────────
+#
+# One golden and one mutant per case. The golden is the behaviour the tracker
+# demands; the mutant is the specific defect the case was written against, which
+# for every "asks" case is the same one the client reported — answering from a
+# guess instead of stopping to ask.
+
+
+def asks_via_questions(question_text, tool="get_template", options=None):
+    """The agent looks something up, then stops on an `ask_questions` card."""
+    q = {"id": "q1", "text": question_text}
+    if options:
+        q["options"] = list(options)
+    return [
+        Text(reasoning="Need a value the register cannot supply; must ask."),
+        ToolCall(tool, {"query": question_text}, result="ok"),
+        Ask([q]),
+    ]
+
+
+def asks_via_picker(purpose, names, company="", tool="choose_director"):
+    """The agent looks up candidates, then stops on a person picker.
+
+    Layer 2 counts a picker as a pause with no questions attached — the detail
+    line says "picker card" — so this covers the other half of `verdict()`'s
+    PASS branch, which an `ask_questions`-only script would leave unexercised.
+    """
+    cands = [candidate(i + 1, n) for i, n in enumerate(names)]
+    return [
+        ToolCall("lookup_director_candidates", {"company_name": company}, result="ok"),
+        Pick(tool, purpose, cands, company_name=company),
+    ]
+
+
+def guesses(reply, tools=("generate_document",)):
+    """The defect: it produced a document without asking anyone anything."""
+    turns = [ToolCall(t, {}, result="ok") for t in tools]
+    turns.append(Complete(reply))
+    return turns
+
+
+def lists(items, extra="Here are the documents you will need: "):
+    return [Complete(extra + ", ".join(items) + ".")]
+
+
+_A0 = ["Notice of Calling of Annual General Meeting",
+       "Notice of Annual General Meeting to Shareholders",
+       "Annual General Meeting Minutes",
+       "Shareholders Resolution In Writing"]
+_B0 = ["Director Consent Form", "Shareholder Consent Form",
+       "Directors Resolution", "Company Constitution"]
+
+SCRIPTS = {
+    # A0 — a pure listing question. It must ANSWER; pausing is not the pass
+    # condition here, it is merely allowed.
+    "A0": {"golden": lists(_A0),
+           # Names three of the four. The tracker's complaint was documents the
+           # agent forgot to mention, so the mutant drops one.
+           "mutant": lists(_A0[:3])},
+
+    "A1": {"golden": asks_via_questions("What is the date of the Annual General Meeting?"),
+           "mutant": guesses("I have prepared the Notice of Calling using today's date.")},
+    "A2": {"golden": asks_via_questions("Which director signs the notice?"),
+           "mutant": guesses("Prepared, signed by the first director on the register.")},
+    "A3": {"golden": asks_via_questions("Who chaired the meeting?"),
+           # "not asked chair person" — the tracker's own words.
+           "mutant": guesses("Minutes prepared with the first director as chair.")},
+    "A4": {"golden": asks_via_questions("What is the meeting date?"),
+           "mutant": guesses("Minutes prepared, dated today.")},
+    "A5": {"golden": asks_via_picker("sign the AGM resolution",
+                                     ["KYAW THU SOE", "PHYOE MIN KYAW"],
+                                     company="CITY MART HOLDING COMPANY LIMITED"),
+           "mutant": guesses("Resolution prepared and signed by MIN MIN.")},
+
+    # B0 — lists AND then offers a follow-up chip. That is the DESIRED
+    # behaviour, not a partial one: an earlier version of `verdict()` failed a
+    # run that named every template and then asked "generate one now?". The
+    # golden script deliberately pauses after a complete answer, so a
+    # regression back to that stricter rule fails here.
+    "B0": {"golden": [Text(content="Here are the documents you will need: "
+                                   + ", ".join(_B0) + "."),
+                      Ask([{"id": "q1", "text": "Shall I generate one now?",
+                            "options": ["Yes", "No"]}])],
+           # Incomplete list AND a pause — the branch that has to report both.
+           "mutant": [Text(content="You will need a Director Consent Form."),
+                      Ask([{"id": "q1", "text": "Shall I generate it now?"}])]},
+
+    "B1": {"golden": asks_via_questions("Which company is the director being appointed to?"),
+           "mutant": guesses("Consent form prepared for Min Min.")},
+    "B2": {"golden": asks_via_questions("What is the appointment date?"),
+           "mutant": guesses("Consent form prepared, dated today.")},
+    "B3": {"golden": asks_via_questions("How many shares does the shareholder hold?"),
+           "mutant": guesses("Shareholder consent prepared for Soe Moe Thu.")},
+    "B4": {"golden": asks_via_picker("be appointed as director",
+                                     ["MIN MIN", "SOE MOE THU", "WIN WIN TINT"],
+                                     company="PAHTAMA GROUP CO., LTD",
+                                     tool="choose_person_from_register"),
+           # "the system is automatically picking up the first director".
+           "mutant": guesses("Resolution prepared appointing MIN MIN.")},
+
+    "C1": {"golden": asks_via_picker("represent the corporate shareholder",
+                                     ["KYAW THU SOE", "PHYOE MIN KYAW"],
+                                     company="CITY MART HOLDING COMPANY LIMITED",
+                                     tool="choose_representative_director"),
+           "mutant": guesses("Consent form prepared for Min Min at City Mart Holding.")},
+    "C3": {"golden": asks_via_questions("What is the effective date of resignation?"),
+           "mutant": guesses("Resignation letter prepared, effective today.")},
+    "C4": {"golden": asks_via_questions("Who chaired the shareholders meeting?"),
+           "mutant": guesses("Minutes prepared with the first director as chair.")},
+}
+
+
 def verdict(case, result):
     cid, expect, _prompt, must_mention = case
     if result["error"]:
@@ -206,43 +317,77 @@ def verdict(case, result):
     return "PASS", f"listed all expected ({len(body)} chars){tail}"
 
 
+# ── protocol checks ─────────────────────────────────────────────────
+# Branches of the classifier that no case script reaches on its own.
+
+def protocol_checks():
+    """(name, expected_status, script) — each run through the same pipeline."""
+    return [
+        # A failed run must classify as ERROR, not as a silent pass. Nothing in
+        # the case list produces one.
+        ("error-run", "ERROR",
+         [ToolCall("get_template", {}, result="ok"),
+          Error("provider rejected the dangling tool call")]),
+        # An empty reply with no pause is not an "ask". The blank-bubble bug
+        # made this exact shape, and it must read as FAIL for an "asks" case.
+        ("empty-reply", "FAIL",
+         [ToolCall("get_template", {}, result="ok"), Complete("")]),
+    ]
+
+
 def main():
-    token, user_id = login()
     wanted = set(sys.argv[1:])
-    stamp = int(time.time())
     rows = []
+    failures = 0
 
     for case in CASES:
         cid, expect, prompt, _ = case
         if wanted and cid not in wanted:
             continue
+        scripts = SCRIPTS[cid]
         print(f"\n{'='*78}\n[{cid}] expect={expect}\n> {prompt}", flush=True)
-        try:
-            result = run_chat(token, prompt, f"Test {cid} — {stamp}", user_id)
-        except Exception as e:
-            rows.append((cid, "ERROR", str(e)[:110]))
-            print(f"  ERROR {e}", flush=True)
-            continue
 
-        status, detail = verdict(case, result)
-        rows.append((cid, status, detail))
-        print(f"  tools: {result['tools'][:6]}", flush=True)
-        if result["questions"]:
+        for variant, want_status in (("golden", "PASS"), ("mutant", "FAIL")):
+            runtime = ScriptedAgentRuntime(scripts[variant])
+            result = run_chat(runtime, prompt, f"Test {cid} {variant}", 1)
+            status, detail = verdict(case, result)
+            ok = status == want_status
+            if not ok:
+                failures += 1
+            rows.append((f"{cid}/{variant}", status, want_status, ok, detail))
+            print(f"  {variant:<6} tools={result['tools'][:4]}", flush=True)
             for q in result["questions"]:
-                print(f"  asked: {q[:110]}", flush=True)
-        if result["content"]:
-            print(f"  reply: {result['content'][:200]}...", flush=True)
-        print(f"  -> {status}: {detail[:150]}  ({result['seconds']}s)", flush=True)
+                print(f"         asked: {q[:110]}", flush=True)
+            if result["content"]:
+                print(f"         reply: {result['content'][:120]}", flush=True)
+            print(f"      -> {status} (want {want_status}) {'OK' if ok else '<<< SUITE FAILURE'}"
+                  f": {detail[:110]}", flush=True)
 
-    print(f"\n\n{'ID':<5} {'RESULT':<9} DETAIL")
+    if not wanted:
+        print(f"\n{'='*78}\nprotocol checks", flush=True)
+        for name, want_status, script in protocol_checks():
+            runtime = ScriptedAgentRuntime(script)
+            result = run_chat(runtime, "probe", f"protocol {name}", 1)
+            # Classified as an "asks" case: that is the branch these shapes
+            # would otherwise slip through.
+            status, detail = verdict((name, "asks", "probe", []), result)
+            ok = status == want_status
+            if not ok:
+                failures += 1
+            rows.append((name, status, want_status, ok, detail))
+            print(f"  {name:<14} -> {status} (want {want_status}) "
+                  f"{'OK' if ok else '<<< SUITE FAILURE'}: {detail[:90]}", flush=True)
+
+    print(f"\n\n{'CASE':<16} {'GOT':<7} {'WANT':<7} {'':<4} DETAIL")
     print("-" * 100)
-    for cid, status, detail in rows:
-        print(f"{cid:<5} {status:<9} {detail[:88]}")
-    counts = {}
-    for _, s, _ in rows:
-        counts[s] = counts.get(s, 0) + 1
-    print("\nSUMMARY: " + " · ".join(f"{k}={v}" for k, v in sorted(counts.items())))
-    return 1 if counts.get("FAIL") or counts.get("ERROR") else 0
+    for name, status, want, ok, detail in rows:
+        print(f"{name:<16} {status:<7} {want:<7} {'ok' if ok else 'BAD':<4} {detail[:60]}")
+
+    print(f"\nSUMMARY: {len(rows)} checks · {failures} unexpected")
+    if failures:
+        print("A mutant that did not FAIL means the verdict rule it targets no "
+              "longer discriminates — treat it as a broken gate, not a flake.")
+    return 1 if failures else 0
 
 
 if __name__ == "__main__":

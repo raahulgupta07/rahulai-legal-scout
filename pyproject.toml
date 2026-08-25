@@ -1,6 +1,6 @@
 [project]
 name = "scout"
-version = "1.0.0"
+version = "1.2.6"
 description = "An enterprise knowledge agent with Claude Code-like capabilities"
 requires-python = ">=3.12,<4"
 readme = "README.md"

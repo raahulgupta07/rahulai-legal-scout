@@ -87,6 +87,12 @@ export const apiClient = {
   trainJob: () => `${API_BASE_URL}/api/knowledge/train-job`,
   trainCancel: () => `${API_BASE_URL}/api/knowledge/train-cancel`,
 
+  // Agent-composed email awaiting a human decision. The agent can only queue;
+  // sending happens here, under the operator's own JWT.
+  emailQueued: () => `${API_BASE_URL}/api/email/queued`,
+  emailQueuedSend: (id: number | string) => `${API_BASE_URL}/api/email/queued/${id}/send`,
+  emailQueuedDiscard: (id: number | string) => `${API_BASE_URL}/api/email/queued/${id}/discard`,
+
   // Legal Skills endpoints (playbooks the agent loads on demand)
   getSkills: () => `${API_BASE_URL}/api/skills`,
   getSkill: (name: string) => `${API_BASE_URL}/api/skills/${encodeURIComponent(name)}`,

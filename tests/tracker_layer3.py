@@ -1,5 +1,5 @@
 """
-Layer 3 — drive a WHOLE conversation to a generated document.
+Layer 3 — drive a WHOLE conversation to a generated document. SCRIPTED.
 
 Layers 1 and 2 proved the data is right and that the agent asks instead of
 guessing. Neither answers the tracker's other big complaint:
@@ -8,61 +8,86 @@ guessing. Neither answers the tracker's other big complaint:
      used in the exported document."
 
 That needs someone to actually answer the questions and then read the .docx.
-This does that over the API: send the prompt, catch each RunPaused, fill the
-answer into the paused tool exactly the way the browser does, resume the same
-run, and repeat until the agent produces a file. Then it downloads the document
-and asserts the answers are physically in it.
+This file still does exactly that — catch each RunPaused, fill the answer into
+the paused tool the way the browser does, resume the same run, download the
+file, unzip `word/document.xml` and assert against its text. The only thing
+that changed is what is on the other end: `scout.testing.ScriptedAgentRuntime`
+instead of a paid model over HTTP.
 
-Every run is tagged with the admin user id, so each conversation shows up in the
-app's own sidebar and can be read back by a human afterwards.
+WHY
+---
+CLAUDE.md: "Layer 2/3 failures move between cases run to run; do not treat one
+as a regression until it reproduces." Every assertion in this file used to sit
+downstream of a model, so a red run was never evidence on its own. It is now
+deterministic — same bytes every run, no credentials, no container, no network.
 
-Run:  ADMIN_PASSWORD=... python3 tests/tracker_layer3.py
+WHAT IS UNDER TEST
+------------------
+Not the model. The assertion machinery, the pause/resume protocol and the
+document read-back — the parts that decide whether a document counts as wrong.
+The scripted document is NOT written by pasting the expected strings into a
+file; that would be a test asserting nothing. `Document` fills a template
+through `fill_template()`, which resolves each slot from what the run actually
+RECORDED: the person genuinely chosen in each picker, the answer genuinely
+submitted for each question.
+
+So every case runs its golden script and then one or more MUTANTS, each
+reproducing a specific historical defect:
+
+  first_candidate  the corporate representative resolves to the member company's
+                   FIRST DIRECTOR and the user's choice is discarded — the exact
+                   bug E3 was written for. Flipped with a runtime flag, so the
+                   assertions fire because the resolution is wrong, not because
+                   the test was edited.
+  wrong_register   the picker offers the wrong company's board, so the person the
+                   case named is never on the list.
+  a mutant template  the document itself is malformed — a value dropped, a party
+                   rendered twice, a corporate row that should have been deleted.
+
+A mutant that comes out PASS is reported as a failure of this suite: it means
+the assertion it targets has stopped discriminating.
+
+Real model behaviour still needs watching; that lives in `tracker_layer3_live.py`,
+run on demand against a real stack.
+
+Run:  python3 tests/tracker_layer3.py [case_id ...]
 """
 
+import importlib.util
+import io
 import json
 import os
 import re
 import sys
-import time
-import urllib.request
 import zipfile
-import io
 
-BASE = os.environ.get("SCOUT_BASE", "http://localhost:8080")
-EMAIL = os.environ.get("ADMIN_EMAIL", "admin@legalscout.com")
-PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
-TIMEOUT = int(os.environ.get("RUN_TIMEOUT", "300"))
 MAX_TURNS = 16
 
-BOUNDARY = "----scoutTracker"
+# ── loading the runtime ─────────────────────────────────────────────
+# By PATH, not `from scout.testing import ...`. `scout/__init__.py` imports
+# `scout.agent`, which imports `agno.tools.mcp.MCPTools`, which raises unless
+# the `mcp` package is installed — it is not, on a dev laptop. Loading the one
+# stdlib-only module directly keeps this suite runnable anywhere.
+_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_SPEC = importlib.util.spec_from_file_location(
+    "scout_scripted_runtime",
+    os.path.join(_REPO, "scout", "testing", "scripted_runtime.py"),
+)
+_RT = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(_RT)
 
-
-def _encode(fields):
-    parts = []
-    for k, v in fields.items():
-        parts.append(
-            f"--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"{k}\"\r\n\r\n{v}\r\n"
-        )
-    parts.append(f"--{BOUNDARY}--\r\n")
-    return "".join(parts).encode()
-
-
-def login():
-    if not PASSWORD:
-        sys.exit("Set ADMIN_PASSWORD — this script will not hardcode a credential.")
-    body = json.dumps({"email": EMAIL, "password": PASSWORD}).encode()
-    req = urllib.request.Request(f"{BASE}/api/auth/login", data=body, method="POST")
-    req.add_header("Content-Type", "application/json")
-    with urllib.request.urlopen(req, timeout=60) as r:
-        out = json.loads(r.read().decode("utf-8", "replace"), strict=False)
-    token = out.get("token") or out.get("access_token")
-    if not token:
-        sys.exit(f"Login failed: {out}")
-    return token, (out.get("user") or {}).get("id", 1)
+Ask, Complete, Document, Error = _RT.Ask, _RT.Complete, _RT.Document, _RT.Error
+Pick, Text, ToolCall = _RT.Pick, _RT.Text, _RT.ToolCall
+ScriptedAgentRuntime, candidate = _RT.ScriptedAgentRuntime, _RT.candidate
 
 
 def _consume(resp):
-    """Read one SSE stream into the bits we care about."""
+    """Read one SSE stream into the bits we care about.
+
+    Unchanged from the live suite. `resp` is now the runtime's stream object,
+    which iterates byte lines exactly like the `urllib` response did, so this
+    parser is exercised rather than bypassed.
+    """
     tools, content, reasoning, paused_ev, error = [], [], [], None, None
     for raw in resp:
         line = raw.decode("utf-8", "replace").strip()
@@ -101,25 +126,24 @@ def _consume(resp):
     }
 
 
-def start(token, message, session_id, user_id):
-    req = urllib.request.Request(
-        f"{BASE}/agents/scout/runs",
-        data=_encode({"message": message, "stream": "true",
-                      "session_id": session_id, "user_id": str(user_id)}),
-        method="POST",
-    )
-    req.add_header("Content-Type", f"multipart/form-data; boundary={BOUNDARY}")
-    req.add_header("Authorization", f"Bearer {token}")
-    with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+def start(runtime, message, session_id, user_id):
+    """`POST /agents/scout/runs`."""
+    with runtime.start(message, session_id=session_id, user_id=user_id) as r:
         return _consume(r)
 
 
-def answer_pause(token, paused, answers, session_id, user_id):
+def answer_pause(runtime, paused, answers, session_id, user_id):
     """Resume a paused run.
 
     The whole ToolExecution is echoed back with only the target field given a
     value — dropping a field wipes it server-side, which is how the questions
     payload gets lost and the provider then rejects the dangling tool call.
+
+    That is not just a comment any more. `ScriptedAgentRuntime.continue_run()`
+    rebuilds the tool arguments from this payload the way the server does, and
+    answers a resume that lost `questions_json` / `candidates_json` with a
+    RunError. If this echo ever regresses to sending only the target field, the
+    suite goes red instead of quietly accepting a payload production rejects.
     """
     run_id = paused["run_id"]
     agent_id = paused.get("agent_id") or "scout"
@@ -137,15 +161,8 @@ def answer_pause(token, paused, answers, session_id, user_id):
         echoed["user_input_schema"] = schema
         payload.append(echoed)
 
-    req = urllib.request.Request(
-        f"{BASE}/agents/{agent_id}/runs/{run_id}/continue",
-        data=_encode({"tools": json.dumps(payload), "stream": "true",
-                      "session_id": session_id, "user_id": str(user_id)}),
-        method="POST",
-    )
-    req.add_header("Content-Type", f"multipart/form-data; boundary={BOUNDARY}")
-    req.add_header("Authorization", f"Bearer {token}")
-    with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+    with runtime.continue_run(run_id, agent_id, json.dumps(payload),
+                              session_id=session_id, user_id=user_id) as r:
         return _consume(r)
 
 
@@ -153,7 +170,8 @@ def decide(paused, plan):
     """Choose an answer for whatever the agent just asked.
 
     `plan` supplies the deliberate values a tester would type, so the assertion
-    afterwards knows exactly what should appear in the document.
+    afterwards knows exactly what should appear in the document. Unchanged from
+    the live suite, fallback warning and all.
     """
     described, answers = [], {}
     for tool in paused.get("tools") or []:
@@ -224,35 +242,106 @@ def decide(paused, plan):
     return answers, described
 
 
-def docx_text(token, download_url):
-    url = download_url if download_url.startswith("http") else f"{BASE}{download_url}"
-    req = urllib.request.Request(url)
-    req.add_header("Authorization", f"Bearer {token}")
-    with urllib.request.urlopen(req, timeout=120) as r:
-        blob = r.read()
+def docx_text(runtime, download_url):
+    """Download the generated file and flatten `word/document.xml`.
+
+    The runtime writes a real zip, so this is the same unzip-and-strip-tags path
+    the live suite runs; only the transport is gone.
+    """
+    blob = runtime.download(download_url)
     with zipfile.ZipFile(io.BytesIO(blob)) as z:
         xml = z.read("word/document.xml").decode("utf-8", "replace")
     return re.sub(r"<[^>]+>", "", xml)
+
+
+# ── registers ───────────────────────────────────────────────────────
+# The boards the pickers offer. Transcribed from the case notes below, which is
+# where the real distinctions live: who sits on which board is the whole point
+# of E3, E4 and E5.
+
+CITY_HOLDINGS_BOARD = ["MIN MIN", "SOE MOE THU", "WIN WIN TINT"]
+CITY_MART_BOARD = ["KYAW THU SOE", "MIN MIN", "MYO MIN KYAW",
+                   "PHYOE MIN KYAW", "WIN WIN TINT"]
+CM_FOODS_BOARD = ["MIN MIN", "SOE MOE THU", "WIN WIN TINT"]
+COMMERCE_ACE_MEMBERS = ["WIN WIN TINT", "MIN MIN"]
+
+
+def _cands(names):
+    return [candidate(i + 1, n) for i, n in enumerate(names)]
 
 
 CASES = [
     {
         "id": "E1",
         "prompt": "Prepare a shareholders meeting minutes for director appointment only for City Holdings",
+        "company": "CITY HOLDINGS LIMITED",
         "person": "SOE MOE THU",
         "answers": {"meeting date": "2026-09-15", "pronoun": "he",
                     "date": "2026-09-15", "auditor": "", "financial year": ""},
         "default_answer": "",
         # What must physically appear in the exported .docx.
         "expect_in_doc": ["SOE MOE THU", "CITY HOLDINGS LIMITED"],
+        "script": [
+            ToolCall("lookup_director_candidates", {"company_name": "CITY HOLDINGS LIMITED"},
+                     result="ok"),
+            Pick("choose_director", "chair the meeting and sign the minutes",
+                 _cands(CITY_HOLDINGS_BOARD), company_name="CITY HOLDINGS LIMITED"),
+            Ask([{"id": "q_date", "text": "What is the meeting date?"},
+                 {"id": "q_pronoun", "text": "Which pronoun should be used?",
+                  "options": ["he", "she", "they"]}]),
+            Document(
+                "{{company}}\n"
+                "MINUTES OF SHAREHOLDERS MEETING\n"
+                "Held on {{answer:meeting date}}\n"
+                "Chaired by {{picked:chair}}, who signed these minutes.\n",
+                filename="e1-minutes.docx"),
+            Complete("The minutes are ready."),
+        ],
+        "mutants": [
+            # The tracker's literal complaint: it asked, the user answered, and
+            # the answer never reached the document.
+            ("answer-dropped", {"template":
+                "{{company}}\n"
+                "MINUTES OF SHAREHOLDERS MEETING\n"
+                "Held on {{answer:meeting date}}\n"
+                "Chaired by the chairman, who signed these minutes.\n"}),
+        ],
     },
     {
         "id": "E2",
         "prompt": "Prepare resignation letter of Daw Win Win Tint from City Holdings",
+        "company": "CITY HOLDINGS LIMITED",
         "person": "WIN WIN TINT",
         "answers": {"date": "2026-09-20"},
         "default_answer": "",
         "expect_in_doc": ["WIN WIN TINT", "CITY HOLDINGS LIMITED"],
+        # The golden script deliberately contains a SILENT STOP — a turn that
+        # does tool work, streams reasoning and writes nothing to the user. The
+        # browser recovers with a one-shot "continue" nudge and so does this
+        # harness; without a case that reproduces it, that recovery path is dead
+        # code and a regression in it reads as a product failure.
+        "script": [
+            ToolCall("lookup_register_candidates", {"search": "Win Win Tint"}, result="ok"),
+            Text(reasoning="Found her. Next I need the effective date."),
+            Complete(""),                       # ← silent stop; harness nudges
+            Pick("choose_person_from_register", "the resigning director",
+                 _cands(CITY_HOLDINGS_BOARD), company_name="CITY HOLDINGS LIMITED"),
+            Ask([{"id": "q_date", "text": "What is the effective date of resignation?"}]),
+            Document(
+                "{{company}}\n"
+                "LETTER OF RESIGNATION\n"
+                "I, {{picked:resigning}}, resign as a director with effect from "
+                "{{answer:date}}.\n",
+                filename="e2-resignation.docx"),
+            Complete("The resignation letter is ready."),
+        ],
+        "mutants": [
+            # A run that ends without ever producing a file. NO-DOC, not PASS.
+            ("no-document", {"script": [
+                ToolCall("lookup_register_candidates", {"search": "Win Win Tint"}, result="ok"),
+                Complete("I could not find that person on the register."),
+            ]}),
+        ],
     },
     {
         # The corporate-representative regression, end to end.
@@ -274,14 +363,6 @@ CASES = [
         # MIN MIN is not. The last one is the real guard — a document naming the
         # right company and a confidently wrong signatory satisfies every
         # positive assertion while being exactly the defect.
-        # Template choice matters. "Corporate Shareholder Consent" is the wrong
-        # one: it carries director_1_name..director_3_name, described as the
-        # existing directors SIGNING the resolution, so MIN MIN appears there
-        # legitimately and a negative assertion would fail on correct output.
-        # "Shareholders Resolution In Writing - Director Appointment" has exactly
-        # one register-sourced person slot, authorized_director_name — "an
-        # existing director authorized to execute or sign on behalf of the
-        # company" — which IS the representative slot the fix governs.
         #
         # ⚠ Interpreting a MIN MIN hit: MIN MIN is a director of BOTH CITY MART
         # and CITY HOLDINGS, so presence is strong evidence but not proof of the
@@ -290,6 +371,7 @@ CASES = [
         "id": "E3",
         "prompt": ("Prepare a shareholders resolution in writing for director "
                    "appointment for City Mart Holding Company Limited"),
+        "company": "CITY MART HOLDING COMPANY LIMITED",
         "person": "PHYOE MIN KYAW",
         "person_for": {"authoriz": "PHYOE MIN KYAW", "represent": "PHYOE MIN KYAW",
                        "signator": "PHYOE MIN KYAW"},
@@ -309,6 +391,61 @@ CASES = [
         # KYAW THU SOE (directors[0]) signing for the member.
         "expect_after": [{"marker": "represented by its authorized director",
                           "value": "PHYOE MIN KYAW"}],
+        # The offered board is CITY HOLDINGS', the corporate MEMBER's — not the
+        # document company's. MIN MIN is deliberately first: he is what a
+        # positional fallback reaches for, and what `first_candidate` mode
+        # returns.
+        "script": [
+            ToolCall("lookup_representative_candidates",
+                     {"corporate_shareholder_name": "CITY HOLDINGS LIMITED"}, result="ok"),
+            Pick("choose_representative_director",
+                 "the authorized director to sign for the corporate member",
+                 _cands(["MIN MIN", "PHYOE MIN KYAW", "SOE MOE THU"]),
+                 company_name="CITY MART HOLDING COMPANY LIMITED"),
+            Ask([{"id": "q_date", "text": "What is the date of the resolution?"},
+                 {"id": "q_pronoun", "text": "Which pronoun applies?",
+                  "options": ["he", "she"]}]),
+            Document(
+                "SHAREHOLDERS RESOLUTION IN WRITING\n"
+                "{{company}}\n"
+                "Dated {{answer:date}}\n"
+                "Sole member: CITY HOLDINGS LIMITED, represented by its authorized "
+                "director {{picked:authoriz}}.\n",
+                filename="e3-resolution.docx"),
+            Complete("The resolution is ready."),
+        ],
+        "mutants": [
+            # The historical bug itself: the choice is discarded and the member's
+            # first director signs. Fires `forbid_in_doc` and `expect_after`
+            # together, which is the pair that caught it.
+            ("first-candidate", {"resolve_mode": "first_candidate"}),
+            # The member signed twice — once through its representative, then
+            # again on the individual line. Every positive assertion held;
+            # nothing counted. This is what `expect_count` is for.
+            ("signed-twice", {"template":
+                "SHAREHOLDERS RESOLUTION IN WRITING\n"
+                "{{company}}\n"
+                "Dated {{answer:date}}\n"
+                "Sole member: CITY HOLDINGS LIMITED, represented by its authorized "
+                "director {{picked:authoriz}}.\n"
+                "Signed: CITY HOLDINGS LIMITED\n"}),
+            # Nobody was asked at all — the picker never opened and the template
+            # resolved the signatory itself. `expect_ask` is the only assertion
+            # that sees this; the document alone can look fine.
+            ("never-asked", {"script": [
+                ToolCall("get_template", {"name": "Shareholders Resolution In Writing"},
+                         result="ok"),
+                Ask([{"id": "q_date", "text": "What is the date of the resolution?"}]),
+                Document(
+                    "SHAREHOLDERS RESOLUTION IN WRITING\n"
+                    "{{company}}\n"
+                    "Dated {{answer:date}}\n"
+                    "Sole member: CITY HOLDINGS LIMITED, represented by its authorized "
+                    "director MIN MIN.\n",
+                    filename="e3-noask.docx"),
+                Complete("The resolution is ready."),
+            ]}),
+        ],
     },
     {
         # HARDEST. A corporate member TWO levels up, where the two boards are
@@ -328,6 +465,7 @@ CASES = [
         "id": "E4",
         "prompt": ("Prepare a shareholders resolution in writing for director "
                    "appointment for CM Foods Company Limited"),
+        "company": "CM FOODS COMPANY LIMITED",
         "person": "KYAW THU SOE",
         "person_for": {"authoriz": "KYAW THU SOE", "represent": "KYAW THU SOE",
                        "signator": "KYAW THU SOE",
@@ -343,6 +481,55 @@ CASES = [
         "expect_count": {"CITY MART HOLDING COMPANY LIMITED": 1},
         "expect_after": [{"marker": "represented by its authorized director",
                           "value": "KYAW THU SOE"}],
+        "script": [
+            ToolCall("lookup_representative_candidates",
+                     {"corporate_shareholder_name": "CITY MART HOLDING COMPANY LIMITED"},
+                     result="ok"),
+            Pick("choose_representative_director",
+                 "the authorized director signing for the corporate member",
+                 _cands(CITY_MART_BOARD),
+                 company_name="CM FOODS COMPANY LIMITED"),
+            Pick("choose_person_from_register", "the new director to appoint",
+                 _cands(CITY_MART_BOARD), company_name="CM FOODS COMPANY LIMITED"),
+            Ask([{"id": "q_date", "text": "What is the date of the resolution?"}]),
+            Document(
+                "SHAREHOLDERS RESOLUTION IN WRITING\n"
+                "{{company}}\n"
+                "Dated {{answer:date}}\n"
+                "Sole member: CITY MART HOLDING COMPANY LIMITED, represented by its "
+                "authorized director {{picked:authoriz}}.\n"
+                "RESOLVED that {{picked:appoint}} be appointed a director.\n",
+                filename="e4-resolution.docx"),
+            Complete("The resolution is ready."),
+        ],
+        "mutants": [
+            # The wrong register: the picker offers CM FOODS' OWN board, so
+            # KYAW THU SOE — the person the case named — is not on the list at
+            # all. Two guards must fire together: the harness must announce its
+            # fallback rather than hide it, and SOE MOE THU (that board's first
+            # entry) must be caught by `forbid_in_doc`.
+            ("wrong-register", {"script": [
+                ToolCall("lookup_representative_candidates",
+                         {"corporate_shareholder_name": "CM FOODS COMPANY LIMITED"},
+                         result="ok"),
+                Pick("choose_representative_director",
+                     "the authorized director signing for the corporate member",
+                     _cands(CM_FOODS_BOARD),
+                     company_name="CM FOODS COMPANY LIMITED"),
+                Pick("choose_person_from_register", "the new director to appoint",
+                     _cands(CITY_MART_BOARD), company_name="CM FOODS COMPANY LIMITED"),
+                Ask([{"id": "q_date", "text": "What is the date of the resolution?"}]),
+                Document(
+                    "SHAREHOLDERS RESOLUTION IN WRITING\n"
+                    "{{company}}\n"
+                    "Dated {{answer:date}}\n"
+                    "Sole member: CITY MART HOLDING COMPANY LIMITED, represented by its "
+                    "authorized director {{picked:authoriz}}.\n"
+                    "RESOLVED that {{picked:appoint}} be appointed a director.\n",
+                    filename="e4-wrongreg.docx"),
+                Complete("The resolution is ready."),
+            ]}),
+        ],
     },
     {
         # The contrast that makes E3/E4 mean something. Two members, both
@@ -352,6 +539,7 @@ CASES = [
         "id": "E5",
         "prompt": ("Prepare a shareholders resolution in writing for director "
                    "appointment for Commerce Ace Company Limited"),
+        "company": "COMMERCE ACE COMPANY LIMITED",
         "person": "WIN WIN TINT",
         "person_for": {"new director": "MYO MIN KYAW", "appoint": "MYO MIN KYAW"},
         "answers": {"date": "2026-11-12", "identification": "NRC", "pronoun": "she"},
@@ -360,15 +548,118 @@ CASES = [
         # Neither member is a company, so this template row must not survive.
         "forbid_in_doc": ["Represented by its authorized director"],
         "expect_count": {"WIN WIN TINT": 1, "MIN MIN": 1},
+        "script": [
+            ToolCall("lookup_attendee_candidates", {"company_name": "COMMERCE ACE COMPANY LIMITED"},
+                     result="ok"),
+            Pick("choose_person_from_register", "the new director to appoint",
+                 _cands(CITY_MART_BOARD), company_name="COMMERCE ACE COMPANY LIMITED"),
+            Ask([{"id": "q_date", "text": "What is the date of the resolution?"}]),
+            Document(
+                "SHAREHOLDERS RESOLUTION IN WRITING\n"
+                "{{company}}\n"
+                "Dated {{answer:date}}\n"
+                "Members: WIN WIN TINT and MIN MIN.\n"
+                "RESOLVED that {{picked:appoint}} be appointed a director.\n",
+                filename="e5-resolution.docx"),
+            Complete("The resolution is ready."),
+        ],
+        "mutants": [
+            # Every member list collapsed to a corporate block: the row that
+            # should have been deleted is rendered for a company with no
+            # corporate member at all.
+            ("corporate-row-survived", {"template":
+                "SHAREHOLDERS RESOLUTION IN WRITING\n"
+                "{{company}}\n"
+                "Dated {{answer:date}}\n"
+                "Members: WIN WIN TINT and MIN MIN.\n"
+                "Represented by its authorized director WIN WIN TINT.\n"
+                "RESOLVED that {{picked:appoint}} be appointed a director.\n"}),
+        ],
     },
 ]
 
 
-def run_case(token, user_id, case):
-    session = f"E2E {case['id']} — {int(time.time())}"
-    print(f"\n{'='*76}\n[{case['id']}] {case['prompt']}\n  session: {session}", flush=True)
+CASES.append({
+    # ★ Not a product case — a case about the HARNESS, on the harness's own
+    # main path.
+    #
+    # `run_case` finds the generated file by regex over the reply, and every
+    # other case here is separated from its link by a newline the runtime
+    # supplies. That made the extraction pattern untested: the suite passed with
+    # an unanchored regex simply because no fixture ever put a word against the
+    # URL. It is not hypothetical — the first run of this suite ERRORed all five
+    # goldens on "no scripted document at '…e1-minutes.docxThe'", and every
+    # mutant then "failed" for that reason instead of its own.
+    #
+    # `trailing=""` reproduces exactly that shape. The case is otherwise an
+    # ordinary conversation, so it exercises the real path: RunPaused -> resume
+    # -> link extraction -> download -> unzip -> assert. If the anchor is ever
+    # removed from the regex, this goes NO-DOC or ERROR and says so.
+    "id": "E6",
+    "prompt": "Prepare a resignation letter for Golden Lotus Holdings",
+    "company": "GOLDEN LOTUS HOLDINGS LIMITED",
+    "person": "FICTIONAL PARTY TWO",
+    "answers": {"date": "2026-12-01"},
+    "default_answer": "",
+    "expect_in_doc": ["FICTIONAL PARTY TWO", "GOLDEN LOTUS HOLDINGS LIMITED"],
+    "script": [
+        ToolCall("lookup_register_candidates", {"search": "resigning director"}, result="ok"),
+        Pick("choose_person_from_register", "the resigning director",
+             _cands(["FICTIONAL PARTY ONE", "FICTIONAL PARTY TWO"]),
+             company_name="GOLDEN LOTUS HOLDINGS LIMITED"),
+        Ask([{"id": "q_date", "text": "What is the effective date of resignation?"}]),
+        Document(
+            "{{company}}\n"
+            "LETTER OF RESIGNATION\n"
+            "I, {{picked:resigning}}, resign with effect from {{answer:date}}.\n",
+            filename="e6-resignation.docx",
+            trailing="",  # ← the next chunk lands FLUSH against the URL
+        ),
+        Complete("The resignation letter is ready."),
+    ],
+    "mutants": [
+        # Same flush link, but the document drops the chosen person. Proves E6
+        # still asserts on CONTENT and is not merely a link-extraction probe
+        # that would pass on any document at all.
+        ("answer-dropped", {"template":
+            "{{company}}\n"
+            "LETTER OF RESIGNATION\n"
+            "I, the undersigned, resign with effect from {{answer:date}}.\n"}),
+    ],
+})
 
-    result = start(token, case["prompt"], session, user_id)
+
+def _build_runtime(case, overrides):
+    """One runtime per run. `overrides` is how a mutant is expressed.
+
+    Only three things can be overridden, and none of them is an assertion:
+      script        a different conversation
+      template      a different document, same conversation
+      resolve_mode  the same conversation and template, resolved the buggy way
+    """
+    script = list(overrides.get("script") or case["script"])
+    template = overrides.get("template")
+    if template is not None:
+        # `trailing` is carried through deliberately. E6's whole point is the
+        # link arriving flush against the next chunk; rebuilding the Document
+        # without it would quietly restore the newline and the mutant would stop
+        # testing the shape the case exists for.
+        script = [Document(template, filename=t.filename, tool_name=t.tool_name,
+                           trailing=t.trailing)
+                  if isinstance(t, Document) else t for t in script]
+    return ScriptedAgentRuntime(
+        script,
+        company=case["company"],
+        resolve_mode=overrides.get("resolve_mode", "chosen"),
+    )
+
+
+def run_case(case, variant="golden", overrides=None):
+    session = f"E2E {case['id']} — {variant}"
+    runtime = _build_runtime(case, overrides or {})
+    print(f"\n{'-'*76}\n[{case['id']}/{variant}] {case['prompt'][:70]}", flush=True)
+
+    result = start(runtime, case["prompt"], session, 1)
     transcript = []
     nudges = 0
 
@@ -383,7 +674,7 @@ def run_case(token, user_id, case):
             for d in described:
                 print(f"  answered: {d}", flush=True)
                 transcript.append(d)
-            result = answer_pause(token, result["paused"], answers, session, user_id)
+            result = answer_pause(runtime, result["paused"], answers, session, 1)
             continue
 
         # Silent stop: the agent did tool work then ended the turn with nothing
@@ -398,20 +689,35 @@ def run_case(token, user_id, case):
                 + (f"thought: {rz[:110].replace(chr(10), ' ')}…" if rz else "NO reasoning either — genuinely wedged"),
                 flush=True,
             )
-            result = start(token, "continue", session, user_id)
+            result = start(runtime, "continue", session, 1)
             continue
 
         break
 
     body = result["content"]
-    m = re.search(r"(/api/documents/download/[^\s)\"']+|/documents/[^\s)\"']+\.docx)", body)
+    # Both alternatives anchor on `.docx`. `content` is the concatenation of
+    # every RunContent chunk, so a link arriving flush against the next chunk
+    # ("…e1-minutes.docxThe minutes are ready.") must not have the following
+    # word swallowed into the path — that yields a path nothing can download and
+    # the case reports ERROR for a reason that has nothing to do with the
+    # product.
+    #
+    # ★ Unlike the live suite, the first alternative here is NOT dead: the
+    # scripted runtime emits exactly `/api/documents/download/…`
+    # (scripted_runtime.py:561), so this is the file where the greedy version
+    # can actually fire. It did, on the very first run of this suite: all five
+    # goldens ERRORed with "no scripted document at '…e1-minutes.docxThe'".
+    #
+    # The anchor is pinned by case E6, which puts a word flush against the link
+    # on purpose. A comment alone would not survive the next fixture.
+    m = re.search(r"(/api/documents/download/[^\s)\"']+?\.docx|/documents/[^\s)\"']+?\.docx)", body)
     if not m:
         return {"status": "NO-DOC",
                 "detail": f"no download link; reply={body[:120]!r}",
                 "session": session, "answered": transcript}
 
     try:
-        text = docx_text(token, m.group(1))
+        text = docx_text(runtime, m.group(1))
     except Exception as e:
         return {"status": "ERROR", "detail": f"could not read docx: {e}",
                 "session": session, "answered": transcript}
@@ -494,31 +800,92 @@ def run_case(token, user_id, case):
     }
 
 
+def protocol_checks():
+    """Branches no case script reaches. Each returns (name, want_status, thunk)."""
+
+    def failed_run():
+        rt = ScriptedAgentRuntime(
+            [ToolCall("get_template", {}, result="ok"),
+             Error("provider rejected the dangling tool call")],
+            company="CITY HOLDINGS LIMITED")
+        return _consume(rt.start("probe", session_id="protocol", user_id=1))["error"]
+
+    def dropped_field():
+        """A resume that echoes back ONLY the answered field.
+
+        This is the mistake `answer_pause`'s docstring warns about. The server
+        wipes the fields that did not come back and the provider then rejects the
+        dangling tool call, so the correct outcome is a RunError — not a run that
+        carries on with an empty questions payload.
+        """
+        rt = ScriptedAgentRuntime(
+            [Ask([{"id": "q1", "text": "What is the meeting date?"}]),
+             Complete("done")],
+            company="CITY HOLDINGS LIMITED")
+        paused = _consume(rt.start("probe", session_id="protocol", user_id=1))["paused"]
+        stripped = [{"tool_name": "ask_questions", "requires_user_input": True,
+                     "user_input_schema": [{"name": "answers", "value": "{\"q1\": \"x\"}"}]}]
+        out = _consume(rt.continue_run(paused["run_id"], "scout", json.dumps(stripped)))
+        return out["error"]
+
+    return [
+        ("failed-run", "provider rejected the dangling tool call", failed_run),
+        ("dropped-field", "dangling tool call: questions_json was dropped from the "
+                          "resume payload", dropped_field),
+    ]
+
+
 def main():
-    # Optional case-id filter: `python3 tests/tracker_layer3.py E3`. Every case
-    # is a multi-turn conversation against a paid model, so re-running the ones
-    # that already passed to reach the one under test is real money.
+    # Optional case-id filter: `python3 tests/tracker_layer3.py E3`.
     wanted = {a.upper() for a in sys.argv[1:] if not a.startswith("-")}
     cases = [c for c in CASES if not wanted or c["id"].upper() in wanted]
     if wanted and not cases:
         sys.exit(f"No case matched {sorted(wanted)}; have {[c['id'] for c in CASES]}")
 
-    token, user_id = login()
     rows = []
+    failures = 0
     for case in cases:
-        try:
-            out = run_case(token, user_id, case)
-        except Exception as e:
-            out = {"status": "ERROR", "detail": str(e)[:140], "session": "-"}
-        rows.append((case["id"], out))
-        print(f"  -> {out['status']}: {out['detail'][:120]}", flush=True)
+        runs = [("golden", "PASS", {})]
+        for name, overrides in case.get("mutants", []):
+            # A mutant must not come out PASS. Which non-PASS status it lands on
+            # is recorded but not pinned: NO-DOC and FAIL are both "this run did
+            # not prove the product correct", and pinning the exact one would
+            # make the check brittle for no gain.
+            runs.append((name, "not-PASS", overrides))
 
-    print(f"\n\n{'ID':<5} {'RESULT':<8} SESSION (open this in the app)")
-    print("-" * 96)
-    for cid, out in rows:
-        print(f"{cid:<5} {out['status']:<8} {out['session']}")
-        print(f"      {out['detail'][:88]}")
-    return 0
+        for variant, want, overrides in runs:
+            try:
+                out = run_case(case, variant, overrides)
+            except Exception as e:
+                out = {"status": "ERROR", "detail": f"{type(e).__name__}: {e}"[:140],
+                       "session": "-"}
+            ok = (out["status"] == "PASS") if want == "PASS" else (out["status"] != "PASS")
+            if not ok:
+                failures += 1
+            rows.append((f"{case['id']}/{variant}", out["status"], want, ok, out["detail"]))
+            print(f"  -> {out['status']} (want {want}) "
+                  f"{'OK' if ok else '<<< SUITE FAILURE'}: {out['detail'][:110]}", flush=True)
+
+    if not wanted:
+        print(f"\n{'-'*76}\nprotocol checks", flush=True)
+        for name, want_text, thunk in protocol_checks():
+            got = thunk()
+            ok = got == want_text
+            if not ok:
+                failures += 1
+            rows.append((name, "ok" if ok else "BAD", want_text[:28], ok, str(got)[:90]))
+            print(f"  {name:<14} {'OK' if ok else '<<< SUITE FAILURE'}: {got!r}", flush=True)
+
+    print(f"\n\n{'CASE':<28} {'GOT':<8} {'WANT':<10} {'':<4} DETAIL")
+    print("-" * 110)
+    for name, status, want, ok, detail in rows:
+        print(f"{name:<28} {status:<8} {want[:10]:<10} {'ok' if ok else 'BAD':<4} {detail[:56]}")
+
+    print(f"\nSUMMARY: {len(rows)} checks · {failures} unexpected")
+    if failures:
+        print("A mutant that came out PASS means the assertion it targets no longer "
+              "discriminates — treat it as a broken gate, not a flake.")
+    return 1 if failures else 0
 
 
 if __name__ == "__main__":

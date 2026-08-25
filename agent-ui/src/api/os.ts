@@ -4,11 +4,13 @@ import { APIRoutes } from './routes'
 
 import {
   AgentDetails,
+  ApiError,
+  ApiResult,
   AskUserAnswerMap,
   AskUserRequest,
   PickerRequest,
   PickerSelectionEntry,
-  Sessions,
+  SessionEntry,
   TeamDetails,
   UserInputField
 } from '@/types/os'
@@ -193,6 +195,50 @@ export const getStatusAPI = async (
   return response.status
 }
 
+/**
+ * Agno's built-in "paused" narration (agno/utils/response.py).
+ *
+ * When a run pauses on a `requires_user_input` tool, Agno OVERWRITES the run's
+ * `content` with this sentence. It describes the framework's own state, never
+ * the user's task, so it must never reach the transcript — the question card
+ * rebuilt from `tools` is the real content of that turn.
+ *
+ * ★ Single source of truth. Both paths import it from here: `useSessionLoader`
+ * (reload) and `useAIStreamHandler` (stream). It previously existed as two
+ * byte-identical copies, and only the stream copy was ever applied — so the
+ * live transcript was clean while a refresh rendered Agno's raw sentence.
+ *
+ * Anchored at both ends deliberately. It matches Agno's exact sentence and its
+ * "it needs" variant, and nothing else — ordinary prose that merely opens with
+ * the same words carries on past the first full stop and fails the `$`.
+ */
+export const AGNO_PAUSE_BOILERPLATE =
+  /^I have tools to execute, but (I need|it needs)\b.*\.$/i
+
+/** True only for Agno's own pause narration — see AGNO_PAUSE_BOILERPLATE. */
+export const isAgnoPauseBoilerplate = (content: unknown): boolean =>
+  typeof content === 'string' && AGNO_PAUSE_BOILERPLATE.test(content.trim())
+
+/** Classify a non-OK HTTP status into something the UI can act on. */
+const errorKindForStatus = (status: number): ApiError['kind'] => {
+  if (status === 401) return 'unauthorized'
+  if (status === 403) return 'forbidden'
+  if (status >= 500) return 'server'
+  return 'http'
+}
+
+/**
+ * Sessions for the sidebar.
+ *
+ * ★ This used to end in a bare `catch { return { data: [] } }`, so a 401, a
+ * 500, a dropped connection and a JSON parse failure ALL returned the exact
+ * value a genuinely-empty account returns. A user reporting an empty sidebar
+ * could not be diagnosed from the UI at all, because "broken" and "empty" were
+ * the same value. The result now carries an explicit error channel.
+ *
+ * A 404 is deliberately still success-with-nothing: the sessions table for a
+ * component that has never run does not exist yet, which IS emptiness.
+ */
 export const getAllSessionsAPI = async (
   base: string,
   type: 'agent' | 'team',
@@ -200,7 +246,8 @@ export const getAllSessionsAPI = async (
   dbId: string,
   authToken?: string,
   userId?: string | null
-): Promise<Sessions | { data: [] }> => {
+): Promise<ApiResult<SessionEntry[]>> => {
+  let response: Response
   try {
     const url = new URL(APIRoutes.GetSessions(base))
     url.searchParams.set('type', type)
@@ -208,20 +255,68 @@ export const getAllSessionsAPI = async (
     url.searchParams.set('db_id', dbId)
     if (userId) url.searchParams.set('user_id', String(userId))
 
-    const response = await fetch(url.toString(), {
+    response = await fetch(url.toString(), {
       method: 'GET',
       headers: createHeaders(authToken)
     })
-
-    if (!response.ok) {
-      if (response.status === 404) {
-        return { data: [] }
+  } catch (error) {
+    return {
+      ok: false,
+      error: {
+        kind: 'network',
+        status: null,
+        message:
+          error instanceof Error && error.message
+            ? `Could not reach the server: ${error.message}`
+            : 'Could not reach the server.'
       }
-      throw new Error(`Failed to fetch sessions: ${response.statusText}`)
     }
-    return response.json()
+  }
+
+  if (!response.ok) {
+    // Not an error: nothing has ever been stored for this component.
+    if (response.status === 404) return { ok: true, data: [] }
+    return {
+      ok: false,
+      error: {
+        kind: errorKindForStatus(response.status),
+        status: response.status,
+        message:
+          response.status === 401
+            ? 'Your session has expired — sign in again to see your chats.'
+            : `Could not load chats (${response.status} ${response.statusText || 'error'}).`
+      }
+    }
+  }
+
+  // A 200 is not proof of a JSON body: the frontend catch-all answers unknown
+  // GETs with the Next.js HTML shell at 200, which drains fine and parses to
+  // nothing. That has to read as broken, not as empty.
+  try {
+    const body: unknown = await response.json()
+    const data = Array.isArray(body)
+      ? (body as SessionEntry[])
+      : ((body as { data?: SessionEntry[] } | null)?.data ?? null)
+    if (!Array.isArray(data)) {
+      return {
+        ok: false,
+        error: {
+          kind: 'parse',
+          status: response.status,
+          message: 'The server returned an unexpected response for chats.'
+        }
+      }
+    }
+    return { ok: true, data }
   } catch {
-    return { data: [] }
+    return {
+      ok: false,
+      error: {
+        kind: 'parse',
+        status: response.status,
+        message: 'The server returned an unreadable response for chats.'
+      }
+    }
   }
 }
 
@@ -244,7 +339,7 @@ export const getSessionAPI = async (
     }
   )
 
-  if (response.status === 404) return null  // session not yet created — not an error
+  if (response.status === 404) return null // session not yet created — not an error
   if (!response.ok) {
     throw new Error(`Failed to fetch session: ${response.statusText}`)
   }

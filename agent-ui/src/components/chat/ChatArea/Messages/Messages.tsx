@@ -1,6 +1,13 @@
 import type { ChatMessage, ToolCall } from '@/types/os'
 
-import { AgentMessage, UserMessage } from './MessageItem'
+import {
+  AgentMessage,
+  UserMessage,
+  MessageMeta,
+  readTokenCount,
+  buildMessageIds
+} from './MessageItem'
+import MessageFeedback from './MessageFeedback'
 import { useState, useEffect, useRef } from 'react'
 import { ReferenceData, Reference } from '@/types/os'
 import React, { type FC } from 'react'
@@ -11,6 +18,7 @@ import AskUserCardList from '@/components/chat/AskUserCardList'
 import ApprovalPrompt from '@/components/chat/ApprovalPrompt'
 import QueuedEmailCard from '@/components/chat/QueuedEmailCard'
 import { useStore } from '@/store'
+import { useQueryState } from 'nuqs'
 import { Copy, Check, ChevronRight, AlertTriangle, Plus } from 'lucide-react'
 import { toolLabel, summariseToolCall, formatRaw } from './toolDisplay'
 import type { ToolSummary } from './toolDisplay'
@@ -79,6 +87,17 @@ interface MessageListProps {
 interface MessageWrapperProps {
   message: ChatMessage
   isLastMessage: boolean
+  /**
+   * Stable identity for this turn inside its session — what a stored vote is
+   * keyed on. The run id when the message carries one, otherwise position and
+   * timestamp, which survive a reload because history replays in order.
+   */
+  messageId: string
+  /**
+   * Read once in `Messages` and passed down: `useQueryState` inside the
+   * wrapper would open one subscription per bubble in the transcript.
+   */
+  sessionId: string | null
 }
 
 interface ReferenceProps {
@@ -510,8 +529,26 @@ const ToolTrace = ({
 }
 
 
-const AgentMessageWrapper = ({ message, isLastMessage }: MessageWrapperProps) => {
+const AgentMessageWrapper = ({
+  message,
+  isLastMessage,
+  messageId,
+  sessionId
+}: MessageWrapperProps) => {
   const isStreaming = useStore((state) => state.isStreaming)
+  // `run_id` is optional on ChatMessage: the loader sets it on rehydrated
+  // history, a message that has only just streamed has none.
+  const runId = message.run_id ?? null
+  const tokens = readTokenCount(message)
+  // A turn that ends in a question card is not an answer to rate. Skipping it
+  // is worth more than the tidiness: on a paused turn the live transcript has
+  // the question bubble and its resumed answer as two bubbles, while the
+  // reloaded transcript merges them into one. Rating the question would mean
+  // a vote cast on a question restoring onto an answer — the wrong-message
+  // case, which is worse than no vote at all.
+  const isQuestionTurn =
+    (message.ask_user_requests?.length ?? 0) > 0 ||
+    (message.picker_requests?.length ?? 0) > 0
   const toolCalls = message.tool_calls ?? []
   const reasoningTitles = (message.extra_data?.reasoning_steps ?? []).map((s) => s.title)
   const hasRefs = (message.extra_data?.references?.length ?? 0) > 0
@@ -523,11 +560,9 @@ const AgentMessageWrapper = ({ message, isLastMessage }: MessageWrapperProps) =>
       {/* Agent identity mark — square against the pill-shaped user turn. */}
       <div
         aria-hidden
-        className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-[var(--radius-sm)] bg-[var(--surface-inverse)]"
+        className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center overflow-hidden rounded-[var(--radius-sm)] bg-[var(--surface-inverse)]"
       >
-        <span className="font-[family-name:var(--font-display)] text-[length:var(--text-2xs)] font-bold tracking-[var(--tracking-tag)] text-[var(--text-inverse)]">
-          LS
-        </span>
+        <img src="/logo.png" alt="" className="h-[18px] w-[18px] object-contain" />
       </div>
 
       <div className="flex min-w-0 flex-1 flex-col">
@@ -576,13 +611,30 @@ const AgentMessageWrapper = ({ message, isLastMessage }: MessageWrapperProps) =>
         <QueuedEmailCard toolCalls={message.tool_calls} />
 
         {!isStillStreaming && hasContent && (
-          <div className="-ml-2 mt-2 flex items-center">
+          <div className="-ml-2 mt-2 flex flex-wrap items-center gap-x-1 gap-y-1">
             <CopyButton content={message.content || ''} />
+            {!isQuestionTurn && (
+              <MessageFeedback
+                sessionId={sessionId}
+                runId={runId}
+                messageId={messageId}
+              />
+            )}
+            {/* Metadata sits after the controls and to their right: it is
+                something to glance at, not something to act on. */}
+            <span className="ml-auto pl-2 pr-1">
+              <MessageMeta createdAt={message.created_at} tokens={tokens} />
+            </span>
           </div>
         )}
 
-        {/* Follow-ups only after the answer settles — never mid-stream. */}
-        {hasContent && !isStillStreaming && (
+        {/* Follow-ups only after the answer settles — never mid-stream, and
+            never under a question card. A turn that ends in a card is asking
+            the user something; offering three OTHER things to ask beside the
+            Submit button competes with the question they must answer to get
+            their document. Same rule as MessageFeedback above, which had the
+            guard from the start — this one simply never got it. */}
+        {hasContent && !isStillStreaming && !isQuestionTurn && (
           <SuggestionButtons
             content={message.content || ''}
             isLast={isLastMessage}
@@ -595,6 +647,8 @@ const AgentMessageWrapper = ({ message, isLastMessage }: MessageWrapperProps) =>
 }
 
 const Messages = ({ messages }: MessageListProps) => {
+  const [sessionId] = useQueryState('session')
+
   if (messages.length === 0) {
     return <ChatBlankState />
   }
@@ -611,6 +665,11 @@ const Messages = ({ messages }: MessageListProps) => {
     }
   }
 
+  // Computed once for the whole transcript: each id's discriminator is an
+  // ordinal within its own run, so it cannot be moved by an unrelated message
+  // being added, filtered or removed elsewhere in the array.
+  const messageIds = buildMessageIds(messages)
+
   const lastMessage = messages[messages.length - 1]
   const isWaitingForResponse = lastMessage?.role === 'user'
 
@@ -619,6 +678,11 @@ const Messages = ({ messages }: MessageListProps) => {
       {messages.map((message, index) => {
         const key = `${message.role}-${message.created_at}-${index}`
         const isLastMessage = index === messages.length - 1
+        // The vote's subject — see buildMessageIds. Deliberately NOT the
+        // React `key`: that one is a rendering detail and may be changed for
+        // rendering reasons, while this one is stored server-side and must
+        // still mean the same turn tomorrow.
+        const messageId = messageIds[index]
 
         const msgDate = message.created_at
           ? new Date(message.created_at * 1000)
@@ -643,6 +707,8 @@ const Messages = ({ messages }: MessageListProps) => {
               <AgentMessageWrapper
                 message={msgWithContext}
                 isLastMessage={isLastMessage}
+                messageId={messageId}
+                sessionId={sessionId}
               />
               {/* Clock time lives in the hover title; only the response
                   duration earns a visible line. */}
@@ -661,6 +727,15 @@ const Messages = ({ messages }: MessageListProps) => {
             title={msgTime ?? undefined}
           >
             <UserMessage message={message} />
+            {/* Aligned under the bubble's right edge, matching the turn.
+                Time only, and deliberately so: no thumbs, because a reader
+                does not rate their own question, and no token figure, because
+                a run reports ONE figure for the whole turn — it belongs on the
+                answer, and halving it across the two bubbles would be a number
+                nobody measured. */}
+            <div className="flex justify-end pr-1">
+              <MessageMeta createdAt={message.created_at} />
+            </div>
             {/* bow-style working row: quiet, unboxed, spinner + elapsed. */}
             {isLastMessage && isWaitingForResponse && (
               <div className="mt-3 flex items-center gap-2 text-[13px] text-[var(--text-muted)]">

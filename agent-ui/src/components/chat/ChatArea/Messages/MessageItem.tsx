@@ -9,6 +9,191 @@ import { DocumentCards } from '@/components/ui/DocumentViewer'
 import { Mail, Send, Paperclip, Loader2, RotateCcw, ChevronRight } from 'lucide-react'
 import { authFetch } from '@/lib/api-client'
 
+
+/* ------------------------------------------------------------------ *
+ * Per-message metadata — timestamp and token count.
+ *
+ * Both are SECONDARY. A missing figure renders NOTHING; it never renders
+ * "NaN", "0 tokens", "Invalid Date" or a 1970 stamp. A metric that is absent
+ * should be invisible, not wrong — a wrong one is read as fact.
+ * ------------------------------------------------------------------ */
+
+/**
+ * Anything at or before 2001-01-01 is a unit mistake, not history. This
+ * product did not exist, so a stamp landing there came from seconds read as
+ * milliseconds (or from a zero) and must not be shown.
+ */
+const EARLIEST_PLAUSIBLE_MS = 978307200000
+
+/**
+ * `ChatMessage.created_at` is epoch SECONDS — measured, then confirmed by the
+ * data layer, which normalises every source into that unit before the message
+ * reaches here. The millisecond and ISO branches below are therefore belt-and-
+ * braces rather than live paths: they cost nothing, they cannot mis-read a
+ * seconds value, and they mean a future loader change degrades to a correct
+ * time instead of to a blank.
+ *
+ * MEASURED, not assumed. Against the live container on 2026-08-24:
+ *   /sessions/{id}/runs → messages[].created_at = 1787578850  (10 digits)
+ *   the same file's run-level created_at = "2026-08-24T13:00:29Z" (ISO string)
+ *   the saved capture run1.json → created_at = 1787558720      (10 digits)
+ * So the value reaching the transcript is epoch SECONDS, and the ISO string
+ * shape exists one level up. Both are accepted here, plus milliseconds, so a
+ * change in the data layer degrades to a correct time rather than to 1970.
+ */
+export function parseMessageDate(value: unknown): Date | null {
+  let ms: number
+
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value) || value <= 0) return null
+    // 1.79e9 (seconds) vs 1.79e12 (milliseconds) — nothing plausible sits
+    // between, so the magnitude is the unit.
+    ms = value < 1e11 ? value * 1000 : value
+  } else if (typeof value === 'string') {
+    const text = value.trim()
+    if (!text) return null
+    // A numeric string is the same epoch value, quoted.
+    if (/^\d+$/.test(text)) return parseMessageDate(Number(text))
+    ms = Date.parse(text)
+  } else {
+    return null
+  }
+
+  if (!Number.isFinite(ms) || ms < EARLIEST_PLAUSIBLE_MS) return null
+  const date = new Date(ms)
+  return Number.isNaN(date.getTime()) ? null : date
+}
+
+/**
+ * LOCAL time, never UTC — the reader is in Yangon (UTC+06:30) and a UTC clock
+ * would sit 6½ hours behind everything else on their screen.
+ */
+export function formatMessageTime(value: unknown): string | null {
+  const date = parseMessageDate(value)
+  if (!date) return null
+  return date.toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: true
+  })
+}
+
+/**
+ * The token figure for one turn.
+ *
+ * PINNED to `ChatMessage.token_usage` (`types/os.ts`), which the session
+ * loader populates — confirmed 2026-08-24, not inferred. There is deliberately
+ * no `metrics.*` fallback: `metrics` exists only on `ToolCall` and is
+ * `{time: number}`, carrying no tokens at all, so a chain reaching for it would
+ * be dead code that reads like a working fallback.
+ *
+ * `null` inside `token_usage` means NO DATA, not zero — it renders nothing.
+ * Two shapes legitimately have no figure and must stay silent:
+ *   - user messages (a run reports ONE figure for the turn; splitting it
+ *     across the two bubbles would be inventing a number), and
+ *   - a message that has only just streamed, since the figure arrives on the
+ *     reload path.
+ */
+export function readTokenCount(message: unknown): number | null {
+  if (!message || typeof message !== 'object') return null
+  const usage = (message as ChatMessage).token_usage
+  if (!usage) return null
+
+  const num = (value: unknown): number | null =>
+    typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null
+
+  // The loader already resolves total_tokens ?? input+output. Summing here is
+  // belt-and-braces for a row that carried a null total beside real halves.
+  const total = num(usage.total)
+  if (total !== null) return total
+  const sum = (num(usage.input) ?? 0) + (num(usage.output) ?? 0)
+  return sum > 0 ? sum : null
+}
+
+/** `null` for anything that is not a real, positive count. */
+export function formatTokens(value: unknown): string | null {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return null
+  const rounded = Math.round(value)
+  if (rounded <= 0) return null
+  // Grouping pinned deliberately: the default locale can be Indian grouping
+  // ("12,34,567"), which reads as a different number entirely.
+  return `${rounded.toLocaleString('en-US')} ${rounded === 1 ? 'token' : 'tokens'}`
+}
+
+/**
+ * The stable identity of every message in a transcript, in order.
+ *
+ * ★ THESE STRINGS ARE A DURABLE CONTRACT, NOT A DISPLAY DETAIL. They are
+ * stored server-side as the subject of a thumbs-up/down vote. Change the
+ * formula and every stored vote is orphaned — it stops restoring, and NOTHING
+ * ERRORS. Tell the backend before touching this; it needs a rewrite migration.
+ *
+ * Two properties are required, and the discriminator is what supplies them:
+ *
+ *   UNIQUE per bubble. One run is a whole TURN and can produce more than one
+ *   agent message — an `ask_questions` pause resumes under the SAME run_id —
+ *   so `role`+`run_id` alone would let two bubbles share one vote.
+ *
+ *   STABLE under unrelated edits. The discriminator is the ordinal WITHIN the
+ *   run and role, NOT the position in the transcript. A global index counts
+ *   every message in the array, so it holds only while the streaming path and
+ *   the reload path build the same bubbles in the same order — and they do
+ *   not: `useSessionLoader` emits exactly two messages per run, while a live
+ *   HITL resume appends an agent message with no user message beside it. Under
+ *   a global index, one filtered or added bubble shifts every id after it and
+ *   every later vote silently restores onto its neighbour.
+ *
+ * `created_at` is deliberately not the discriminator: it is stamped by
+ * whoever built the message, so a streamed turn and its reloaded self can
+ * disagree. It appears only in the no-run_id fallback, which the feedback
+ * control never reaches — it renders nothing without a run id.
+ */
+export function buildMessageIds(
+  messages: ReadonlyArray<Pick<ChatMessage, 'role' | 'created_at' | 'run_id'>>
+): string[] {
+  // One counter per (role, run) pair. Anything outside the pair — a message
+  // from another run, another role, or no run at all — cannot move it.
+  const ordinals = new Map<string, number>()
+
+  return messages.map((message) => {
+    const bucket = `${message.role}::${message.run_id ?? ''}`
+    const ordinal = ordinals.get(bucket) ?? 0
+    ordinals.set(bucket, ordinal + 1)
+
+    return message.run_id
+      ? `${message.role}-${message.run_id}-${ordinal}`
+      : `${message.role}-${message.created_at ?? 0}-${ordinal}`
+  })
+}
+
+/**
+ * The quiet metadata line. Renders nothing at all when it has nothing true to
+ * say, so an untimed or unmetered message simply has no line under it.
+ */
+export const MessageMeta = memo(function MessageMeta({
+  createdAt,
+  tokens
+}: {
+  createdAt?: unknown
+  tokens?: unknown
+}) {
+  const time = formatMessageTime(createdAt)
+  const tokenText = formatTokens(tokens)
+  if (!time && !tokenText) return null
+
+  return (
+    <span className="inline-flex items-center gap-1.5 text-[length:var(--text-2xs)] text-[var(--text-muted)] [font-variant-numeric:tabular-nums]">
+      {time && <span>{time}</span>}
+      {time && tokenText && (
+        <span aria-hidden className="text-[var(--faint)]">
+          &middot;
+        </span>
+      )}
+      {tokenText && <span>{tokenText}</span>}
+    </span>
+  )
+})
+
 interface MessageProps {
   message: ChatMessage
 }

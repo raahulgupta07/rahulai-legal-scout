@@ -162,7 +162,16 @@ def create_knowledge_tools():
 
         return data
 
-    def list_sources() -> List[str]:
+    # ★★★RENAMED 2026-08-24. This was `def list_sources`, and so is
+    # `scout/tools/awareness.py:30`. Agno keys a tool by the function's own
+    # __name__, NOT by the dict key it is fetched under — so both registered as
+    # `list_sources`, one of the two was unreachable, and no startup guard could
+    # raise: `_registered_tool_names()` returned a set, which collapsed the
+    # collision to one entry. The prompt ("Use `list_sources` to see what's
+    # available", scout/agent.py:1188) means the awareness one, which filters by
+    # source_type and formats its output; this one returns bare filenames. Named
+    # to match the key it was always exported under.
+    def list_knowledge_sources() -> List[str]:
         """List all available knowledge sources."""
         sources = get_knowledge_sources()
         return [s["filename"] for s in sources]
@@ -319,7 +328,7 @@ def create_knowledge_tools():
         "get_directors": get_directors,
         "get_shareholders": get_shareholders,
         "get_template_data": get_template_data,
-        "list_knowledge_sources": list_sources,
+        "list_knowledge_sources": list_knowledge_sources,
         "get_data_for_template": get_data_for_template,
         "generate_dica_extract": generate_dica_extract,
     }

@@ -76,7 +76,20 @@ services:
       DOCUMENTS_DIR: /documents
       API_HOST: ${API_HOST:-}
       FRONTEND_HOST: ${FRONTEND_HOST:-}
-      SKIP_AI_TRAINING: "true"
+      # Was hardcoded "true", so training was a silent no-op that no .env could
+      # switch off. Default is unchanged; it is now overridable for a retrain.
+      SKIP_AI_TRAINING: "${SKIP_AI_TRAINING:-true}"
+      # Session/company memory. Off unless explicitly enabled.
+      LEGAL_SCOUT_MEMORY: "${LEGAL_SCOUT_MEMORY:-false}"
+      # Effects ledger (audit of side effects). Off unless explicitly enabled.
+      SCOUT_EFFECTS_LEDGER: "${SCOUT_EFFECTS_LEDGER:-false}"
+      # Routines (data-defined numbered sequences). Off unless explicitly enabled.
+      LEGAL_SCOUT_ROUTINES: "${LEGAL_SCOUT_ROUTINES:-false}"
+      # Ride the governing playbook along with a template match instead of
+      # hoping the model calls load_skill. Measured OFF: load_skill fired
+      # 0/3 on the combined director+shareholder request whose answer sits
+      # in the new-company-setup skill. Default off until A/B says otherwise.
+      LEGAL_SCOUT_SKILL_ROUTING: "${LEGAL_SCOUT_SKILL_ROUTING:-false}"
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:?Set JWT_SECRET_KEY in .env — run scripts/setup.sh}
       ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@legalscout.com}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in .env — run scripts/setup.sh}

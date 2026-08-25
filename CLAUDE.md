@@ -92,8 +92,11 @@ EXA_API_KEY=...           # Optional — only loaded when set, never embedded in
 | `scout/knowledge/routing/intents.json` | ★ Interpolated into the system prompt as DATA. A wrong tool name here is invisible to any source search — `generate_document_tool` sat in it for weeks as the primary source for "Create legal document" |
 | `tests/test_units.py` | **137 assertions** over source, DB and the served bundle. Runs INSIDE the container only: `docker exec scout-api python3 /app/tests/test_units.py` |
 | `tests/tracker_layer1.py` | 25 deterministic assertions off `/api/documents/fill-view` — the real regression gate |
-| `tests/tracker_layer2.py` | 14 chat runs; asserts the agent ASKS rather than guesses |
-| `tests/tracker_layer3.py` | Drives whole conversations to a generated `.docx`, unzips `word/document.xml` and proves the answers landed. ★ Like the others, a Python client — it never executes frontend code |
+| `tests/tracker_layer2.py` | 30 **scripted** runs; asserts the agent ASKS rather than guesses. Driven by `scout/testing/scripted_runtime.py` — no model, no network, no container |
+| `tests/tracker_layer3.py` | Drives 14 **scripted** conversations to a generated `.docx`, unzips `word/document.xml` and proves the answers landed. ★ Like the others, a Python client — it never executes frontend code |
+| `tests/tracker_fill.py` | 43 deterministic checks over the fill/slot path |
+| `tests/tracker_layer2_live.py`, `tests/tracker_layer3_live.py` | The **original model-driven** suites, kept verbatim. Run these when you need to know the real model still behaves; they cost API spend and can fail for reasons unrelated to your change |
+| `scout/testing/` | Test-only. `ScriptedAgentRuntime` plus `Ask`/`Pick`/`Text`/`Document`/`Complete`/`Error` step types. **Nothing in the product imports it.** Import it *by path*, not `from scout.testing import …` — `scout/__init__.py` does `from scout.agent import scout`, which drags in `mcp`/`agno` and fails outside the container |
 | `db/migration_016_people_father_name.sql` | `people.father_name` — Myanmar drafting names a person against their father; NOT in the DICA extract, hand-entered |
 | `scout/tools/people_sync.py` | Projects `companies.directors` + individual `members` into the People register. `sync_company_people()` runs inside `add_company()` (same conn, caller commits); `sync_all_companies()` backs `POST /api/people/sync-from-companies`. Dedup: NRC → name+DOB → name-with-no-NRC. Merge is FILL-BLANKS-ONLY (hand edits always win). Director+shareholder collapses to role `both`; corporate members skipped |
 | `scout/tools/smart_doc.py` | Document generation, placeholder fill (thread-safe, no globals). Calls `expand_repeat_regions()` at the top of `fill_template_with_validation` before the highlight fill |
@@ -126,6 +129,8 @@ EXA_API_KEY=...           # Optional — only loaded when set, never embedded in
 | `db/migration_017_party_selection_session.sql` | Scopes picker selections to the conversation. Without it a director chosen in one chat reappeared unasked in another 24 minutes later and landed in generated minutes |
 | `db/migration_018_purge_foreign_legal_references.sql` | Clears Indian company-law citations from all 15 templates; replaces `DIN Application` with the DICA director particulars filing |
 | `db/migration_019_email_approval_gate.sql` | `email_logs` gains `session_id`, `decided_at`, `decided_by_email`; status carries `queued`/`sent`/`failed`/`discarded` |
+| `db/migration_020_company_source_pdf.sql` | Stores the uploaded DICA PDF path on the company record |
+| `db/migration_021_fix_skill_tool_names.sql` | Rewrites dead tool names inside skill BODIES (`preview_document`→`preview_doc`, `list_tracked_documents`→`list_documents`). Word boundaries `\m..\M` are load-bearing — `preview_doc` is a PREFIX of `preview_document` |
 
 ### Frontend
 | File | Purpose |
@@ -137,6 +142,11 @@ EXA_API_KEY=...           # Optional — only loaded when set, never embedded in
 | `agent-ui/src/components/shell/SplitShell.tsx` | Animated chat/document split — panel slides on `cubic-bezier(0.4,0,0.2,1)` 250ms, columns toggle rides the panel edge, resize handle w/ invisible-until-hover blue bar |
 | `agent-ui/src/components/shell/ArtifactPanel.tsx` | Document pane: hairline rounded card (`#f8f8f7`), cyan-tinted toolbar, Fields / **Fill in** / Preview tabs, centered faint empty state |
 | `agent-ui/src/components/shell/FillInView.tsx` | Fill-in view: fetches `/api/documents/fill-view`, renders the whole document inline with blanks as click-to-pick buttons (register candidates + free text), generates via `/api/documents/fill-generate` then shows the PDF preview |
+| `agent-ui/src/components/shell/ActivityTray.tsx` | ★ ONE docked tray for every background job — replaces the standalone `ImportTray` **and** the blocking training modal. 380px, `bottom-4 right-4`, `rounded-[var(--radius-lg,12px)]`, `shadow-xl`, `px-3.5 py-2.5` rows, 13/12.5/11.5/11px type, `h-1` bars, `--bg-secondary` footer, collapsed pill. Tabs (Imports · Training · Email) use the admin 2px `--brand` underline. Mounted once by `AppShell` |
+| `agent-ui/src/components/shell/activity/{ImportsTab,TrainingTab,EmailTab}.tsx` | The three channels. Imports = the old tray rows verbatim + a `%` beside each bar. Training = queue % *and* current-template step % + collapsible 16-step list + Stop. Email = queued agent mail, recipient/attachment **wrapped not truncated**, Send behind a one-click confirm |
+| `agent-ui/src/hooks/useActivityTray.ts` | Tray visibility + tab. Visibility is the ABSENCE of a dismissal, not a stored `open`: new work revives a dismissed tray (a dismissal answered for work already seen). `forced` shows it before any channel has data — the gap between clicking Train and the poller's first tick |
+| `agent-ui/src/hooks/useTrainingJob.ts` | Single app-wide poller for `/api/knowledge/train-job` (1.5s active / 20s idle, `kickTrainingPoll()` to pull now). `stepsFromJob` reuses `freshSteps`/`applyStepEvent` so tray and modal cannot disagree. ★ The endpoint returns the MOST RECENT job, not a recent one — a finished run shows only if this page watched it run. Deliberately NOT an `updated_at` cutoff: that reads a Postgres UTC stamp against the browser clock and is wrong by 6.5h in Yangon, silently |
+| `agent-ui/src/hooks/useEmailQueue.ts` | 30s poll of `/api/email/queued` + `refreshEmailQueue()` |
 | `agent-ui/src/app/admin/overview/page.tsx` | Tabs: Dashboard \| Documents \| Emails \| Skills (bodies in sibling `*View.tsx`). Tab band MUST be `overflow-y-auto` (not hidden) or detail views clip |
 | `agent-ui/src/app/admin/registers/page.tsx` | Tabs: Templates \| Companies \| People |
 | `agent-ui/src/app/admin/settings/page.tsx` | Tabs: AI models \| Email \| System \| Activity \| Users \| Knowledge |
@@ -288,9 +298,245 @@ Training runs as a **server-side background job** — survives the training moda
 
 - **`app/training_jobs.py`** (new): DB table `template_training_jobs` (status queued|running|done|error|cancelled, queue jsonb, current_index, done/fail counts, logs jsonb heartbeat = updated_at). Daemon **thread** `_worker(job_id)` drives the EXISTING 15-step train-stream pipeline INTERNALLY via httpx to `http://127.0.0.1:8000` (mints own admin token `create_token(0,"system@training","admin")`) — zero pipeline change. **Per-template failure logs + continues** (fixes stop-at-N).
 - **Endpoints:** `POST /api/knowledge/train-start` (`{retrain_all|templates}`), `GET /api/knowledge/train-job` (poll ~1.5s), `POST /api/knowledge/train-cancel`. FE POSTs start then POLLS, resumes live status on modal-reopen/reload, has Stop (no AbortController teardown).
-- **★★★LANDMINE — `@app.on_event("startup")` is DEAD.** `app = agent_os.get_app()` (Agno) sets a **lifespan**; FastAPI/Starlette **silently ignores ALL `on_event("startup")` handlers when a lifespan exists**. So `startup_sync()` never runs (incl. dir-create, migration check, `_refresh_agent_knowledge`, `_refresh_legal_skills`, resume). FIX: watchdog started at **module-import time** (bottom of `training_jobs.py`; `from app import training_jobs` in main.py guarantees it per worker). ⚠️ OTHER startup_sync work is also silently dead — flagged, not yet fixed.
+- **★★★LANDMINE — `@app.on_event("startup")` is DEAD.** `app = agent_os.get_app()` (Agno) sets a **lifespan**; FastAPI/Starlette **silently ignores ALL `on_event("startup")` handlers when a lifespan exists**. So `startup_sync()` never runs (incl. dir-create, migration check, `_refresh_agent_knowledge`, `_refresh_legal_skills`, resume). FIX: watchdog started at **module-import time** (bottom of `training_jobs.py`; `from app import training_jobs` in main.py guarantees it per worker). ✅ RESOLVED: the whole of `startup_sync()` now runs — it is called at module-import time at `app/main.py:7625`, wrapped in a try/except that logs `[STARTUP] startup_sync failed:` rather than taking the app down. Dir-create, migration check, `_refresh_agent_knowledge`, `_refresh_legal_skills` and training resume all execute. The `on_event` fact remains true; only the "still dead" part was stale.
 - **★★multi-worker** (`uvicorn --workers 2`) → job state MUST be DB. Single-runner guard = **Postgres advisory lock** `pg_try_advisory_lock(4210771)` on a dedicated conn for worker life. On restart the killed process's session-lock lingers until PG reaps it → one-shot lock LOSES → orphaned 'running' forever; fixed with **watchdog** (45s, import-started) re-spawning a worker for any 'queued' or stale-'running' (updated_at > 120s) + orphan-aware lock retry. Worker gates on `/health` readiness before internal calls.
 - ★logging: use `logging.getLogger("legalscout")` (child `legalscout.training_jobs` had no handler → swallowed). E2E-verified: browser-close (100s no client → advanced), server-restart (watchdog revived → 11/11 done, 0 fail, DB 15/15), start/cancel. BAKED `scout:latest`, rollback `scout:pre-bgtrain-fix-20260727`. UNCOMMITTED.
+
+## ★★★Session 2026-08-25 — `1.2.32` → `1.2.42` (all UNCOMMITTED)
+
+Live image `scout:1.2.42`, `LEGAL_SCOUT_SKILL_ROUTING=true`. 79 files uncommitted, ~42 builds.
+
+### Fixed
+
+- **★★★An empty value from the model erased what the user typed.** The client's
+  first logged defect, reproduced with a boundary and fixed in `1.2.42`.
+  It ONLY appears on the flow a real user takes: answer the question cards, then
+  send "now generate" as a **separate message**. Captured from a failing run:
+
+      generate_document(custom_data={"date": "", "date_of_birth": "", "phone": "", ...})
+      while active_task.collected held {"date": "07 July 2027"}
+
+  `smart_doc.py:1058` merged `{**_remembered, **custom_data}` — caller wins on
+  every key it sends — so `""` won and the consent form had no date. Right rule
+  for corrections, wrong for omissions: the model omits by sending `""`, not by
+  leaving the key out. Now an empty caller value is dropped when a remembered
+  non-empty value exists for the same key. `_explicitly_supplied` still reads
+  PRESENCE, so "leave the date blank" is unaffected — that path never had a
+  remembered value to lose, because `merge_collected` only stores what the user
+  actually typed. **Measured, two-message flow: 2/5 → 9/9.**
+  ★The single-flow harness scores 3/3 and never sees this. A test that drives
+  generation in one continuous flow cannot reproduce the client's complaint.
+
+- **★★★All 15 `template_group` values were NULL, so the setup-template tool
+  always took its empty branch** and the agent answered "what documents set up a
+  company?" from its own legal knowledge, naming templates that do not exist.
+  Migration 011 already had the tagging SQL — it ran when `templates` was EMPTY
+  (register wiped, `.docx` uploaded afterwards through the UI), so its `UPDATE`
+  matched zero rows. A one-shot UPDATE cannot tag rows that arrive later, and
+  templates always arrive later. `migration_029` uses a **BEFORE INSERT trigger**
+  instead, covering both insert paths (`template_analyzer.py:254`,
+  `scripts/sync_templates.py:27`) and any future one. INSERT only, deliberately:
+  the admin Setup toggle clears a tag by writing NULL, and a BEFORE UPDATE
+  trigger would put it straight back and make the toggle look broken. Proved on
+  a scratch DB — migrate first, upload after — 4 tagged; with the trigger dropped
+  (mutation test) 15 NULL. Also matches `%Shareholder%director%Consent%` so the
+  N5 template auto-tags the day it arrives.
+
+- **★★★A picker of near neighbours is an absence, not a choice** (`1.2.36`).
+  `find_matching_templates` could not report absence: its only absence branch is
+  `len(matches) == 0`, unreachable for any request phrased in this vocabulary
+  because the predicate admitted a template when ANY word > 2 chars appeared in
+  its name — `and`, `for`, `new`, `non` all counted. "Director and Shareholder
+  Consent Form" matched **13 of 15**; `and` alone admits three on the substring
+  in "Resignation and Appointment". Added `_STOPWORDS`, a `partial_match` flag
+  when no single template covers every significant word, and a rule that a
+  partial match is never dominant. ★The grounding rule from `1.2.34` stops the
+  model INVENTING a name; it says nothing about SUBSTITUTING a real one.
+
+- **★★★Skills were PULL and did not fire.** All 15 templates are already named in
+  a `legal_skills` body and `new-company-setup` carries the exact consent set,
+  but `agent.py:613` leaves `load_skill` to the model's discretion. Measured 3
+  runs each: A0 3/3, resignation 3/3, **director-consent-new-company 0/3,
+  combined-roles 0/3**. `find_matching_templates` now returns the body itself
+  (`LEGAL_SCOUT_SKILL_ROUTING`, compose default off, **on** in the running
+  container). A/B: 0/3 → **3/3** on both failing prompts, others unchanged.
+  ★First routing rule required unanimity across the shortlist and almost never
+  held — the loose predicate drags a Resignation Letter in on the word
+  "director". Majority of the SHOWN options, falling back to the leader.
+
+- **Tool payload trimmed 23%** (`1.2.40`): `find_matching_templates` 9,160 →
+  7,095 chars. `matches` carried a full filesystem path and internal score for
+  13 candidates (3,015 → 1,691); `message`/`options` were a lettered a)/b)/c)
+  menu that the instruction in the same payload forbids relaying (705 → 0).
+  Verified unread first — the UI reads only `name`/`display_name`/
+  `selected_template`/`error`/`suggestion`/`clarification_needed`
+  (`toolDisplay.ts:461`).
+
+### ★★★OPEN — template drift, the worst one found today
+
+**The model sometimes generates a different document than the user asked for.**
+~2 runs in 11, on the two-message flow:
+
+    request:  "director consent form (non group member) for Win Win Tint"
+    call:     generate_document(template_name="Individual Shareholder Consent Form.docx")
+
+Also seen: *Group Member* consent for a request naming *Non-Group*. This is worse
+than a missing field — it is the wrong legal instrument. It also explains the
+remaining "no date in document" results: the Individual Shareholder Consent Form
+has **no date placeholder at all**, so the absence is a symptom of the drift, not
+of the merge. **No test covers template choice across a multi-message flow.**
+
+### Context / cost — measured, mostly leave alone
+
+- **Gemini caches implicitly.** 24,386 of the ~31,209-token floor are served from
+  cache with NO `cache_control` anywhere in this codebase — that syntax is
+  Anthropic-only and would be a no-op on `google/gemini-3.6-flash`. ★I claimed
+  "no prompt caching" from a cold-cache first measurement ($0.0242); steady state
+  is $0.0077. **8,785 tokens miss on every turn** — cause not yet established,
+  `add_datetime_to_context=True` is the prime suspect for splitting the prefix.
+- **`max_tool_calls_from_history=3` was implemented, baked as `1.2.41`, measured
+  and REVERTED.** Post-document turns averaged 60,487 input tokens without it and
+  55,036 with (9%), but individual turns ranged 33k–75k in BOTH arms — the effect
+  is smaller than the variance, and one trimmed run auto-filled TODAY's date into
+  a consent form. `agno/utils/message.py:10` filters HISTORY only; the current
+  run's own tool results are never touched, so it cannot fix a 136k single turn.
+- **The 5-run history window does NOT corrupt the document.** A card answer stops
+  being conversationally recallable at exactly 5 padding turns (`date kept` 2/3 at
+  0–3 pads, **0/3 at 5, 7, 9**) and the model then says "Signing Date: None
+  provided". The DOCUMENT is still right — `active_task.collected` +
+  `smart_doc.py:1054` — verified end to end at 0 and 7 pads. Real but smaller
+  defect: `collected` never reaches conversation context, so "what have I told you
+  so far?" is answered wrongly late in a thread.
+
+### Client masters — OneDrive folder checked 2026-08-24
+
+`~/Downloads/OneDrive_1_24-8-2026`: 15 `.docx` (exactly the register, no extras),
+5 DICA extract PDFs, 1 `STRICTLY CONFIDENTIAL` xlsx. **14 of 15 byte-identical to
+what is installed; field sets identical on all 15**, 155 placeholders total.
+★**`Director and Shareholder Consent Form.docx` is not there either** — N5 has no
+source anywhere, and the tracker row marks it `(new template)` itself.
+⚠ Do not copy that folder into the repo tree — `documents/` is bind-mounted and
+has been committed before.
+
+★★★**Five templates carry NON-BREAKING SPACES inside placeholder names**
+(`[individual\xa0shareholder_1_name]`). The product folds them at one choke point
+(`placeholders.py`), so this is handled — but any ad-hoc scan with an
+`[a-zA-Z0-9_ ]` character class reads them as ABSENT and reports phantom "ghost
+fields". I hit this and had to retract a finding.
+
+### Template knowledge is 87% empty
+
+    Annual General Meeting Minutes    purpose=214  when_to_use=127  how_to_use=412
+    Corporate Shareholder Consent     purpose=303  when_to_use=172  how_to_use=503
+    the other 13                      purpose=0    when_to_use=0    how_to_use=[]
+    9 of 15                           ai_analyzed = FALSE  (while ai_trained = TRUE on all 15)
+
+`ai_trained` claims trained while nothing was analysed. This is why matching falls
+back on FILENAMES, which is the root of the near-neighbour behaviour above. Filling
+it is the real version of "convert the templates to skills" — the semantic layer,
+with every `.docx` left exactly as the firm wrote it. NOT DONE.
+
+### Harness notes
+
+- `tests/tracker_layer3_live.py` returns **NO-DOC on every case**, including on
+  `1.2.34`, so it predates this session. The agent ends the turn after
+  `preview_doc` with zero text (`smart_doc.py:1829` documents the stop); the
+  browser survives it with a synthetic "continue". **One nudge finishes the run** —
+  the harness's own nudge path is broken, the product is fine.
+- `scout/tools/clarification.py` now carries `from __future__ import annotations`
+  so it can be imported off-container for offline testing despite
+  `scout/__init__.py` booting the whole agent.
+
+## ★★★Landmines found 2026-08-24 (1.2.0 groundwork)
+
+- **`scripts/sync_templates.py` cascade-deletes trained state.** It reconciles `templates` against the `.docx` files on disk, and for every row in `in_db - existing` it runs three deletes: `templates`, `knowledge_vec WHERE source_file = 'template:<name>'`, `knowledge_lookup WHERE source_file = 'template:<name>'`. So **removing a template file destroys its embeddings and lookups**, and re-adding the file gives you back an untrained template with no warning that anything was lost. ★**CORRECTED — I had this wrong.** It does **NOT** run on boot. `grep -rn sync_templates` across `*.py`, `*.sh`, `*.yaml` and the Dockerfile finds **zero callers**: `startup_sync()` does not call it, `scripts/entrypoint.sh` runs only `python -m db.migrate`, and nothing in compose invokes it. It is an orphan script that only does damage when a human runs it by hand — which lowers the severity a great deal, and is worth knowing before anyone reaches for it to repopulate the register.
+  ★ The corollary bit me directly: **template files on disk never reach the `templates` table on their own.** After deploying 1.2.0 with 15 `.docx` present and visible inside the container, `SELECT count(*) FROM templates` was still **0**. Registration happens through the admin upload endpoint, not by scanning the directory.
+- **★★★A SWALLOWED EXCEPTION DOES NOT PROTECT THE CALLER — the transaction is already dead.** If any bookkeeping write (ledger, audit, telemetry) runs on the **caller's** connection and fails, Postgres marks that transaction aborted and every later statement the *caller* issues fails with `InFailedSqlTransaction: current transaction is aborted`, no matter how thoroughly the bookkeeping code caught its own error. Demonstrated on the live DB with a real `CheckViolation`:
+
+  | | shares the caller's connection | own autocommit connection |
+  |---|---|---|
+  | caller's INSERT | ok | ok |
+  | bookkeeping write fails | `CheckViolation` — swallowed | `CheckViolation` — swallowed |
+  | caller's next statement | **`InFailedSqlTransaction`** | ok |
+  | caller's `COMMIT` | **reports ok** | ok |
+  | caller's work actually saved | **0 — LOST** | **1 — survived** |
+
+  ★★★The commit **reports success** while the work is discarded — psycopg turns a commit on an aborted transaction into a rollback. This is the database-layer twin of "a 200 is not a working product": the caller sees every green light and loses the write. Anything writing a side record must open its **own** connection with `autocommit=True` and expose no parameter through which a caller's connection could be passed. `sync_company_people` is the live hazard — it runs on the caller's connection and deliberately does not commit, so a borrowed connection there takes down the whole company sync.
+
+  **THE REMEDY when you cannot avoid the caller's connection: `SAVEPOINT`.** `ROLLBACK TO SAVEPOINT` is legal *inside* an aborted transaction and returns it to usable. Verified on the live PostgreSQL 18.4 with a real `ForeignKeyViolation`:
+
+  | | no savepoint | `SAVEPOINT` + `ROLLBACK TO SAVEPOINT` |
+|---|---|---|
+  | caller's INSERT | ok | ok |
+  | side-record write | `ForeignKeyViolation` — swallowed | `ForeignKeyViolation` — swallowed |
+  | caller's next statement | **`InFailedSqlTransaction`** | ok |
+  | caller's `COMMIT` | reports OK | reports OK |
+  | caller's work saved | **0 — LOST** | **1 — survived** |
+
+  So there are two correct shapes and only two: **own autocommit connection** (preferred — no caller to protect), or **a savepoint around every borrowed-connection write**. Name the savepoint from a module constant, never interpolate it. A `{"stored": False}` return value is not a fix: it is a truthful statement about the side record and says nothing about the transaction it just killed.
+- **★★★A dead API route that answered HTTP 200 — `/api/company/generate-extract/{company_id}`.** It was defined *below* the frontend catch-all `@app.get("/{full_path:path}")`, which claims every GET registered after it, so the endpoint returned the frontend's HTML at **200** and its body never ran. **Verified live before the fix**, with a valid admin token:
+
+  | request | status | content-type | body |
+  |---|---|---|---|
+  | `/api/company/generate-extract/1` | 200 | `text/html` | Next.js shell, build id `Q2HfIguvG23satBQR_OIJ` |
+  | `/definitely-not-a-route` | 200 | `text/html` | **same build id** |
+  | `/api/email/queued` (above the catch-all) | 200 | `application/json` | `{"success":true,"queued":[]}` |
+
+  Byte-identical to a path that does not exist. Unauthenticated both look like `401 {"detail":"Authentication required"}` — the middleware answers first — so **you cannot see this without a token**. FIXED by moving the route above the catch-all (now at `app/main.py:7039`, catch-all at 7221). ★ `@app.post("/api/documents/send-email")` is still below it and is fine: the catch-all only claims GET. That asymmetry is why the bug survives a casual smoke test. The invariant worth keeping: **no `/api/…` GET may be registered after the catch-all** — the two GETs that appear after it in source are in the `else:` branch and are mutually exclusive with it.
+- **★★★A SECOND POSTGRES LISTENS ON `127.0.0.1:5432` AND IT IS NOT THIS PRODUCT'S.** PostgreSQL **16.13 (Homebrew)**, owned by `rahulgupta`, holding `postgres` / `ai` / `hiredb`. Legal Scout's database is **PostgreSQL 18.4** inside the `scout-db` container, which publishes **no host port at all** (`compose.yaml` gives it no `ports:` block — only `scout-api` publishes 8080), so `scout-db` resolves only inside the `scout` bridge network and is reachable only via `docker exec`. A test that took the obvious `localhost:5432` default would **connect, succeed, and report green against a database with nothing to do with Legal Scout**. Any DB-touching suite must print the server version and database name and refuse to run unless the tables it needs are present.
+- **A prompt instruction naming a tool that does not exist passes the audit when it has no parentheses.** `scout/agent.py:1563` says `**DO NOT call analyze_new_template**`, but nothing is registered under that name — agno sees `analyze`. `_audit_prompt_tool_contract()` only matches a name immediately followed by `(` with an argument-list shape, so a *negative* instruction slips through. The result: the model cannot avoid calling a name it is never shown, and the tool the instruction meant is unguarded.
+- **★★★TWO DIFFERENT FUNCTIONS ARE REGISTERED UNDER ONE TOOL NAME — `list_sources`. Live, and no startup guard can see it.** Agno keys a tool by the function's own `__name__`, not by the dict key it was fetched under. Confirmed inside the container (agent construction bypassed with a namespace stub, both modules loaded from disk unmodified):
+
+  | registered via | agno tool name | function |
+  |---|---|---|
+  | `scout/agent.py:309` `list_sources` (from `create_list_sources_tool()`) | `list_sources` | `scout/tools/awareness.py:30` |
+  | `scout/agent.py:278` `knowledge_tools["list_knowledge_sources"]` | **`list_sources`** | `scout/tools/knowledge_tools.py:165` |
+
+  `SAME agno tool name? True. SAME function? False.` **One of the two is unreachable**, and the system prompt tells the model to call it (`scout/agent.py:1188`, "Use `list_sources` to see what's available"). Neither guard can catch this: `_registered_tool_names()` (`agent.py:325`) returns a **set**, so the collision collapses to one entry and `_audit_prompt_tool_contract()` cannot raise; `_build_tool_inventory()` (`:371`) does `if name in seen: continue`, so the prompt gets one line carrying whichever docstring arrived first. Same class as the `preview_document` bug that forced migration 021 — an instruction pointing at a tool that is not the one you meant — but with **no possible startup raise**. NOT FIXED: renaming one changes which tool the agent calls, so it is a product decision. `tests/tracker_routines.py` pins the duplicate registrations so the set cannot grow silently.
+
+  **FIXED 2026-08-24.** `knowledge_tools`' function is renamed to `list_knowledge_sources`, matching the dict key it was always exported under; awareness keeps `list_sources`, which is the one the prompt at `agent.py:1188` means (it filters by `source_type` and formats its output — the other returned bare filenames). `get_known_templates` was also removed from `_tools_to_add`: it and `list_templates` were the same object bound twice at `:242-243`.
+
+  **And the registry now refuses to boot on ANY duplicate.** `_duplicate_tool_names()` counts instead of setting, and joins the existing `STARTUP_STRICT_TOOLS` refusal. Proven against both registries:
+
+  | | agno names | duplicates | boot |
+|---|---|---|---|
+  | before rename | `list_sources`, **`list_sources`**, `search`, `lookup` | `{'list_sources': 2}` | **REFUSES** |
+  | after rename | `list_sources`, `list_knowledge_sources`, `search`, `lookup` | none | proceeds |
+
+  ★ A collision is strictly worse than a missing tool: a missing tool ends the turn visibly empty, a collision runs the **wrong function** and returns a plausible answer. Renaming the export-dict key fixes nothing — agno never reads it.
+- **`get_known_templates` and `list_templates` are the same object registered twice** — `scout/agent.py:242-243` both bind `template_analyzer["list_templates"]`, and both names go into `_tools_to_add`. Low severity; pinned by a test that goes red with the fix named when someone corrects it.
+- **CLAUDE.md's own "Agent Tools" table named EIGHT tools by the wrong name** — `search_knowledge`→`search`, `lookup_knowledge`→`lookup`, `list_knowledge_sources`→`list_sources`, `list_tracked_documents`→`list_documents`, `get_document_info`→`get_document`, `get_document_stats`→`get_stats`, plus `analyze_new_template`→**`analyze`** and `save_template_to_knowledge`→**`save_knowledge`** (`template_analyzer.py:617,632`). Those last two carry **three** disagreeing names each — the variable in `agent.py`, the export-dict key, and the function's own `__name__`, which is the only one agno uses. ★ `analyze`, `search` and `lookup` are what the model is actually offered, and they are extremely generic names to choose between. The prompt inventory is generated, so the model is unaffected; the exposure is that this table is what a human reads before writing a skill body — which is exactly how migration 021 became necessary. Re-checked: no seeded skill body names any of the six, so the data is clean.
+- **★★★`DELETE /api/dashboard/company/{name}` could delete EVERY company. FIXED.** `app/main.py:5223` was `DELETE FROM companies WHERE company_name_english ILIKE %s` on the raw unquoted path parameter, with **no `LIMIT`** and `conn.autocommit = True` set two lines above — so no transaction to roll back. ILIKE reads as case-insensitive equality, but LIKE metacharacters in the parameter are live. Measured on throwaway rows (4 seeded, fictional names, real register untouched at 0):
+
+  | path parameter | before fix | after fix |
+  |---|---|---|
+  | exact name | 1 deleted ✓ | 1 deleted ✓ |
+  | different case, same name | — | 1 deleted ✓ (case-insensitivity kept) |
+  | a name containing `_` | **2 deleted** — took a sibling | 1 deleted ✓ |
+  | `DELETE …/company/%25` → `%` | **4 deleted — ALL of them** | **0 deleted** ✓ |
+
+  ★ The `_` row needs no attacker: it fires on any registered company name containing an underscore, and takes silent collateral. Severity was bounded by `require_admin`, so this was a destructive-operation footgun rather than an auth bypass. Fixed to `lower(company_name_english) = lower(%s)`. The follow-up `knowledge_lookup` sweep stays a LIKE — it is a genuine substring match — but its parameter is now escaped with an explicit `ESCAPE '\\'`, or deleting a company named `%` would empty that table too.
+- **★★★CROSS-COMPANY LEAK, LIVE, in the agent's `search_knowledge` tool.** `scout/tools/knowledge_base.py:461` is `SELECT DISTINCT key_name, key_value, source_file FROM knowledge_lookup WHERE key_value ILIKE %s LIMIT %s` — **no `source_file` restriction of any kind**. `add_company()` writes six company-identifying rows per company at `:681-686` under `source_file = f"company:{company_name}"`, so registered office, directors and registration numbers for **every client** are returned on any matching substring. `search_knowledge` is a registered agent tool (`scout/agent.py:272`, and `search_knowledge=True` at `:1697`). Company scope in that store is a **naming convention inside a string**, not a key: nothing constrains it, and a company rename orphans every row. NOT FIXED — the scope column does not exist, and narrowing the tool changes what the agent can answer. **FIXED 2026-08-24, narrowly.** `search_knowledge` now excludes the `company:%` namespace by default; `include_clients=True` is passed only by `GET /api/knowledge/search`, which also now requires admin. The agent keeps `get_company` / `get_directors` / `get_shareholders`, which resolve a company first, so no capability is lost. Measured with two fictional clients sharing a street name:
+
+  | query path | rows | distinct CLIENTS exposed |
+|---|---|---|
+  | old (git HEAD) | 3 | **2 of 2** |
+  | new — agent default | 1 | **0** |
+  | new — admin opt-in | 3 | 2 (deliberate) |
+
+  Template knowledge stayed reachable throughout. ★This does NOT add the scope column — company scope in that table is still a naming convention inside a string. It keeps the client namespace out of the model's reach, which is the part that was urgent.
+- **`scout_learnings` is scoped by `user_id` only** (`app/main.py:6371`), yet `scout/agent.py:1240-1275` instructs the model to save company-specific facts into it (`save_learning("City Holdings Limited is stored as …")`). `search_learnings` then serves that back to the same clerk while they work on a **different** client. Same failure mode as the leak above, different store.
+- **`scout/__init__.py` boots the entire agent on ANY submodule import.** It is `from scout.agent import scout, scout_knowledge, scout_learnings`, so `import scout.anything` constructs the Agno agent, the model client, the DB handle and all 45 tools — and agno pulls `mcp`, absent locally. Consequence: no part of `scout/` is unit-testable off-container, and any script importing one helper pays full agent construction. Work around it with a namespace stub; the real fix is making `scout/__init__.py` lazy.
+- **★★★`_LINK_COLS` is a positional PREFIX of three queries.** `app/main.py` builds `get_person`, `person_companies` and `list_company_people` from the same column string; the third appends `p.full_name, p.nationality, p.nrc_passport_no` and reads them **by index**. Adding a column to `_LINK_COLS` without renumbering that slice puts the person's NAME into `company_name` on `/api/companies/{id}/people` — no exception, just a wrong answer. A star comment now sits above the constant.
+- **★★★`link_company_person` NULLed every field the caller omitted.** The UPSERT set all columns from `EXCLUDED`, so a partial body wiped the rest. **This was already firing in production**: the "Link company" form never sends `share_class`, so re-linking someone to fix an appointed date silently cleared their share class, invisibly. FIXED — fields absent from the body keep their stored value; a field present but empty still clears, so deliberate blanking works. Measured on the live DB: body carrying only `resigned_date` NULLed **4 of 4** untouched fields before, **0 of 4** after.
+- **`cessation_recorded_by` is stamped from the session, never the body.** `require_admin(request)` supplies it. A recorder the caller names is a claim, not an audit trail — a forgery control proves a body claiming `somebody.else@attacker.test` still stores the real admin. An unrelated re-link does not re-stamp it.
+- **`slot_resolver.py:253` `is_valid_entry` always returns True.** It does `return bool(_contract_validate(entry))`, but `app/slot_contract.py:102 validate_mapping_entry` is `-> tuple[bool, str | None]` and **all 12 of its return paths return a 2-tuple**. `bool((False, "reason"))` is `True`, so every entry validates, including invalid ones. **LATENT — `grep -rn is_valid_entry` finds only the definition; there are zero callers.** **FIXED** with `ok = _contract_validate(entry); return bool(ok[0] if isinstance(ok, tuple) else ok)`. Measured on 6 entries: the contract rejects 5 of them, the old code returned True for **5 of 5**, the new code for **0 of 5**, and the valid control still passes.
+  ★ The test trap underneath it: `_contract_validate` is `None` unless `app` imports, and `app` needs `jwt`. A venv without `jwt` exercises the FALLBACK branch, cannot reproduce the bug at all, and **reports green**. The container has jwt, so the broken path is the one that ships.
+- **Download-link regex in the tracker suites.** `tracker_layer3_live.py` — **fixed, but it was never a live defect and my earlier note over-claimed it.** The `/documents/…` alternative requires `\.docx`, so the greedy `[^\s)"']+` backtracks to the extension anyway; and there is **no `/api/documents/download/` route in the product at all** — the only occurrences are the two tracker suites and `scout/testing/scripted_runtime.py`. The product emits `/documents/legal/output/{f.name}` (`app/main.py:4602`). So the greedy alternative matches nothing the real agent sends; the fix there is a defensive no-op. **`tracker_layer3.py:643` is different and IS live**: the scripted suite is the gate, its runtime is what emits `/api/documents/download/…`, and the alternative there is unanchored. Measured on `"…e1-minutes.docxThe minutes are ready."` → scripted extracts `…docxThe`, live extracts `…docx`. It has not fired only because the fixtures happen to leave whitespace after the URL. One fixture without that space turns every case into ERROR "could not read docx" for a reason unrelated to the product.
+- **`slot_resolver.py` had no `from __future__ import annotations`** (its sibling `repeat_regions.py` did), so its `str | None` annotations made it unimportable on python 3.9, the system python here. **FIXED — the import is at `slot_resolver.py:28`.** Verified: same module without the line raises `TypeError: unsupported operand type(s) for |: 'type' and 'NoneType'` on 3.9.6; with it, imports and `collect_slot_requests` is callable.
+- **`scout/tools/slot_resolver.py:923 _member_position_covered` is dead code** — measured 0 calls across all 8 slot kinds.
+- **Circular import**: `scout/__init__.py` → `scout.agent` → `db` → `app/__init__.py:8` → `app.main:24` → `scout.agent`. Anything importing `scout.*` outside the container trips it. Import submodules by path instead.
+- **The container has drifted from its image.** `docker diff scout-api` shows `/app/static-frontend` overwritten by a `docker cp`, so `docker tag scout:latest scout:<rollback>` would have captured a rollback point **missing the live frontend**. Use `docker commit scout-api <tag>`. Verified by chunk `webpack-f40d06f764fe8d0f.js` — present in the committed image, absent from `scout:latest`.
 
 ## Database Tables
 
@@ -476,7 +722,15 @@ Templates hard-code fixed slots (`individual shareholder_1..2`, `corporate share
 - **Safe:** no-op on all 15 templates with empty data; single scattered refs (e.g. the Chairperson line) are never touched.
 - ★`_is_corporate` must accept member `type` value `"Company"` (real DICA data), not only `"corporate"`.
 - ★`_tail_attr` must check `"name"` before `"share"` — else "shareholder_1_**name**" matches "share" and renders blank.
-- Landmine: the existing `slot_resolver.collect_slot_requests` still ASKS for numbered member slots up front; the expander fixes the OUTPUT but the ask-step over-asking is a pending reconciliation.
+- **★★★CORRECTED 2026-08-24 — this landmine described the bug BACKWARDS.** `collect_slot_requests` did not *over*-ask numbered member slots; it collapsed every numbered position of a party family into a **single** question. Measured on the `appointed_director` family, container python 3.12.8, against HEAD and against the fix:
+
+  | Template declares | Real parties | HEAD asked | Fixed asks |
+  |---|---|---|---|
+  | 3 slots | 7 | **1** | **7** |
+  | 3 slots | 2 | 1 | **2** |
+  | 3 slots | count unknown | 1 | 1 |
+
+  So the ask-step **under**-asked while `repeat_regions` expanded the output correctly — the two consulted different sources. FIXED: `collect_slot_requests` now calls `repeat_regions._parties_for_family` for the families in `_REPEAT_FAMILIES` and keys its dedup on `position if real_count else None`, so an unknown count deliberately preserves the old collapse rather than guessing. Reproduced independently twice, by two different methods.
 
 ### 3. Whole-document fill-in view — `scout/tools/fill_view.py` + `FillInView.tsx`
 `GET /api/documents/fill-view?template=&company=` renders the doc as ordered blocks; each blank carries `kind` + register candidates. `FillInView.tsx` (3rd panel tab) shows the whole document, blanks are click-to-pick chips (candidates + free text), and `POST /api/documents/fill-generate` generates + previews. E2E-proven live on ARCTIC SUN (1 corporate member → 1 Present line + 1 corporate signing block).
@@ -572,11 +826,57 @@ All database connections use centralized `get_db_conn()` from `db/connection.py`
 - **Monitoring stack removed** from compose — only `scout-db` + `scout-api` ship.
 - **Download MIME fix** — `_file_response()` sets correct `media_type` + `Content-Disposition` so browsers (Safari especially) don't append `.txt` to `.docx`.
 
-## Current State (2026-08-06)
+## Current State (2026-08-07)
 
-**Correctness + safety release. COMMITTED** — 19 commits on `main`, working tree clean, baked into `scout:latest` on `http://localhost:8080`. Rollback tag `pre-cfos-improvements` at `9491f97`; images `scout:pre-phase1-…`, `pre-approval-…`, `pre-emailgate-…`, `pre-emptystream-…`, `pre-docauth-20260806`.
+**One activity tray + signing/authority correctness. Baked, UNCOMMITTED (tray only).** `scout:latest` on `http://localhost:8080`, health 200. Rollback image `scout:pre-activitytray-20260806`.
 
-Suite **139 PASS** (`docker exec scout-api python3 /app/tests/test_units.py`) · Layer 1 **25/25**.
+Suite **164 PASS · 4 SKIP** (`docker exec scout-api python3 /app/tests/test_units.py`).
+
+### ★★★ The product is on a FRESH INSTALL — Layer 1 is 8 PASS / 17 BLOCKED, and that is correct
+
+**★CORRECTED 2026-08-24 — the count AND the cause are both out of date.** The wipe (requested 2026-08-06) deleted all 15 templates and only 2 were re-uploaded; that is no longer the state. Measured now:
+
+```
+on disk → 15 .docx    git status (that dir) → 0 entries    git ls-files → 16 (15 .docx + .gitkeep)
+templates table → 0 rows          companies table → 0 rows
+```
+
+The files are all back. **Layer 1 is still blocked, but for a different reason, and restoring files will not unblock it** — they are present and *untrained*. Three gates stand between here and 25/25:
+1. `templates` is empty, so `POST /api/knowledge/train-start` reads 0 rows and returns `{"status": "nothing_to_train"}` (`app/main.py:4058`).
+2. `SKIP_AI_TRAINING: "true"` is hardcoded at `compose.yaml:79` and not overridable from `.env`, so training is a silent no-op (`ai_analysis = None`, `app/main.py:3642`).
+3. `companies` is empty, and `/api/documents/fill-view` — which every Layer 1 assertion reads — needs a company. **Retraining alone cannot reach 25/25.**
+
+Recreating the container to flip gate 2 pulls `scout:latest` (`compose.yaml:57`), which reverts the drifted frontend — use `IMAGE_TAG=1.1.0`.
+
+All 17 report the identical `Template not found: …docx` from `/api/documents/fill-view` returning `success:false`. **BLOCKED is a third state on purpose** — the assertion never executes, so this is *absent*, not *broken*. Printed as FAIL, C3c ("Resignation Letter offers WIN WIN TINT") would send someone debugging `people_picker.py` over a missing file. Same reasoning as the `SKIP` state in `test_units.py`. Restore with `git checkout -- documents/legal/templates` (bind mount, live immediately), then retrain.
+
+### ★★ One tray replaced the blocking training modal
+
+Training already survived the tab closing — what it did not survive was the UI, because the only way to watch it was a modal covering the page it was training from. `startTraining` now opens `ActivityTray` on the Training tab (`openTab('training')` + `kickTrainingPoll()`, because the idle poll is 20s and a tray that appears a beat after the click reads as a dead button). The modal stays behind the "Training log" button for the transcript.
+
+Percentages added throughout: import rows, training queue **and** current-template step (`Step 5.5 of 16 · Map to DB columns`), artifact panel fields (`12/17 · 71%`). The in-flight template counts as a fraction of the queue bar, so one slow template no longer reads as frozen.
+
+Copy fixed: "Fifteen steps" → "Sixteen stages per template, numbered 1 to 15 — 5.5 is a real half-step". `STEP_DEFS` has 16 entries; the NUMBERS were not changed, because they appear in stored logs.
+
+**No Documents tab.** Nothing tracks document generation as a queue — it streams in chat. A fourth tab would have been drawn, not wired.
+
+### ★★ Signature blocks expand from the party list, never from editing the .docx
+
+Verified live on `Annual General Meeting Minutes.docx` (ships 2 individual + 1 corporate slot): 7 individual members → 22 rows / 7 signature blocks / 14 `__rr_N__` tokens, Present-member paragraphs grown to 7 in the same pass; 5 individual + 2 corporate → corporates get "Signed by its authorized representative" row groups, individuals the plain block.
+
+★ `_parties_for_family()` reads `members` / `attendees` / `shareholders_selected` / `present_members` (member family) — **`shareholders_list` is NOT one of them** and returns 0 tokens with an unchanged document and no warning. That looks exactly like a broken expander.
+
+★ A corporate representative is vetted against **that member company's** board. Unregistered → fails OPEN with a WARNING; registered but off-board → the name is DROPPED.
+
+⚠️ Still unreconciled: `slot_resolver.collect_slot_requests` asks about the NUMBERED slots the template declares (1, 2, 3). A 7-party document renders correctly and may still only be asked about 3. Prefer the Fill-in tab for many-party documents.
+
+## Previous State (2026-08-06)
+
+**Correctness + safety release. COMMITTED** — 19 commits on `main`, baked into `scout:latest`. Rollback tag `pre-cfos-improvements` at `9491f97`; images `scout:pre-phase1-…`, `pre-approval-…`, `pre-emailgate-…`, `pre-emptystream-…`, `pre-docauth-20260806`, `pre-signing-fix-…`, `pre-register-authority-…`, `pre-slotfix-…`, `pre-freshreset-20260806`.
+
+Suite **139 PASS** at the time · Layer 1 **25/25** (before the wipe).
+
+Also landed in that pass: duplicate signature block (sole corporate member signing twice, 5 rows → 3); board-authority guard; cessation honoured on both candidate paths; type-aware member slot assignment; 7 dead skill tool references purged (migration 021) plus a write-time validator in `app/main.py` (`_reject_unknown_skill_tools`); stale `known_locations` removed from `intents.json`; the unfilled badge counting `custom_data` keys instead of template placeholders.
 
 ### ★★★ THERE ARE REMOTES, AND THEY ARE PUBLIC
 
@@ -684,18 +984,37 @@ Two tools the system prompt told the model to call were not registered — `gene
 
 ### Test suites (`tests/`)
 
+**Python floor — and it is systemic, not two files.** ★I have now corrected this line **three times**, each time after fixing one module and declaring the floor gone. It was not one bug; it is a pattern. A file annotating `X | None` **without** `from __future__ import annotations` is unimportable on the 3.9.6 system python (`TypeError: unsupported operand type(s) for |`). Fixed in the order they surfaced, each one revealing the next:
+
+| # | file | annotation |
+|---|---|---|
+| 1 | `scout/tools/slot_resolver.py:28` | `str \| None` |
+| 2 | `scout/tools/smart_doc.py:105` | `dict[str, Any] \| None` |
+| 3 | `app/slot_contract.py` | `tuple[bool, str \| None]` |
+
+**Nine more live files still carry it** and are deliberately NOT fixed: `app/main.py`, `db/session.py`, `scout/context/intent_routing.py`, `scout/context/source_registry.py`, `scout/evals/{grader,run_evals,test_cases}.py`, `scout/tools/{awareness,save_discovery,search}.py`. The last three hold **`@tool` decorators**, and PEP 563 turns annotations into strings that agno/pydantic must resolve at schema-build time — so adding the import there is a change to tool-schema generation, not a formatting tweak, and must be verified against a running agent rather than assumed. The container is 3.12.8 and unaffected by any of this.
+
+★ Fixing one file does not remove the floor; it moves it to whichever module the next import reaches. Do not claim the floor is gone — run the suites.
+
+★ Side benefit worth knowing: with `app/slot_contract.py` importable on 3.9, `slot_resolver._contract_validate` is no longer `None` locally, so the **contract branch is now the one the offline suite exercises** — previously it silently tested the fallback and reported green.
+
+★ Do not gate a suite on a version literal. `tracker_fill.py` briefly hard-exited below 3.10; a version number is a guess about *why* an import fails and goes stale the moment someone fixes the real cause — which is exactly what happened here. The suite now attempts the import and reports the module, the line, the cause and the one-line fix.
+
 | Suite | Scope | Determinism |
 |---|---|---|
 | `tracker_layer1.py` | 25 assertions off `/api/documents/fill-view` | **Deterministic — the real gate** |
-| `tracker_layer2.py` | 14 chat runs; asserts it asks rather than guesses | Non-deterministic |
-| `tracker_layer3.py` | Full conversations → generated `.docx`, unzipped and grepped | Non-deterministic |
+| `tracker_layer2.py` | 30 scripted runs; asserts it asks rather than guesses | **Deterministic** — no model, no network |
+| `tracker_layer3.py` | 14 scripted conversations → `.docx`, unzipped and grepped | **Deterministic** — no model, no network |
+| `tracker_fill.py` | 43 checks over the fill/slot path | **Deterministic** |
+| `tracker_layer2_live.py` | The old model-driven layer-2 run, preserved verbatim | Non-deterministic — costs API spend |
+| `tracker_layer3_live.py` | The old model-driven layer-3 run, preserved verbatim | Non-deterministic — costs API spend |
 
 Layer 2/3 failures move between cases run to run; do not treat one as a regression until it reproduces. Runs are tagged with `user_id` so they appear in the app's own sidebar.
 
-### Known open (as of 2026-08-06)
+### Known open (as of 2026-08-07)
 
 **Unverified rather than broken:**
-- **No frontend change has been confirmed in a real browser.** The closing render, the approval card and the queued-email card are proven against real tool results and present in the served bundle, but never clicked. Browser automation has never connected in this project, and the three tracker suites are Python clients that cannot execute `agent-ui/` code.
+- **No frontend change has been confirmed in a real browser.** The closing render, the approval card, the queued-email card and now the whole activity tray are proven against real tool results / live endpoints and present in the served bundle (`/app/static-frontend/_next/static/chunks`), but never clicked. Browser automation has never connected in this project, and the three tracker suites are Python clients that cannot execute `agent-ui/` code.
 - **Real email delivery is unproven** — SMTP is unconfigured, so the send path stops at the SMTP connection. Everything before that is tested.
 
 **Open work:**
@@ -706,9 +1025,13 @@ Layer 2/3 failures move between cases run to run; do not treat one as a regressi
 - ~~The model sometimes ends a turn without a closing sentence~~ **prompt fix landed 2026-08-06** — one rule, with a turn ending in a pause (`ask_questions` / picker) as the single explicit exception so cards do not get redundant prose above them. Still worth watching in practice.
 - `collect_slot_requests`: the corporate-representative suppression was **wrong in the unsafe direction** and is fixed (2026-08-06). It counted `repeat_regions`' last-resort fallback — the corporate member's FIRST DIRECTOR from the register — as "already answered", so a resolution could be signed by whoever the register listed first with no picker shown. Measured on CITY MART HOLDING COMPANY LIMITED: resolved to MIN MIN, ask skipped on all four *Shareholders Resolution In Writing* templates. Suppression now requires a representative somebody actually CHOSE. Other slot suppression still not exhaustive.
 - Python-repr parser retained in `useArtifact.ts` — required for sessions stored before tool results became JSON.
-- "Director and Shareholder Consent Form" template does not exist; tracker case B5 blocked.
-- The client's OneDrive master copy of *Notice of AGM to Shareholders* still lacks `[director_name]` — re-uploading reintroduces a fixed bug.
-- `intents.json` `known_locations` still points at `documents/legal/data/`, but the product is DB-only. Stale routing hint, low impact.
+- ~~"Director and Shareholder Consent Form" template does not exist; tracker case B5 blocked.~~ **Confirmed 2026-08-25 and characterised.** Not in the register and not in the client's OneDrive masters; their tracker marks it `(new template)`. Run as the TWO approved consents instead — 3 reps each, all four tracker expectations met (asked for the new company name 3/3, person auto-filled 3/3, shares 3/3, capital 2/3, signing date 3/3, supplied values in the .docx, zero auto-filled dates). ★Do not author a substitute: a pass against a self-written file proves nothing about theirs while looking like a result.
+- ~~The client's OneDrive master copy of *Notice of AGM to Shareholders* still lacks `[director_name]`~~ **STALE — checked 2026-08-25.** The 24-Aug OneDrive copy HAS `[director_name]`; field sets are identical to what is installed (the files differ by hash only). Safe to re-upload any of the 15.
+- ~~`intents.json` `known_locations` points at `documents/legal/data/`~~ **REMOVED 2026-08-06.**
+- ~~⚠️ **The register is empty after the wipe**~~ **RESOLVED — 2026-08-25: 15 templates registered, 4 tagged `new_company_setup`, companies populated.** Historical note: ~~2 of 15 templates~~ **15 of 15 template files were back on disk (2026-08-24) while the `templates` table had 0 rows and `companies` had 0 rows**, so nothing is trained and nothing is queryable. Layer 1 cannot be a gate until templates are restored and retrained. Backup with the 5 client DICA PDFs, 15 templates, 94 documents and `legalscout-full.sql` (523MB) lives at `~/Desktop/LegalScout-backup-20260806` — **the only copy of the client filings**.
+- Duplicate detection runs only AFTER extraction, so N duplicate DICA files cost N full ~45s AI calls. Comparing filenames / registration numbers up front would skip them.
+- No cessation-recording workflow: `company_people.resigned_date` is honoured by the picker and accepted by the endpoint, but no admin UI field sets it.
+- Rotate `ADMIN_PASSWORD` and `JWT_SECRET_KEY` before this leaves localhost.
 
 ### Considered and rejected: porting to Cloudflare OS (2026-08-06)
 
@@ -718,8 +1041,8 @@ Worth borrowing instead: their **Gatekeeper** pattern (approval + audit around e
 
 ## Previous State (2026-07-27)
 
-- **Background training release**: template training is now a server-side background job (`app/training_jobs.py`) that survives modal/tab/browser close AND server restart — DB-backed job + Postgres advisory lock + import-time watchdog. Per-template failures log+continue (fixes stop-at-N). ★★★Landmine: `@app.on_event("startup")` is dead under AgentOS lifespan → watchdog started at module import instead. BAKED `scout:latest`, rollback `scout:pre-bgtrain-fix-20260727`, E2E-verified (browser-close, server-restart, 11/11 done 0 fail, DB 15/15). UNCOMMITTED. ⚠️ OTHER `startup_sync` work (dir-create, migration check, knowledge/skills refresh) also silently dead under the lifespan — flagged, not yet fixed.
-- **Dynamic-templates release** (client feedback): setup-template filter + unbounded attendees/signatories (`repeat_regions.py`) + whole-document fill-in view (`fill_view.py`, `FillInView.tsx`) + admin Setup-group toggle. Baked into the `:8080` image (rebuilt 2026-07-27, rollback tag `scout:pre-dynamic-templates`), health 200, E2E-verified live on real data. UNCOMMITTED on `main` — not pushed. Pending refinement: `collect_slot_requests` still over-asks numbered member slots at the ask-step (output already correct).
+- **Background training release**: template training is now a server-side background job (`app/training_jobs.py`) that survives modal/tab/browser close AND server restart — DB-backed job + Postgres advisory lock + import-time watchdog. Per-template failures log+continue (fixes stop-at-N). ★★★Landmine: `@app.on_event("startup")` is dead under AgentOS lifespan → watchdog started at module import instead. BAKED `scout:latest`, rollback `scout:pre-bgtrain-fix-20260727`, E2E-verified (browser-close, server-restart, 11/11 done 0 fail, DB 15/15). UNCOMMITTED. ✅ RESOLVED: `startup_sync()` in full is now invoked at module-import time (`app/main.py:7625`); dir-create, migration check and the knowledge/skills refreshes all run.
+- **Dynamic-templates release** (client feedback): setup-template filter + unbounded attendees/signatories (`repeat_regions.py`) + whole-document fill-in view (`fill_view.py`, `FillInView.tsx`) + admin Setup-group toggle. Baked into the `:8080` image (rebuilt 2026-07-27, rollback tag `scout:pre-dynamic-templates`), health 200, E2E-verified live on real data. UNCOMMITTED on `main` — not pushed. ~~Pending refinement: `collect_slot_requests` still over-asks numbered member slots~~ — **wrong, and now fixed**: it *under*-asked (one question for N positions). See the corrected landmine above.
 
 ## Previous State (2026-07-25)
 

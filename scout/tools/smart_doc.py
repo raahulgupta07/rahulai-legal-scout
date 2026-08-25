@@ -10,8 +10,16 @@ Complete workflow for legal document generation:
 5. Generate final document
 """
 
+# ★ Required on python 3.9: `_lookup_recent_generation` is annotated
+# `dict[str, Any] | None`, and `GenericAlias | None` is evaluated at def time
+# without it — `TypeError: unsupported operand type(s) for |`. The container is
+# 3.12 so this never bit there; it made the whole module unimportable on the
+# system python, which is what `tracker_fill.py` runs on.
+from __future__ import annotations
+
 import hashlib
 import json as _json
+from contextvars import ContextVar
 import logging
 import re
 import threading
@@ -36,6 +44,7 @@ from scout.tools.repeat_regions import _is_corporate
 from scout.tools.slot_resolver import (
     collect_slot_requests,
     companion_identifier,
+    current_session_scope,
     normalise_mapping,
     resolve_slot,
     session_scope,
@@ -43,6 +52,44 @@ from scout.tools.slot_resolver import (
 )
 
 LEFT_BLANK = ""
+
+# Set on the fill `data` when the document is for a company being incorporated.
+# Read in find_replacement's `source == "db"` branch, which otherwise answers
+# company-identity placeholders straight from the register row and never looks
+# at `data` at all — so setting data["company"] alone had no effect on the
+# finished document.
+NEWCO_MARKER = "__new_company_name__"
+
+# Only these are overridden. Everything else a template pulls from the register
+# is left as it is: the consent forms render just the name and the number, and
+# blanking the rest would trip the undeclared-blank guard on fields the document
+# never shows.
+_NEWCO_NAME_FIELDS = frozenset({"company", "company_name", "company_name_english"})
+_NEWCO_REG_FIELDS = frozenset({"company_registration_number"})
+
+# Placeholders this fill deliberately replaced with nothing.
+#
+# `validate_filled_document` re-opens the SAVED document and looks for leftover
+# `{{...}}` patterns, so it is structurally blind to a placeholder that was
+# replaced with "" — there is no pattern left to find. That is how a Corporate
+# Shareholder Consent came out reading "hereinafter referred to as  ("NewCo")
+# ... shall invest in  in NewCo" while the result said 13 placeholders,
+# unfilled_names: [] and validation_status "Complete": a resolution
+# incorporating an unnamed company for an unstated sum, reported as finished.
+#
+# A ContextVar rather than a parameter because `find_replacement` is called deep
+# inside the paragraph/table walk and threading a collector through every frame
+# would touch far more code than the defect warrants. Set per generation and
+# reset in a finally, so one document's blanks can never be attributed to the
+# next — the same leak the effects turn scope guards against.
+_blanked_placeholders: ContextVar = ContextVar("smart_doc_blanked", default=None)
+
+
+def _note_blank(placeholder: str) -> None:
+    """Record that `placeholder` was emitted as empty, if anyone is collecting."""
+    sink = _blanked_placeholders.get()
+    if sink is not None and placeholder:
+        sink.add(str(placeholder))
 
 
 def _session_of(run_context: Any) -> str:
@@ -168,6 +215,30 @@ def extract_placeholders_from_template(template_path: Path) -> dict[str, Any]:
 
 
 
+# The placeholder values the pipeline uses to mean "nothing here yet". Compared
+# case-insensitively: `prepare_document_data` writes "TBD" for a party position
+# the register does not fill, and a TBD is precisely a field that still needs an
+# answer, not one that is satisfied.
+_EMPTY_VALUES = {"", "tbd", "[tbd]", "[tbd - needs input]", "none", "n/a"}
+
+
+def _has_value(company_data: dict, *keys: str) -> bool:
+    """Whether any spelling of a field carries real data in `company_data`."""
+    for key in keys:
+        if not key:
+            continue
+        value = company_data.get(key)
+        if value is None:
+            continue
+        if isinstance(value, (list, dict)):
+            if value:
+                return True
+            continue
+        if str(value).strip().lower() not in _EMPTY_VALUES:
+            return True
+    return False
+
+
 def validate_data_vs_template(required_fields: list, company_data: dict) -> dict[str, Any]:
     """
     Validate that company data has all required fields for template.
@@ -178,12 +249,26 @@ def validate_data_vs_template(required_fields: list, company_data: dict) -> dict
     available_fields = []
     missing_fields = []
 
-    # Fields that always have defaults
-    DEFAULT_FIELDS = {"pronoun", "meeting_location", "financial_year_end_date",
-                      "next_financial_year_end_date", "auditor_name", "auditor_fee",
-                      "date", "address", "nric", "identification_type",
-                      "authorized_director_name", "resigning_director_name",
-                      "resigning_director_identification_number", "shareholder_name"}
+    # Fields that genuinely have a default — `find_replacement` returns a real
+    # value for these without anyone being asked, so they are legitimately
+    # "available" while absent from the company record.
+    #
+    # This list used to hold twelve more names on the claim that they "always
+    # have defaults". They do not. Measured through `find_replacement`:
+    # `auditor_name`, `auditor_fee`, `financial_year_end_date`,
+    # `next_financial_year_end_date` and `shareholder_name` return the literal
+    # string "TBD" (from a set the resolver itself calls KNOWN_USER_INPUT), and
+    # `pronoun`, `date`, `nric`, `identification_type`,
+    # `authorized_director_name`, `resigning_director_name` and
+    # `resigning_director_identification_number` return None, which leaves the
+    # RAW PLACEHOLDER in the document with no highlight at all.
+    #
+    # Either way the field was exempted from the value check, counted as
+    # satisfied, and therefore never put to the user — the same defect as the
+    # `new_company_name` case, hidden behind a list that asserted the opposite.
+    # `tracker_fill` now pins the claim: every member must resolve to a real
+    # value, so the two cannot drift apart again.
+    DEFAULT_FIELDS = {"meeting_location", "address"}
 
     # Alias mapping for matching
     FIELD_ALIASES = {
@@ -216,6 +301,20 @@ def validate_data_vs_template(required_fields: list, company_data: dict) -> dict
         # Has default
         if not found and field_normalized in DEFAULT_FIELDS:
             found = True
+
+        # A NAME match is not data. `found` above is decided purely by spelling,
+        # and the match is a SUBSTRING test, so `new_company_name` matched the
+        # `company_name` column and was reported as "available / DB" while its
+        # value was None — inflating coverage AND, because a resolved field is
+        # never asked about, shipping the document with a blank new-company
+        # name. A field is only available when it actually carries a value.
+        #
+        # DEFAULT_FIELDS are exempt: those are filled from defaults further down
+        # the pipeline, so they are legitimately available while still empty here.
+        if found and field_normalized not in DEFAULT_FIELDS and not _has_value(
+            company_data, field, field_normalized
+        ):
+            found = False
 
         if found:
             available_fields.append(field)
@@ -323,20 +422,244 @@ def analyze_template(template_name: str, documents_dir: str = "/documents") -> d
     Step 1: Analyze template to extract required fields.
     """
     templates_dir = Path(documents_dir) / "legal" / "templates"
-    template_path = templates_dir / template_name
 
-    if not template_path.exists():
+    resolved_name, close = _resolve_template_name(template_name, templates_dir)
+    if resolved_name is None:
         return {
             "success": False,
             "error": f"Template not found: {template_name}",
+            "close_matches": close,
             "available_templates": [f.name for f in templates_dir.glob("*.docx")] if templates_dir.exists() else [],
+            "agent_instruction": (
+                "Do NOT guess a different template. "
+                + (
+                    "Ask the user which of these they mean with ask_questions: "
+                    + "; ".join(close)
+                    if close
+                    else "Pick an exact name from available_templates."
+                )
+            ),
         }
+    template_name = resolved_name
+    template_path = templates_dir / template_name
 
     result = extract_placeholders_from_template(template_path)
     result["success"] = True
     result["template_path"] = str(template_path)
 
     return result
+
+
+_NO_COMPANY = {
+    "success": False,
+    "step": "company_lookup",
+    "error": "No company specified and none agreed in this conversation.",
+    "agent_instruction": (
+        "ASK NOW, IN THIS SAME TURN — ending your turn with no text is forbidden. "
+        "Ask which company this document is for via ask_questions, offering the "
+        "companies as clickable options. Never guess."
+    ),
+}
+
+
+def _resolve_company_arg(company_name, session_id):
+    """The company a document tool should act on, or "" when it is unknown.
+
+    NEVER falls through to a lookup with an empty name: `prepare_document_data`
+    treats "" as a fuzzy query and returns whichever company happens to match
+    first — measured, an empty name resolved to an unrelated client and reported
+    success. Making `company_name` optional (so the session binding could supply
+    it) put that path within easy reach, so the empty case is refused here.
+    """
+    named = (company_name or "").strip()
+    if named:
+        return named
+    return _company_from_binding(session_id)
+
+
+def _company_from_binding(session_id: str) -> str:
+    """The company this conversation was already agreed to be about.
+
+    Consulted ONLY when the caller supplied no company name. A conversation
+    settles its subject once — at the picker — and every later turn used to
+    re-derive it from whatever the model happened to type, which is why the
+    agent re-asked which company mid-flow after it had already been answered.
+
+    Returns "" whenever the memory layer is off, nothing is bound, or the bound
+    company cannot be named — every caller then behaves exactly as before.
+    """
+    key = str(session_id or "").strip()
+    if not key:
+        return ""
+    try:
+        from scout.memory import RESOLVED, resolve_for_session
+
+        bound = resolve_for_session(key)
+        if bound.status != RESOLVED:
+            return ""
+        return str(getattr(bound, "company_name", "") or "").strip()
+    except Exception as e:  # noqa: BLE001
+        _log_binding_warning(key, e)
+        return ""
+
+
+def _log_binding_warning(key, exc):
+    import logging
+
+    logging.getLogger("legalscout").warning(f"session binding lookup failed for {key!r}: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# Numeric presentation
+# ---------------------------------------------------------------------------
+# The model routinely hands back a bare integer for a figure the user typed with
+# separators: asked for "50,000,000 MMK, 10,000 shares, 100% ownership", it
+# passed 50000000, 10000 and 100. The document then reads
+#
+#     10000 Ordinary Shares      50000000 MMK      100
+#
+# which is not how a Myanmar corporate instrument states a sum. Nothing strips
+# the commas — they are simply never sent — so re-applying presentation at fill
+# time is the only place this can be corrected once, for every template.
+#
+# Deliberately conservative. It fires ONLY on a bare integer (or a plain decimal
+# for a percentage), and only for a field whose name says what the number means.
+# Anything already carrying a separator, a currency word or any other character
+# is left exactly as supplied.
+
+# Checked FIRST and unconditionally. These are identifiers that happen to be
+# digits: a registration number with thousands separators is a different number,
+# and an NRC or a year with a comma in it is simply wrong.
+_NOT_A_QUANTITY_RE = re.compile(
+    r"registration|regno|reg_no|nrc|passport|phone|mobile|fax|postal|zip"
+    r"|year|clause|section|article|serial|invoice|account|licen[cs]e|tin"
+)
+_MONEY_OR_COUNT_RE = re.compile(
+    r"amount|subscription|paid|capital|consideration|value|price|fee|sum"
+    r"|shares?|share_count|no_of_share|number_of_share"
+)
+_PERCENT_RE = re.compile(r"percent|percentage|shareholding|ownership|holding_pct")
+
+_BARE_INT_RE = re.compile(r"^\d{4,}$")
+
+# A bare `date` placeholder, answered under a QUALIFIED key.
+#
+# Measured on the client's tracker (AGM Minutes): the agent asked
+# "meeting_date", the user answered "07 July 2027", and the document came out
+# with `Date:` EMPTY — the template's placeholder is `date`, and no tier of
+# _resolve_from_data matches "meeting_date" to "date". The same template on the
+# next run asked under `date` and filled correctly, so the value was lost purely
+# because the model chose an id more specific than the placeholder.
+#
+# Deliberately a CLOSED list rather than "any key ending in _date". The obvious
+# general rule — any key whose tokens include "date" — would let
+# `date_of_birth` fill the date of a legal instrument, which is a worse
+# document than a blank one.
+_QUALIFIED_DATE_RE = re.compile(
+    r"^(?:meeting|signing|sign|signature|notice|effective|resolution|consent"
+    r"|document|letter|minutes|agm|appointment|resignation)_dates?$"
+)
+_BARE_PERCENT_RE = re.compile(r"^\d{1,3}(?:\.\d+)?$")
+
+
+def _present_number(field: str, value: Any) -> Any:
+    """Restore the separators / % a figure is written with, when it is safe to.
+
+    Returns `value` untouched unless the field NAMES a quantity and the value is
+    a bare number. Identifier-shaped fields are excluded first, so a company
+    registration number can never acquire a comma.
+    """
+    if value is None or isinstance(value, bool):
+        return value
+    text = str(value).strip()
+    if not text:
+        return value
+    key = canonical_field(field) or normalize_field(field) or str(field).lower()
+    if _NOT_A_QUANTITY_RE.search(key):
+        return value
+    if _PERCENT_RE.search(key) and _BARE_PERCENT_RE.match(text):
+        # "100" → "100%". A percentage sign is not decoration in a shareholding
+        # table; without it the cell states a share COUNT.
+        return f"{text.rstrip('.')}%"
+    if _MONEY_OR_COUNT_RE.search(key) and _BARE_INT_RE.match(text):
+        return f"{int(text):,}"
+    return value
+
+
+def _present_numbers(data: dict[str, Any]) -> dict[str, Any]:
+    """_present_number across a whole data dict."""
+    return {k: _present_number(k, v) for k, v in data.items()}
+
+
+def _normalise_template_key(name: str) -> str:
+    """Lowercase, drop the extension, and collapse punctuation to single spaces.
+
+    "Corporate_Shareholder_Consent-Directors Resolution.docx" and
+    "corporate shareholder consent - directors resolution" become the same key.
+    """
+    stem = re.sub(r"\.docx$", "", str(name or "").strip(), flags=re.I)
+    return re.sub(r"[^a-z0-9]+", " ", stem.lower()).strip()
+
+
+def _resolve_template_name(
+    template_name: str, templates_dir: Path
+) -> tuple[str | None, list[str]]:
+    """Map a requested template name onto a real file.
+
+    Returns (filename, []) when it resolves, or (None, close_matches) when it
+    does not. A match is returned ONLY when it is unique: two candidates mean
+    the caller has not said which document it wants, and picking one is how a
+    Director Resignation gets written on an AGM Minutes form.
+
+    Tiers, most literal first: exact filename, the historical
+    underscore/space variants, case- and punctuation-insensitive equality,
+    then unique prefix, then unique substring.
+    """
+    if not templates_dir.is_dir():
+        return None, []
+
+    candidates = [
+        p.name for p in templates_dir.glob("*.docx") if not p.name.startswith("~$")
+    ]
+
+    # Membership in the real listing, NOT Path.is_file(). macOS is
+    # case-insensitive, so `(dir / "director resignation letter.docx").is_file()`
+    # is True there and this would return the caller's spelling — a name that
+    # does not exist inside the Linux container the product actually runs in.
+    # The listing gives back the file's true name in every case.
+    existing = set(candidates)
+    for literal in (
+        template_name,
+        template_name.replace("_", " "),
+        template_name.replace(" ", "_"),
+        f"{template_name}.docx",
+        f"{template_name.replace('_', ' ')}.docx",
+    ):
+        if literal and literal in existing:
+            return literal, []
+
+    key = _normalise_template_key(template_name)
+    if not key:
+        return None, []
+
+    by_key = [(c, _normalise_template_key(c)) for c in candidates]
+
+    exact = [c for c, k in by_key if k == key]
+    if len(exact) == 1:
+        return exact[0], []
+    if len(exact) > 1:
+        return None, sorted(exact)
+
+    prefix = [c for c, k in by_key if k.startswith(key)]
+    if len(prefix) == 1:
+        return prefix[0], []
+    if len(prefix) > 1:
+        return None, sorted(prefix)
+
+    substring = [c for c, k in by_key if key in k]
+    if len(substring) == 1:
+        return substring[0], []
+    return None, sorted(substring)
 
 
 def prepare_document_data(template_name: str, company_name: str, documents_dir: str = "/documents") -> dict[str, Any]:
@@ -351,19 +674,35 @@ def prepare_document_data(template_name: str, company_name: str, documents_dir: 
     """
     templates_dir = Path(documents_dir) / "legal" / "templates"
 
+    resolved_name, ambiguous = _resolve_template_name(template_name, templates_dir)
+    if resolved_name is None:
+        # Naming the candidates is the whole point. The old error said only
+        # "Template not found: <name>" — and a model given no near match does
+        # the worst possible thing, which is guess. Measured: asking for
+        # "Corporate Shareholder Consent - Directors Resolution" (a true prefix
+        # of the real filename) produced a fully-formed set of ANNUAL GENERAL
+        # MEETING MINUTES instead, with none of the requested terms in it.
+        return {
+            "success": False,
+            "error": f"Template not found: {template_name}",
+            "step": "template_analysis",
+            "close_matches": ambiguous,
+            "available_templates": sorted(
+                p.name for p in templates_dir.glob("*.docx") if not p.name.startswith("~$")
+            ),
+            "agent_instruction": (
+                "Do NOT guess a different template and do NOT generate anything. "
+                + (
+                    "Several templates match that name — ask the user which one with "
+                    "ask_questions, using these as the options: " + "; ".join(ambiguous)
+                    if ambiguous
+                    else "Choose the correct name from available_templates, or ask the "
+                    "user with ask_questions if none clearly matches."
+                )
+            ),
+        }
+    template_name = resolved_name
     template_path = templates_dir / template_name
-    if not template_path.exists():
-        # Try converting underscores to spaces
-        alt_name = template_name.replace("_", " ")
-        template_path = templates_dir / alt_name
-        if not template_path.exists():
-            # Try converting spaces to underscores
-            alt_name = template_name.replace(" ", "_")
-            template_path = templates_dir / alt_name
-            if not template_path.exists():
-                return {"success": False, "error": f"Template not found: {template_name}", "step": "template_analysis"}
-        # Use the found name
-        template_name = alt_name if template_path.exists() else template_name
 
     template_analysis = extract_placeholders_from_template(template_path)
     required_fields = template_analysis.get("fields", [])
@@ -638,29 +977,116 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
         return analyze_template(template_name, documents_dir)
 
     def prepare_document(
-        template_name: str, company_name: str, run_context: RunContext = None
+        template_name: str, company_name: str = "", run_context: RunContext = None
     ) -> dict[str, Any]:
         """Complete workflow: analyze, validate, prepare data."""
-        with session_scope(_session_of(run_context)):
-            return prepare_document_data(template_name, company_name, documents_dir)
+        session_id = _session_of(run_context)
+        with session_scope(session_id):
+            resolved = _resolve_company_arg(company_name, session_id)
+            if not resolved:
+                return dict(_NO_COMPANY)
+            return prepare_document_data(template_name, resolved, documents_dir)
 
     def generate_document(
         template_name: str,
-        company_name: str,
+        company_name: str = "",
         custom_data: dict = None,
         run_context: RunContext = None,
     ) -> dict[str, Any]:
         """Generate document with validation workflow."""
-        with session_scope(_session_of(run_context)):
-            return _generate_document(template_name, company_name, custom_data)
+        session_id = _session_of(run_context)
+        with session_scope(session_id):
+            resolved = _resolve_company_arg(company_name, session_id)
+            if not resolved:
+                return dict(_NO_COMPANY)
+            return _generate_document(template_name, resolved, custom_data)
 
     def _generate_document(template_name: str, company_name: str, custom_data: dict = None) -> dict[str, Any]:
+        # Collect the placeholders this fill empties, so validation can report
+        # them. Reset in the finally at the end of the generation so a blank
+        # from one document is never attributed to the next.
+        _blank_token = _blanked_placeholders.set(set())
+        try:
+            return _generate_document_inner(template_name, company_name, custom_data)
+        finally:
+            _blanked_placeholders.reset(_blank_token)
+
+    def _generate_document_inner(template_name: str, company_name: str, custom_data: dict = None) -> dict[str, Any]:
         result = prepare_document_data(template_name, company_name, documents_dir)
 
         if not result.get("success"):
             return result
 
+        # prepare_document_data resolves the requested name onto a real file
+        # (a prefix, a case variant, different punctuation). Everything below
+        # keys off the template NAME — the field mapping, the DB field
+        # classification, and the path the .docx is opened from — so adopt the
+        # resolved name here. Without this the request succeeds analysis and
+        # then dies on "Template not found" one screen later.
+        template_name = (
+            (result.get("template_analysis") or {}).get("template") or template_name
+        )
+
+        # The goal goes on the server the moment it is known. Measured on
+        # session 3be25e3c: between a pause and its resume the agent lost track
+        # of what it was making and started over. Nothing remembered.
+        _session = current_session_scope()
+        try:
+            from scout.tools.task_memory import remember_task
+
+            remember_task(_session, template_name, company_name, custom_data)
+        except Exception as _e:  # noqa: BLE001 — never fail a run for memory
+            logging.getLogger("legalscout").warning(f"[TASK] record skipped: {_e}")
+
         mapping = _get_field_mapping(template_name) or {}
+
+        # Values collected EARLIER in this conversation are merged back in.
+        #
+        # `custom_data` does not accumulate between generate_document calls, so
+        # anything the model omits from this call would be blank in the
+        # document — the defect behind 1.2.14 and 1.2.18. Restating that rule in
+        # prose did not hold; carrying the values server-side removes the
+        # requirement instead. The CALLER still wins on every key it sends, so a
+        # correction is never overwritten by a stale remembered value.
+        try:
+            from scout.tools.task_memory import recall_task
+
+            _remembered = (recall_task(_session) or {}).get("collected") or {}
+        except Exception:  # noqa: BLE001
+            _remembered = {}
+        if _remembered:
+            # An EMPTY caller value does not beat a remembered one.
+            #
+            # The caller winning on every key it sends was right for
+            # corrections and wrong for omissions, and the model omits by
+            # sending "" rather than by leaving the key out. Measured on the
+            # flow a real user takes — answer the cards, then send "now
+            # generate" as a separate message — `generate_document` was called
+            # with:
+            #
+            #     {"date": "", "date_of_birth": "", "phone": "", ...}
+            #
+            # while active_task.collected held {"date": "07 July 2027"} from the
+            # card the user had just filled in. The empty string won and the
+            # consent form came out with no date. 2 runs in 5.
+            #
+            # `_explicitly_supplied` still treats PRESENCE as the signal, so a
+            # deliberate "leave the effective date blank" is still honoured —
+            # that path never had a remembered value to lose, because
+            # merge_collected only ever stores what the user actually typed
+            # (task_memory.py: `str(v or "").strip()`). The one case this
+            # changes is a user who supplies a value and later blanks the same
+            # field in the same conversation; they get their earlier value back
+            # and must say so again. That is a far smaller loss than silently
+            # dropping what they typed, which is the client's first logged
+            # defect.
+            _caller = custom_data or {}
+            _kept = {
+                k: v
+                for k, v in _caller.items()
+                if str(v or "").strip() or not str(_remembered.get(k) or "").strip()
+            }
+            custom_data = {**_remembered, **_kept}
 
         # A slot names a PERSON the user must choose. prepare_document_data
         # pre-fills those placeholders from the company record (directors[0] and
@@ -723,7 +1149,10 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
                 + ". Once the user has picked, call generate_document again with "
                 + "custom_data={"
                 + ", ".join(f'"{r["placeholder"]}": "<chosen name>"' for r in slot_requests)
-                + "}.",
+                + "} PLUS every other value the user has already given you in this "
+                + "conversation (company names, sectors, amounts, share counts, "
+                + "percentages, dates). custom_data does NOT accumulate between calls — "
+                + "whatever you omit is blank in the document.",
             }
 
         # Smart default: If 90%+ fields available, proceed automatically
@@ -752,7 +1181,28 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
             logging.getLogger("legalscout").warning(f"Failed to load field classification for '{template_name}': {e}")
 
         # If classification exists, separate user_input vs db fields
-        if field_classification and not custom_data:
+        #
+        # This gate used to read `if field_classification and not custom_data`,
+        # which skipped it ENTIRELY the moment any custom_data was present. That
+        # is exactly the second call the party-slot guard above asks for: it
+        # tells the model to "call generate_document again with
+        # custom_data={<slot>: <chosen name>}", the model complies with the
+        # party names ALONE, custom_data becomes truthy — and every remaining
+        # user-input field slips past unchecked and resolves to LEFT_BLANK.
+        #
+        # The document that comes out is not visibly broken. No {{placeholder}},
+        # no TBD, just a resolution incorporating a company that is never named,
+        # for a sum never stated: "hereinafter referred to as  ("NewCo")".
+        # Measured at roughly 1 run in 4 on the Corporate Shareholder Consent,
+        # on 1.2.12 as well as 1.2.13 — it presents as model flakiness, but the
+        # hole is here, and whether it opens depends only on whether the model
+        # happened to re-send the other values it had already been given.
+        #
+        # So the check now runs ALWAYS, and asks the honest question: is this
+        # field resolvable from the DB record MERGED WITH custom_data, or did
+        # the caller deliberately set it? Emptiness of custom_data was never
+        # what mattered.
+        if field_classification:
             user_input_fields = field_classification.get("user_input_fields", [])
             db_fields_list = field_classification.get("db_fields", [])
             field_descriptions = field_classification.get("field_descriptions", {})
@@ -764,12 +1214,21 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
 
             # Check which user_input_fields are actually missing from data
             normalized_data = result.get("normalized_data", {})
+            # The DB record is the floor; custom_data is what the caller has
+            # collected on top of it. A field is missing only if NEITHER holds
+            # it and the caller did not deliberately blank it.
+            merged_data = dict(normalized_data)
+            if custom_data:
+                merged_data.update(custom_data)
             missing_user_fields = []
             for uf in user_input_fields:
                 if template_fields and canonical_field(uf) not in template_fields:
                     continue
-                if not _resolve_from_data(uf, normalized_data):
-                    missing_user_fields.append(uf)
+                if _resolve_from_data(uf, merged_data):
+                    continue
+                if _explicitly_supplied(uf, custom_data):
+                    continue
+                missing_user_fields.append(uf)
 
             # Auto-filled DB fields
             db_fields_filled = []
@@ -800,6 +1259,23 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
                     "db_fields_filled": db_fields_filled,
                     "static_text_warnings": field_classification.get("static_text_warnings", []),
                     "message": "These fields need your input (company data is already filled)",
+                    # Without this the model reads success=False as a failure and
+                    # either stops or retries the identical call. Naming the next
+                    # action — and that the NEXT call must carry every value it
+                    # already holds — is what closes the loop.
+                    "agent_instruction": (
+                        "ACT NOW, IN THIS SAME TURN — do not end your turn empty and do "
+                        "not repeat this call unchanged. If the user already gave any of "
+                        "these values earlier in the conversation, use them. For the rest, "
+                        "call ask_questions with one question per field (use "
+                        '"input_type": "date" for any date). Then call generate_document '
+                        "again with custom_data carrying EVERY value you hold — the party "
+                        "selections you passed before AND these fields. custom_data does "
+                        "not accumulate between calls: anything you leave out of the next "
+                        "call is BLANK in the document, and a blank legal term is not "
+                        "visible in the finished file. Missing now: "
+                        + ", ".join(missing_user_fields)
+                    ),
                     "document_state": _document_state(
                         template=template_name,
                         company=company_name,
@@ -852,6 +1328,90 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
                 safe_custom[k] = v
             data.update(safe_custom)
 
+        # Restore separators BEFORE the dedupe key is computed, so the hash sees
+        # the same values that reach the document and a re-send of "50000000"
+        # is recognised as the same generation as "50,000,000".
+        data = _present_numbers(data)
+
+        # ---- A company that does not exist yet -----------------------------
+        #
+        # Measured against the client's testing tracker (case "Setup 1"): the
+        # agent correctly ASKED "What is the name of the new company?", the user
+        # answered "ZENITH ORCHID VENTURES LIMITED" — and the consent form came
+        # out reading
+        #
+        #     To: CITY HOLDINGS LIMITED
+        #     Company Registration Number: 119510619
+        #
+        # The answer was collected and then silently discarded: `company_name`
+        # is in PROTECTED_FIELDS, so custom_data carrying it is stripped above.
+        # The form then kept the register company used for the lookup, which is
+        # worse than a blank — a signed consent would attach the director to a
+        # DIFFERENT client entity, complete with that entity's real
+        # registration number.
+        #
+        # PROTECTED_FIELDS stays as it is: it stops the model overwriting
+        # company identity on an ordinary document, which is a real protection.
+        # The escape hatch is explicit instead — a dedicated `new_company_name`
+        # key, which the model must pass deliberately.
+        #
+        # ★ The override applies ONLY when the template does not itself render a
+        #   separate `new_company_name`. Measured placeholders:
+        #     Director Consent (Non-Group) → company, company_registration_number
+        #     Individual Shareholder Consent → company_name
+        #     Corporate Shareholder Consent → company_name, company_registration_number,
+        #                                     new_company_name
+        #   The last one names TWO companies — the parent passing the resolution
+        #   and the NewCo being formed. Overwriting `company_name` there would
+        #   replace the parent with the NewCo and invert the whole instrument.
+        #   `canonical_field` keeps the two keys distinct (verified), so this
+        #   test is sound.
+        _new_company = ""
+        for _k in ("new_company_name", "incorporating_company_name"):
+            _v = (custom_data or {}).get(_k)
+            if isinstance(_v, str) and _v.strip():
+                _new_company = _v.strip()
+                break
+
+        if _new_company:
+            _tpl_fields = {
+                canonical_field(f)
+                for f in (result.get("template_analysis", {}).get("required_fields") or [])
+            }
+            if canonical_field("new_company_name") not in _tpl_fields:
+                for _key in ("company", "company_name", "company_name_english"):
+                    if canonical_field(_key) in _tpl_fields or _key in data:
+                        data[_key] = _new_company
+                # A company being incorporated has no number yet. The client's
+                # tracker asks for this exact wording; a real number belonging to
+                # some other company is the failure being fixed.
+                #
+                # The supplied value is read out of custom_data DIRECTLY rather
+                # than trusted to be in `data`: company_registration_number is a
+                # PROTECTED_FIELD, so a caller-supplied number was stripped
+                # upstream and `data` still holds the REGISTER's number. Testing
+                # "was it supplied" and then leaving `data` alone would keep the
+                # wrong company's number — the exact defect being fixed here.
+                _supplied_reg = None
+                _reg_key = canonical_field("company_registration_number")
+                for _k, _v in (custom_data or {}).items():
+                    if canonical_field(_k) == _reg_key:
+                        _supplied_reg = _v
+                        break
+                data["company_registration_number"] = (
+                    str(_supplied_reg)
+                    if _supplied_reg is not None
+                    else "TBC upon incorporation"
+                )
+                # find_replacement resolves company identity from the DB row,
+                # not from `data` — see its `source == "db"` branch. The marker
+                # is how the decision reaches it.
+                data[NEWCO_MARKER] = _new_company
+                logging.getLogger("legalscout").info(
+                    f"[NEWCO] '{template_name}' bound to unincorporated company "
+                    f"'{_new_company}' (registration number TBC)"
+                )
+
         # Idempotency check sits here, after `data` is fully resolved and before
         # anything is written: this is the last point where the inputs are known
         # and the first side effect (saving the .docx, S3 upload, record_document)
@@ -876,6 +1436,59 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
             return previous
 
         filled_doc = fill_template_with_validation(template_path, data, template_name=template_name, company_name=company_name)
+
+        # A blank nobody asked for does not get written to disk.
+        #
+        # `fill_template_with_validation` records every placeholder it replaced
+        # with LEFT_BLANK. Downstream, those are folded into `unfilled_names`,
+        # `is_valid` goes False and the summary says "Partial" — but the file was
+        # still saved and the download link still handed over. For a legal
+        # instrument that is the wrong default: the finished .docx carries no
+        # {{placeholder}} and no TBD, so a blank term is invisible on the page.
+        # The measured example is a resolution reading "hereinafter referred to
+        # as  ("NewCo")" — an incorporation with no company named.
+        #
+        # A blank is only acceptable when it was CHOSEN. `_explicitly_supplied`
+        # keys on presence, so a caller that passes {"effective_date": ""} has
+        # said "leave it blank" and that still generates. A field simply never
+        # supplied has not been decided, and this refuses before anything is
+        # written — no orphan file, no link to an incomplete document.
+        _blank_now = sorted(_blanked_placeholders.get() or set())
+        _undeclared = [b for b in _blank_now if not _explicitly_supplied(b, custom_data)]
+        if _undeclared:
+            logging.getLogger("legalscout").warning(
+                f"refused to generate '{template_name}' for '{company_name}': "
+                + f"{len(_undeclared)} undeclared blank field(s): " + ", ".join(_undeclared)
+            )
+            return {
+                "success": False,
+                "error": "Undeclared blank fields",
+                "blank_fields": _undeclared,
+                "document_state": _document_state(
+                    template=template_name,
+                    company=company_name,
+                    required_fields=result.get("template_analysis", {}).get("required_fields", []),
+                    values=data,
+                    status="awaiting-input",
+                    outstanding=_undeclared,
+                ),
+                "message": "These fields would be blank in the document: "
+                + ", ".join(_undeclared)
+                + ". They need a value before it can be generated.",
+                "agent_instruction": (
+                    "ACT NOW, IN THIS SAME TURN — nothing was written and there is no "
+                    "file. These fields would print as EMPTY SPACE in the finished "
+                    "document, where nobody would notice them: "
+                    + ", ".join(_undeclared)
+                    + ". If the user already gave these values earlier in the "
+                    "conversation, call generate_document again with custom_data "
+                    "carrying EVERY value you hold — custom_data does not accumulate "
+                    "between calls. Otherwise ask for them with ask_questions (use "
+                    '"input_type": "date" for any date). If the user says a field '
+                    "should genuinely stay blank, pass it explicitly as an empty "
+                    "string in custom_data and generation will proceed."
+                ),
+            }
 
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         # Clean company name - remove registration number, parentheses, etc.
@@ -911,6 +1524,31 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
 
         filled_doc.save(str(output_path))
 
+        # A generated document is THE side effect of this product — a file that
+        # did not exist, produced for a named client. Recorded after the save
+        # succeeds so the ledger cannot claim a document that was never written.
+        # `record` returns None and never raises when the flag is off or no turn
+        # is open, so this is inert until the ledger is switched on.
+        try:
+            from scout.effects import record
+
+            record(
+                kind="document",
+                # "external", not "insert": the effect is a FILE written to disk
+                # (and pushed to S3), not a row. `op` is a closed set — an
+                # invalid value raises inside build_effect and `record` swallows
+                # it, so a wrong op here is a ledger that silently stays empty.
+                op="external",
+                target_table=None,
+                target_label=output_filename,
+                after={"company_name": company_name, "template_name": template_name,
+                       "path": str(output_path)},
+                tool_name="generate_document",
+                diff=False,
+            )
+        except Exception as e:  # noqa: BLE001 — auditing must never fail the write
+            logging.getLogger("legalscout").warning(f"effects record failed for '{output_path}': {e}")
+
         # Upload to S3 (background)
         try:
             from app.s3_storage import s3_upload_async
@@ -923,6 +1561,32 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
         all_template_placeholders = template_analysis.get("fields", [])
 
         validation = validate_filled_document(output_path, all_template_placeholders)
+
+        # Fold in the fields the fill emptied. Without this they are invisible:
+        # `validate_filled_document` can only see placeholders that were LEFT
+        # RAW, so a field replaced with "" reads as filled and the document is
+        # reported Complete with its terms blank.
+        _blanked = sorted(_blanked_placeholders.get() or set())
+        if _blanked:
+            _names = list(validation.get("unfilled_names") or [])
+            _ph = list(validation.get("unfilled_placeholders") or [])
+            for _b in _blanked:
+                if _b not in _names:
+                    _names.append(_b)
+                if _b not in _ph:
+                    _ph.append(_b)
+            _filled = [f for f in (validation.get("filled_placeholders") or [])
+                       if f.lower() not in {b.lower() for b in _blanked}]
+            validation["unfilled_names"] = _names
+            validation["unfilled_placeholders"] = _ph
+            validation["filled_placeholders"] = _filled
+            validation["total_unfilled"] = len(_names)
+            validation["total_filled"] = len(_filled)
+            validation["blanked_placeholders"] = _blanked
+            validation["is_valid"] = False
+            logging.getLogger("legalscout").warning(
+                f"'{output_filename}' generated with {len(_blanked)} EMPTY field(s): "
+                + ", ".join(_blanked))
 
         preview = generate_preview(filled_doc)
 
@@ -1005,6 +1669,15 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
             ),
         }
 
+        # The task is done: forget it, so a later unrelated turn in this same
+        # conversation is not told a finished document is still pending.
+        try:
+            from scout.tools.task_memory import clear_task
+
+            clear_task(_session)
+        except Exception as _e:  # noqa: BLE001
+            logging.getLogger("legalscout").warning(f"[TASK] clear skipped: {_e}")
+
         # Only successes are remembered — a failed run must stay retryable.
         _remember_generation(dedupe_key, payload)
         return payload
@@ -1047,6 +1720,29 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
         if not result.get("success"):
             return result
 
+        # Same reason as in _generate_document_inner: the name the caller used
+        # may be a prefix or a case variant, and everything downstream keys off
+        # the name. A preview built from an unresolved name would disagree with
+        # the document that generation then produces.
+        template_name = (
+            (result.get("template_analysis") or {}).get("template") or template_name
+        )
+
+        # Record the task HERE too, not only at generation.
+        #
+        # `merge_collected` (what ask_questions calls to persist a card answer)
+        # is UPDATE-only — it needs a row to attach to. In the ordinary flow the
+        # preview comes first and the questions are asked against it, so if only
+        # generate_document recorded the task, answers given before the first
+        # generate call had nowhere to go and were silently dropped. Measured:
+        # the AGM Minutes meeting date survived only 2 runs in 3 without this.
+        try:
+            from scout.tools.task_memory import remember_task
+
+            remember_task(current_session_scope(), template_name, company_name, custom_data)
+        except Exception as _e:  # noqa: BLE001
+            logging.getLogger("legalscout").warning(f"[TASK] preview record skipped: {_e}")
+
         validation = result.get("validation", {})
         # Use available_fields (correct key) instead of matched_fields
         total_fields = len(validation.get("available_fields", [])) + len(validation.get("missing_fields", []))
@@ -1063,6 +1759,10 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
         # Add custom data
         if custom_data:
             preview_data.update(custom_data)
+        # Same presentation the generated document gets — a preview that shows
+        # "50,000,000" for a file that will say "50000000" is worse than no
+        # preview, because the user approves the version they were shown.
+        preview_data = _present_numbers(preview_data)
 
         # Add TBD for missing fields
         for field in validation.get("missing_fields", []):
@@ -1437,7 +2137,47 @@ def _resolve_from_data(placeholder: str, data: dict[str, Any]) -> str | None:
         if tokens_match(placeholder_norm, key_norm):
             return value
 
+    # Last tier: a bare `date` placeholder answered under a qualified key.
+    # Only fires when EXACTLY ONE qualified date was supplied — two of them
+    # (a meeting date and a signing date) mean the caller distinguished them,
+    # and picking either would put one date where the other belongs.
+    if placeholder_canonical == "date":
+        qualified = [
+            value
+            for key_norm, _kc, value in normalized_items
+            if _QUALIFIED_DATE_RE.match(key_norm)
+        ]
+        if len(qualified) == 1:
+            return qualified[0]
+
     return None
+
+
+def _explicitly_supplied(placeholder: str, custom_data: dict[str, Any] | None) -> bool:
+    """True when the caller deliberately set this field — even to an empty value.
+
+    PRESENCE is the signal here, not truthiness. "Leave the effective date
+    blank if unconfirmed" is a real answer, and a check that only looked at the
+    value would treat it as still missing and ask again forever.
+
+    Key matching mirrors `_resolve_from_data` so that `new_company_name`,
+    `New Company Name` and `newCompanyName` are recognised as the same field.
+    """
+    if not custom_data:
+        return False
+    placeholder_norm = normalize_field(placeholder)
+    placeholder_canonical = canonical_field(placeholder)
+    for key in custom_data:
+        if key == placeholder:
+            return True
+        key_norm = normalize_field(key)
+        if key_norm == placeholder_norm:
+            return True
+        if canonical_field(key) == placeholder_canonical:
+            return True
+        if tokens_match(placeholder_norm, key_norm):
+            return True
+    return False
 
 
 def find_replacement(placeholder: str, data: dict[str, Any], template_name: str = None, company_name: str = None, document_id: Any = None) -> str | None:
@@ -1469,6 +2209,18 @@ def find_replacement(placeholder: str, data: dict[str, Any], template_name: str 
                     return resolved
 
                 if source == "db" and db_column:
+                    # A company being incorporated has no register row, and the
+                    # row that WAS looked up belongs to somebody else. Answering
+                    # from it put another client's name and real registration
+                    # number on a consent form (the tracker's "Setup 1" case).
+                    _newco = data.get(NEWCO_MARKER) if isinstance(data, dict) else None
+                    if _newco:
+                        _canon = canonical_field(placeholder)
+                        if _canon in _NEWCO_NAME_FIELDS:
+                            return str(_newco)
+                        if _canon in _NEWCO_REG_FIELDS:
+                            supplied = _resolve_from_data(placeholder, data)
+                            return supplied or "TBC upon incorporation"
                     # Get value from company DB
                     company_row = _get_company_from_db(company_name) if company_name else None
                     if company_row and not company_row.get("ambiguous"):
@@ -1497,6 +2249,10 @@ def find_replacement(placeholder: str, data: dict[str, Any], template_name: str 
 
                     if default and default != "today" and str(default).strip():
                         return str(default)
+                    # Nothing supplied, no companion, no default. Emitting "" is
+                    # what the document needs (a raw {{placeholder}} in a legal
+                    # instrument is worse), but it must be REPORTED, not hidden.
+                    _note_blank(placeholder)
                     return LEFT_BLANK
 
     # === DATA LOOKUP (Priority 2 — fallback) ===

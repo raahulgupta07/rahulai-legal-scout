@@ -49,12 +49,23 @@ export const parseAskUserQuestions = (
     const options = Array.isArray(obj.options)
       ? obj.options.filter((o): o is string => typeof o === 'string' && !!o.trim())
       : undefined
+    // Only 'date' is honoured; any other string degrades to a text box rather
+    // than rendering a control nobody asked for.
+    const inputType = obj.input_type === 'date' ? 'date' : undefined
+    const defaultValue =
+      typeof obj.default === 'string' && obj.default.trim()
+        ? obj.default.trim()
+        : typeof obj.default_value === 'string' && obj.default_value.trim()
+          ? obj.default_value.trim()
+          : undefined
     questions.push({
       id,
       text,
       options: options && options.length ? options : undefined,
       multi_select: obj.multi_select === true,
-      allow_other: obj.allow_other === true
+      allow_other: obj.allow_other === true,
+      input_type: inputType,
+      default_value: defaultValue
     })
   })
 

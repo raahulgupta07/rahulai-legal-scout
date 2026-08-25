@@ -317,19 +317,65 @@ def _list_from_data(data: dict, keys: list[str]) -> list[dict]:
     return []
 
 
+def _board_parties_of(company_name: str | None) -> list[dict]:
+    """The company's own current board, register first then legacy JSONB.
+
+    Mirrors `_members_of` for the director families. Named apart from the
+    neighbouring `_board_of` (names) and from `people_picker._directors_of`
+    (the reader it delegates to) so the three cannot be confused at a call site. Without it `signing_director`
+    could only ever be established from a list somebody had already supplied in
+    `data`, so a company with three directors ON FILE still reported a party
+    count of 0 — which switched `collect_slot_requests` back to one question for
+    the whole role and asked about three distinct directors once (measured on
+    THAZIN VALLEY HOLDINGS: 6 numbered placeholders collapsed to 2 requests).
+
+    Delegates to `people_picker._directors_of` via `corporate_shareholder_directors`
+    rather than reading `companies.directors` here, so the register (which knows
+    about resignations) stays the single source of truth and this path cannot
+    drift from the pickers.
+
+    Empty means "could not establish", NOT "has no directors" — callers must
+    leave the template's declared slots alone rather than deleting positions.
+    """
+    if not company_name:
+        return []
+    try:
+        from scout.tools.slot_resolver import corporate_shareholder_directors
+        out = []
+        for c in corporate_shareholder_directors(company_name) or []:
+            if isinstance(c, dict):
+                if _member_display(c):
+                    out.append(c)
+            elif _clean(str(c)):
+                out.append({"name": _clean(str(c))})
+        return out
+    except Exception as e:  # noqa: BLE001
+        _log.warning(f"repeat_regions: director lookup failed for {company_name!r}: {e}")
+        return []
+
+
 def _parties_for_family(family: str, tail: str, data: dict, company_name: str | None) -> list[dict]:
     """The ordered party list a region should expand to."""
     if family == "member":
         parties = _list_from_data(data, ["members", "attendees", "shareholders_selected", "present_members"])
         return parties or _members_of(company_name)
     if family == "appointed_director":
+        # NO register fallback by design: an APPOINTED director is a person being
+        # put onto a NEW company's board, so the subject company's own board is
+        # the wrong list and would silently nominate the existing directors.
+        # The count for this family is established from the template's declared
+        # positions instead — see `_declared_family_positions` in slot_resolver.
         return _list_from_data(
             data, ["appointed_directors", "new_directors", "appointed_director_list", "directors_appointed"]
         )
     if family == "signing_director":
-        return _list_from_data(
+        # A SIGNING director signs for the document company, so its own board is
+        # exactly the right fallback — the same relationship `member` has to
+        # `_members_of`.
+        parties = _list_from_data(
             data, ["signing_directors", "signatories", "representative_directors", "directors_to_sign"]
         )
+        return parties or _board_parties_of(company_name)
     return []
 
 
@@ -401,10 +447,46 @@ def _expand_paragraph_blocks(doc, data, company_name, synth, counter):
     return synth
 
 
+# A paragraph is a REPEATING REGION only when its placeholder names an explicit
+# position (`individual shareholder_2_name`, `director_3_name`). The number is
+# the template author saying "there are several of these here".
+#
+# Without one, the placeholder is a SINGLE party however many the company has on
+# file, and expanding it corrupts the document. Measured on four templates: a
+# consent form ("____ Name: [director_name] Date:") is signed by the one person
+# consenting, and a notice ("Signed notice by a Company's director ... Name:
+# [director_name] Position: Director") carries one signature line — both were
+# expanded to the whole board, stacking four names under a single signature rule
+# with one "Position: Director", and nobody was ever asked who signs.
+#
+# This is measured, not assumed: applying the rule changes NOTHING on the four
+# templates that hold real lists ("Present: [x] (Shareholder)", "Members to sign
+# if they agree"), because those spell out numbered positions. It only retires
+# the four signature blocks.
+#
+# A family exemption was tried first and was WORSE: keeping `member` exempt left
+# the Individual Shareholder Consent Form expanding one consent signature to
+# five members. One rule, no exceptions, is both simpler and more correct.
+
+
+def _is_numbered(placeholder: str) -> bool:
+    """Whether a placeholder names an explicit position (`director_2_name`)."""
+    try:
+        from scout.tools.slot_resolver import _slot_position
+        return bool(_slot_position(placeholder or ""))
+    except Exception as e:  # noqa: BLE001
+        _log.warning(f"repeat_regions: position classify failed for {placeholder!r}: {e}")
+        return False
+
+
 def _rewrite_paragraph_block(block, family, data, company_name, synth, counter):
     if not block:
         return
-    tail = _tail_attr(_placeholders(block[0].text)[0])
+    first = _placeholders(block[0].text)[0]
+    if not _is_numbered(first):
+        # One un-numbered placeholder is one party, not a region.
+        return
+    tail = _tail_attr(first)
     parties = _parties_for_family(family, tail, data, company_name)
     if not parties:
         return  # nothing to expand to — leave template as-is

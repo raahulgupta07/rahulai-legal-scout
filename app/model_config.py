@@ -20,6 +20,13 @@ OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/ap
 # Defaults — used when DB has no config
 DEFAULTS = {
     "chat": "google/gemini-3.6-flash",
+    # Background UI work — chat titles and follow-up suggestions. Kept separate
+    # from "chat" so it can be pointed at a cheaper, faster model without
+    # touching the model that writes legal documents. Defaults to the same
+    # model, so nothing changes until an admin sets one: naming a model ID that
+    # may not exist on OpenRouter would break these features silently, which is
+    # exactly how follow-ups died once before.
+    "task": "google/gemini-3.6-flash",
     "training": "google/gemini-3.6-flash",
     "classification": "google/gemini-3.6-flash",
     "embedding": "openai/text-embedding-3-small",

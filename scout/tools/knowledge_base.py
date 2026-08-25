@@ -450,23 +450,55 @@ def delete_knowledge_source(filename: str):
         return False
 
 
-def search_knowledge(query: str, limit: int = 10) -> List[Dict]:
-    """Search knowledge base - exact matches."""
+# ★★★Rows in `knowledge_lookup` live in two namespaces, and only one of them is
+# safe to return to a model working on somebody's file:
+#   template:<name>   template metadata + uploaded reference material
+#   company:<name>    SIX identifying rows PER CLIENT, written by add_company()
+#                     below — registered office, directors, registration number
+# This query used to have no `source_file` restriction at all, so any substring
+# match returned OTHER CLIENTS' filing details, and `search_knowledge` is a
+# registered agent tool. Company scope in this table is a naming convention
+# inside a string, not a key — nothing constrains it and a rename orphans every
+# row — so there is no scoped query to write here. The narrow fix is to keep the
+# client namespace out of the agent's reach entirely: the agent already has
+# get_company / get_directors / get_shareholders, which resolve a company first.
+_CLIENT_NAMESPACE = "company:%"
+
+
+def search_knowledge(query: str, limit: int = 10, include_clients: bool = False) -> List[Dict]:
+    """Search knowledge base - exact matches.
+
+    include_clients=False (the default, and what every agent path uses) excludes
+    the per-client rows. Admin surfaces that legitimately search the whole
+    register across clients pass True explicitly.
+    """
     try:
         conn = get_db_connection()
         cur = conn.cursor()
 
         search_term = f"%{query.lower()}%"
 
-        cur.execute(
-            """
-            SELECT DISTINCT key_name, key_value, source_file
-            FROM knowledge_lookup
-            WHERE key_value ILIKE %s
-            LIMIT %s
-        """,
-            (search_term, limit),
-        )
+        if include_clients:
+            cur.execute(
+                """
+                SELECT DISTINCT key_name, key_value, source_file
+                FROM knowledge_lookup
+                WHERE key_value ILIKE %s
+                LIMIT %s
+            """,
+                (search_term, limit),
+            )
+        else:
+            cur.execute(
+                """
+                SELECT DISTINCT key_name, key_value, source_file
+                FROM knowledge_lookup
+                WHERE key_value ILIKE %s
+                  AND (source_file IS NULL OR source_file NOT LIKE %s)
+                LIMIT %s
+            """,
+                (search_term, _CLIENT_NAMESPACE, limit),
+            )
 
         rows = cur.fetchall()
         cur.close()

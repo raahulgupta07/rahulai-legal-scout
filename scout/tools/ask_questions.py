@@ -33,6 +33,8 @@ EXPECTED_SCHEMA = {
             "options": ["optional list of choices rendered as chips"],
             "multi_select": "optional bool — allow picking more than one option",
             "allow_other": "optional bool — offer a free-text 'Other…' entry",
+            "input_type": "optional 'text' | 'date' — 'date' draws a calendar picker",
+            "default": "optional 'today' — only on a date question; pre-fills the picker",
         }
     ]
 }
@@ -56,6 +58,24 @@ def _validate_questions(questions: Any) -> List[str]:
         opts = q.get("options")
         if opts is not None and not isinstance(opts, list):
             problems.append(f"question {i}: 'options' must be a list when present")
+        itype = q.get("input_type")
+        if itype is not None and itype not in ("text", "date"):
+            problems.append(
+                f"question {i}: 'input_type' must be 'text' or 'date' when present"
+            )
+        # `default` only means something to a date picker. Rejecting it
+        # elsewhere keeps the model from inventing a pre-filled free-text box,
+        # where a stale default reads as an answer the user gave.
+        dflt = q.get("default")
+        if dflt is not None:
+            if itype != "date":
+                problems.append(
+                    f"question {i}: 'default' is only valid with input_type 'date'"
+                )
+            elif dflt != "today":
+                problems.append(
+                    f"question {i}: the only supported 'default' is 'today'"
+                )
     return problems
 
 
@@ -343,7 +363,9 @@ def ask_questions(questions_json: str, answers: str = "") -> str:
           "text":         the question shown to the user (required),
           "options":      list of choices rendered as chips (optional),
           "multi_select": true to allow more than one choice (optional),
-          "allow_other":  true to offer a free-text "Other…" entry (optional)
+          "allow_other":  true to offer a free-text "Other…" entry (optional),
+          "input_type":   "date" to draw a calendar picker (optional),
+          "default":      "today" to pre-fill that picker (optional, date only)
         }
     Omit "options" for a free-text answer. Give "options" (usually with
     "allow_other": true) when the choices are enumerable.
@@ -360,12 +382,22 @@ def ask_questions(questions_json: str, answers: str = "") -> str:
             ' "options": ["Yes, generate it", "No, change the data first"]}'
         ']')
 
-    Example (c) — mixed missing fields (free-text date + options for location):
+    Example (c) — mixed missing fields (date picker + options for location):
         ask_questions(questions_json='['
-            '{"id": "meeting_date", "text": "Meeting date?", "allow_other": true},'
+            '{"id": "meeting_date", "text": "Meeting date?", "input_type": "date"},'
             '{"id": "meeting_location", "text": "Meeting location?",'
             ' "options": ["Registered office", "Head office"], "allow_other": true}'
         ']')
+
+    ALWAYS set "input_type": "date" when the answer is a calendar date — a
+    meeting date, an effective date, a resignation date, a date of a document.
+    The card returns it already written as "30 June 2026", the form these
+    documents use; use that value verbatim.
+
+    Add "default": "today" ONLY when the date being asked for is the date of
+    the document itself. Never on an effective or resignation date: a
+    pre-filled box that the user accepts without looking would put today's
+    date into a signed legal instrument.
 
     Args:
         questions_json: JSON array of 1-4 question objects (schema above).
@@ -484,6 +516,52 @@ def ask_questions(questions_json: str, answers: str = "") -> str:
             }
         )
 
+    # ---- Persist what the user just answered ---------------------------
+    #
+    # Until the session was bound at the request layer (app/main.py, on the
+    # /continue path) this was impossible: a requires_user_input tool cannot
+    # declare `run_context`, so this function could not learn its session, and
+    # the answers survived only if the model chose to forward them into the next
+    # call's custom_data. Measured on the client's tracker: the SAME AGM Minutes
+    # template kept the meeting date on one run and dropped it on the next —
+    # `generate_document` was called with no date key at all — and the document
+    # came out with an empty `Date:`.
+    #
+    # Storing them here means the answer belongs to the conversation, not to the
+    # model's memory of the turn. UPDATE-only: if no task has been recorded yet
+    # there is nothing to attach them to, and that is fine.
+    try:
+        from scout.tools.slot_resolver import current_session_scope
+        from scout.tools.task_memory import merge_collected
+
+        _sid = current_session_scope()
+        if _sid and isinstance(parsed_answers, dict):
+            merge_collected(_sid, parsed_answers)
+        elif _sid and isinstance(parsed_answers, list):
+            # The card has sent answers as [{id, answer}] as well as a dict.
+            _flat = {}
+            for _a in parsed_answers:
+                if isinstance(_a, dict) and _a.get("id") is not None:
+                    _flat[str(_a["id"])] = _a.get("answer")
+            if _flat:
+                merge_collected(_sid, _flat)
+    except Exception:  # noqa: BLE001 — an answer must never fail for storage
+        pass
+
+    # NOT given the pending-task sentence the pickers get.
+    #
+    # That sentence is read from active_task by session id, and this tool cannot
+    # learn its session. `ask_questions` is requires_user_input=True, and such a
+    # tool must not declare `run_context`: agno builds user_input_schema from
+    # `sig.parameters` with no exclusions, the frontend echoes the whole schema
+    # back on resume, and the call then passes run_context twice — TypeError,
+    # and the card never executes (see people_picker._session_of). There is no
+    # lookup_* companion here to publish the id the way the pickers do, and
+    # session_scope is not set on the resume path.
+    #
+    # Left alone deliberately rather than wired to an empty string: the measured
+    # loss-of-task was at a PICKER resume, and dead code that looks live is how
+    # the next person concludes this is already handled.
     return json.dumps(
         {
             "status": "answered",

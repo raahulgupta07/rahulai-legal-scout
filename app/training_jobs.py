@@ -465,12 +465,35 @@ def _worker(job_id: int) -> None:
 
         # Batch deep-train once the per-template loop finished (unless cancelled).
         if not cancelled:
-            _log("", "deep_train_start", "Refreshing agent knowledge…", "processing")
+            # ★★★Scope it to THIS job's queue.
+            #
+            # This used to POST with no body, and the endpoint then globbed every
+            # .docx in the templates directory. Uploading 2 templates therefore
+            # registered and AI-analysed all 15 files on disk — including ones
+            # deliberately removed from the register — and took ~11 minutes.
+            #
+            # ★It is also the reason the UI appeared to hang: the per-template
+            # bar reaches "2 of 2 / 100%" before this call starts, and nothing
+            # below updates the job row, so the client polls an unchanging row
+            # for the whole phase. The status line below gives it something to
+            # show; the phase is still one blocking call, which is the next
+            # thing to fix if it grows.
+            _log("", "deep_train_start",
+                 f"Refreshing agent knowledge for {len(queue)} template(s)…", "processing")
             _flush_logs(conn, job_id, logs)
+            cur = conn.cursor()
+            cur.execute(
+                "UPDATE template_training_jobs SET current_template=%s, updated_at=now() "
+                "WHERE id=%s",
+                (f"Refreshing agent knowledge ({len(queue)})…", job_id),
+            )
+            conn.commit()
             try:
                 with httpx.Client(timeout=httpx.Timeout(600.0)) as client:
                     resp = client.post(
-                        f"{_INTERNAL_BASE}/api/knowledge/deep-train", headers=headers
+                        f"{_INTERNAL_BASE}/api/knowledge/deep-train",
+                        headers=headers,
+                        json={"templates": list(queue)},
                     )
                 if resp.status_code == 200:
                     _log("", "deep_train_done", "Agent knowledge updated", "success")

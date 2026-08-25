@@ -1,0 +1,49 @@
+-- Migration 025 — cessation reason and recorder on the company link
+--
+-- `company_people.resigned_date` has existed since migration 011 and is honoured
+-- everywhere it matters: `people_picker._registered_people` drops a ceased
+-- person from the candidate list, `repeat_regions._corp_representative` will not
+-- print a resigned director as a signatory, and POST /api/companies/{id}/people
+-- already accepts and stores it. What was missing was any way for an admin to
+-- SET it, and any record of WHY somebody ceased or WHO wrote that down — so a
+-- cessation could only ever arrive through a fresh DICA filing, and the register
+-- could not be corrected by hand.
+--
+-- These two columns are the audit half of that: the date says a person stopped
+-- acting, the reason and the recorder say on what authority the register was
+-- changed. A resignation, a removal by resolution and a death are three
+-- different legal events with three different downstream filings, and the date
+-- alone does not distinguish them.
+--
+-- ★ WHY THESE ARE ON `company_people` AND NOT ON `people`
+--
+-- They sit beside the `resigned_date` they annotate, on the LINK, for the same
+-- reason the date itself does: cessation is a property of a board seat, not of a
+-- human being. The same director sits on two boards and leaves them on two
+-- different days for two different reasons — resigned from one, removed by
+-- shareholders' resolution from the other.
+--
+-- Putting the reason on `people` was tried first and rejected. It gives a person
+-- exactly ONE reason slot, so recording the second cessation overwrites the
+-- first with no error and no warning: the register would then state, with full
+-- confidence, that a director resigned from a company that in fact removed them.
+-- That is a silent wrong-answer bug, which is worse than a crash — a crash gets
+-- investigated, and this would simply be believed and filed. The unique index
+-- `idx_company_people_uniq (company_id, person_id, role)` is what makes the link
+-- the right home: one row per seat, so one reason per seat.
+--
+-- `cessation_recorded_by` is filled by the SERVER from the authenticated admin's
+-- JWT (`require_admin(request)` -> `admin.get("email")`, the same value the route
+-- already writes to `log_activity`). It is deliberately NOT accepted from the
+-- request body and there is no form field for it: a recorder the client can
+-- choose is not an audit trail, it is a suggestion. `ls_user.email` in
+-- localStorage was available and was rejected for that reason.
+--
+-- Idempotent: ADD COLUMN IF NOT EXISTS is a no-op on a second run, and this file
+-- creates nothing else. `schema_migrations` is stamped by the runner
+-- (db/migrate.py:apply_migration inserts the filename after cur.execute(sql)),
+-- never by the migration itself — a file that stamped its own row would
+-- double-insert and violate the UNIQUE(filename) constraint when re-run by hand.
+
+ALTER TABLE company_people ADD COLUMN IF NOT EXISTS cessation_reason VARCHAR(500);
+ALTER TABLE company_people ADD COLUMN IF NOT EXISTS cessation_recorded_by VARCHAR(255);

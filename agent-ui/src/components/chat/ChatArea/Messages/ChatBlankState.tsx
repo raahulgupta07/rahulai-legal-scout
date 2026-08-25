@@ -90,14 +90,12 @@ export const BlankStateHero = () => {
 
   return (
     <div className="flex flex-col items-center text-center font-[family-name:var(--font-body)]">
-      {/* LS mark — the one ink block on the home screen. */}
+      {/* Brand mark — the one ink block on the home screen. */}
       <div
         aria-hidden
-        className="flex h-14 w-14 items-center justify-center rounded-[var(--radius-xl)] bg-[var(--surface-inverse)]"
+        className="flex h-14 w-14 items-center justify-center overflow-hidden rounded-[var(--radius-xl)] bg-[var(--surface-inverse)]"
       >
-        <span className="font-[family-name:var(--font-display)] text-[length:var(--text-base)] font-bold tracking-[var(--tracking-tag)] text-[var(--text-inverse)]">
-          LS
-        </span>
+        <img src="/logo.png" alt="" className="h-10 w-10 object-contain" />
       </div>
 
       <h1 className="mt-6 text-3xl font-normal tracking-[-0.01em] text-[var(--text)]">

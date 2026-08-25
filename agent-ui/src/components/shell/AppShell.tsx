@@ -18,7 +18,7 @@ import { useState } from 'react'
 import { Menu, X } from 'lucide-react'
 import { IconButton } from '@/components/ui/kit'
 import AppRail from './AppRail'
-import ImportTray from './ImportTray'
+import ActivityTray from './ActivityTray'
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
@@ -55,8 +55,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             icon={mobileOpen ? <X className="h-4 w-4" /> : <Menu className="h-4 w-4" />}
           />
           <div className="flex items-center gap-2">
-            <span className="grid h-5 w-5 place-items-center rounded-[var(--radius-md)] bg-[var(--ink)] text-[10px] font-semibold text-[var(--text-inverse)]">
-              LS
+            <span className="grid h-5 w-5 place-items-center overflow-hidden rounded-[var(--radius-md)] bg-[var(--ink)]">
+              <img src="/logo.png" alt="" className="h-[15px] w-[15px] object-contain" />
             </span>
             <span className="text-[13px] font-semibold text-[var(--text)]">
               Legal Scout
@@ -67,9 +67,10 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         <div className="min-h-0 flex-1 overflow-hidden">{children}</div>
       </div>
 
-      {/* Docked here, not on a page: a bulk import keeps running while the
-          operator moves between Templates, Companies and People. */}
-      <ImportTray />
+      {/* Docked here, not on a page: imports, template training and queued
+          email all keep reporting while the operator moves between Chat,
+          Templates, Companies and People. */}
+      <ActivityTray />
     </div>
   )
 }

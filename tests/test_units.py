@@ -518,6 +518,66 @@ def test_fill_view():
 
 
 # ===========================================================================
+# U10b An emptied field must be REPORTED, never hidden
+#      `validate_filled_document` re-opens the saved .docx and looks for
+#      leftover {{...}} patterns, so a placeholder replaced with "" leaves
+#      nothing to find and reads as FILLED. That is how a Corporate Shareholder
+#      Consent was produced reading 'referred to as  ("NewCo") ... shall invest
+#      in  in NewCo' while the result reported 13 placeholders, unfilled_names
+#      [] and status Complete — a resolution incorporating an unnamed company
+#      for an unstated sum, declared finished.
+#
+#      The fix is a collector: `find_replacement` notes every user_input field
+#      it empties, and `_generate_document` folds those into the validation.
+#      These cases pin the collector itself, which is the part that can silently
+#      stop working (a ContextVar that is never set collects nothing and every
+#      document goes back to looking complete).
+# ===========================================================================
+def test_blank_reporting():
+    import scout.tools.smart_doc as sd
+
+    check("U10d", "a blank collector exists", hasattr(sd, "_blanked_placeholders"))
+    check("U10e", "the note helper exists", callable(getattr(sd, "_note_blank", None)))
+
+    # With NO collector set, noting must be a silent no-op — never an exception
+    # in the middle of filling a document.
+    try:
+        sd._note_blank("subscription_amount")
+        check("U10f", "noting outside a generation is a no-op", True)
+    except Exception as e:  # noqa: BLE001
+        check("U10f", "noting outside a generation is a no-op", False, repr(e))
+
+    # With a collector set, the placeholder is recorded.
+    token = sd._blanked_placeholders.set(set())
+    try:
+        sd._note_blank("subscription_amount")
+        sd._note_blank("new_company_name")
+        sd._note_blank("")                      # falsy names are not recorded
+        got = sorted(sd._blanked_placeholders.get())
+        eq("U10g", "blanked fields are collected", got,
+           ["new_company_name", "subscription_amount"])
+    finally:
+        sd._blanked_placeholders.reset(token)
+
+    # Reset must actually clear it: a blank from one document attributed to the
+    # next would be worse than not reporting at all.
+    eq("U10h", "the collector is cleared after a generation",
+       sd._blanked_placeholders.get(), None)
+
+    # The wiring: generation must fold blanks into the validation and flip
+    # is_valid. Asserted on the SOURCE because running a real generation needs
+    # a database; the strings below are the ones that carry the behaviour.
+    src = (REPO / "scout/tools/smart_doc.py").read_text()
+    body = "\n".join(l for l in src.split("\n") if not l.lstrip().startswith("#"))
+    check("U10i", "find_replacement notes the field it empties",
+       "_note_blank(placeholder)" in body)
+    check("U10j", "generation folds blanks into unfilled_names",
+       '"unfilled_names"] = _names' in body or "unfilled_names\"] = _names" in body)
+    check("U10k", "generation marks a blanked document invalid",
+       '"is_valid"] = False' in body or 'is_valid\"] = False' in body)
+
+
+# ===========================================================================
 # U11 Structural contracts
 #     Each of these has broken the product silently at least once.
 # ===========================================================================
@@ -1195,6 +1255,7 @@ def main():
         test_picker_payload,
         test_repeat_regions,
         test_fill_view,
+        test_blank_reporting,
         test_register_authority,
         test_structural_contracts,
     ):

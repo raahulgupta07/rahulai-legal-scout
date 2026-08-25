@@ -775,6 +775,43 @@ def _record_selection(
         if conn is not None:
             conn.close()
 
+    _bind_session_company(session_id, company_name)
+
+
+def _bind_session_company(session_id: str, company_name: str) -> None:
+    """Record which company this conversation is about, once it is settled.
+
+    A picker only ever runs after the company has been established, and both the
+    session and the company name are in scope right here — but nothing wrote the
+    pairing down, so every later turn re-derived the subject from whatever the
+    model happened to say. Measured live: mid-conversation the agent re-asked
+    which template and which parent company, both already agreed.
+
+    Binds ONLY on a RESOLVED name. `resolve_company` treats a substring match as
+    AMBIGUOUS even when it is the sole hit, so a short form that merely contains
+    the query never binds — writing that down would attach the conversation to
+    the wrong client, which is far worse than asking again.
+
+    Imported from `scout.memory` explicitly: `scout.effects.turn` exports an
+    unrelated `bind_session` taking a single argument, and a bare name here
+    would be a coin flip between them.
+    """
+    key = str(session_id or "").strip()
+    name = (company_name or "").strip()
+    if not key or not name:
+        return
+    try:
+        from scout.memory import RESOLVED, bind_session, resolve_company
+
+        resolution = resolve_company(name)
+        if resolution.status != RESOLVED:
+            return
+        bind_session(key, resolution.company_id, bound_by="people_picker")
+    except Exception as e:  # noqa: BLE001
+        import logging
+
+        logging.getLogger("legalscout").warning(f"Could not bind session {key!r} to {name!r}: {e}")
+
 
 def _selection_result(
     picker: str,
@@ -825,6 +862,20 @@ def _selection_result(
 
     _record_selection(picker, company_name, chosen, purpose, session_id=session_id)
 
+    # This return is the exact point where a measured session lost the thread.
+    # Session 3be25e3c: the picker confirmed MIN MIN, and the agent's own
+    # reasoning read "Now I am trying to determine what the next logical step
+    # would be... I'm checking the original context" — then it called
+    # list_templates and started over. "If a document was requested" was not
+    # enough; it did not know WHICH document. So the goal is now named here,
+    # read from the server rather than from the model's memory of the turn.
+    try:
+        from scout.tools.task_memory import pending_task_instruction
+
+        _pending = pending_task_instruction(session_id)
+    except Exception:  # noqa: BLE001 — a picker must never fail for memory
+        _pending = ""
+
     return json.dumps(
         {
             "picker": picker,
@@ -840,6 +891,7 @@ def _selection_result(
                 "was requested, generate it immediately, passing these names through "
                 "custom_data. Never end your turn empty: always write the user a line "
                 "saying who was chosen and what you did next."
+                + _pending
             ),
         }
     )

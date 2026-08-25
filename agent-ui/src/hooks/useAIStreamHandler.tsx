@@ -2,7 +2,11 @@ import { useCallback, useRef } from 'react'
 import { toast } from 'sonner'
 
 import { APIRoutes } from '@/api/routes'
-import { buildContinueRunRequest, buildAskUserContinueRequest } from '@/api/os'
+import {
+  AGNO_PAUSE_BOILERPLATE,
+  buildContinueRunRequest,
+  buildAskUserContinueRequest
+} from '@/api/os'
 
 import useChatActions from '@/hooks/useChatActions'
 import { useStore } from '../store'
@@ -18,6 +22,7 @@ import {
 import { constructEndpointUrl } from '@/lib/constructEndpointUrl'
 import useAIResponseStream from './useAIResponseStream'
 import { ToolCall } from '@/types/os'
+import { deriveSessionTitle } from '@/components/chat/sessionTitle'
 import { useQueryState } from 'nuqs'
 import { getJsonMarkdown } from '@/lib/utils'
 import {
@@ -42,14 +47,11 @@ const getLocalUserId = (): string | null => {
   }
 }
 
-/**
- * Agno's built-in "paused" narration (agno/utils/response.py). It describes the
- * framework's own state, never the user's task, so it is kept out of the
- * transcript. Covers every variant: confirmation / user input / external
- * execution, alone or combined.
- */
-const AGNO_PAUSE_BOILERPLATE =
-  /^I have tools to execute, but (I need|it needs)\b.*\.$/i
+// Agno's pause narration is defined once, in '@/api/os', and imported by both
+// the stream path (here) and the reload path (useSessionLoader). It lived here
+// as a second byte-identical copy: the streamed transcript was clean while the
+// replayed one rendered the raw sentence, because only one of the two paths
+// ever filtered it. Two copies of a rule is how the two paths drifted apart.
 
 /**
  * Content made of nothing but structural JSON punctuation and whitespace. A
@@ -399,6 +401,16 @@ const useAIChatStreamHandler = () => {
   // answer. Counting the ToolCallStarted events, the way tests/tracker_layer3.py
   // does, is what makes the guard see the tool work at all.
   const toolsThisRunRef = useRef(0)
+  // Tool calls seen so far in this conversation turn, kept for the session
+  // title. RunCompleted carries no `tools` key (see toolsThisRunRef), so the
+  // evidence has to be collected as it arrives or it is gone by the end.
+  const toolCallsRef = useRef<
+    Array<{ tool_name?: string | null; tool_args?: Record<string, unknown> | null }>
+  >([])
+  // Sessions already titled. A chat is named once, from the first document it
+  // produces; re-titling on every later run would rename the chat under the
+  // user mid-conversation.
+  const titledSessionsRef = useRef<Set<string>>(new Set())
   // Reasoning captured during THIS stream, for display.
   //
   // gemini-3.6-flash cannot disable reasoning and streams it SEPARATELY from
@@ -546,6 +558,30 @@ const useAIChatStreamHandler = () => {
       ) {
         newSessionIdRef.current = (chunk.session_id as string) ?? null
         setSessionId((chunk.session_id as string) ?? null)
+
+        // Stamp the run onto the agent bubble this stream is filling.
+        //
+        // The bubble is created BEFORE the request goes out, so it cannot know
+        // its run_id at construction — the id first exists here, on RunStarted.
+        // The reload path (useSessionLoader) always sets `run_id`, so without
+        // this the SAME turn is identified one way while streaming and another
+        // way after a refresh. Two things depend on that identity being stable:
+        // a per-message feedback vote (keyed `agent-<run_id>`, so a rating made
+        // during the stream would read back as un-voted once stored and
+        // replayed), and the per-turn token count, which otherwise appears only
+        // after a refresh. Written once, and never overwritten: a resumed run
+        // re-emits RunStarted with the same id, and a nudge must not re-point a
+        // bubble that already belongs to a run.
+        if (chunk.run_id) {
+          setMessages((prev) => {
+            const next = [...prev]
+            const last = next[next.length - 1]
+            if (last && last.role === 'agent' && !last.run_id) {
+              next[next.length - 1] = { ...last, run_id: chunk.run_id }
+            }
+            return next
+          })
+        }
         if (chunk.session_id) {
           const sessionData = {
             session_id: chunk.session_id as string,
@@ -577,6 +613,12 @@ const useAIChatStreamHandler = () => {
           chunk.event === RunEvent.TeamToolCallStarted
         ) {
           toolsThisRunRef.current += 1
+          if (chunk.tool?.tool_name) {
+            toolCallsRef.current.push({
+              tool_name: chunk.tool.tool_name,
+              tool_args: chunk.tool.tool_args ?? null
+            })
+          }
         } else {
           // Completed: the result is here, so the closing sentence can be
           // written now, while `chunk.tool` still carries it. RunCompleted
@@ -784,6 +826,42 @@ const useAIChatStreamHandler = () => {
         // Final event carries the authoritative full content — stop the
         // typewriter and let the replace below win.
         cancelReveal()
+
+        // Name the chat after what it produced, not after what was typed.
+        // Fire-and-forget: a failed rename must never disturb the run, so
+        // there is no await, no toast and no retry — the chat simply keeps the
+        // name it had. Runs at most once per session (titledSessionsRef), and
+        // only when a document tool actually named a template.
+        {
+          const sid = (chunk.session_id as string) || newSessionIdRef.current
+          if (sid && !titledSessionsRef.current.has(sid)) {
+            const derived = deriveSessionTitle(toolCallsRef.current)
+            if (derived) {
+              titledSessionsRef.current.add(sid)
+              const token =
+                typeof window !== 'undefined'
+                  ? localStorage.getItem('ls_token')
+                  : ''
+              void fetch('/api/session-title', {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  ...(token ? { Authorization: `Bearer ${token}` } : {})
+                },
+                body: JSON.stringify({ session_id: sid, title: derived })
+              }).catch(() => {})
+              // Update the sidebar now rather than waiting for a refetch: the
+              // rename has to be visible in the session the user is sitting in.
+              setSessionsData((prev) =>
+                (prev ?? []).map((session) =>
+                  session.session_id === sid
+                    ? { ...session, session_name: derived }
+                    : session
+                )
+              )
+            }
+          }
+        }
         if (typeof chunk.content === 'string')
           streamTargetRef.current = chunk.content
 
@@ -1201,6 +1279,10 @@ const useAIChatStreamHandler = () => {
       sawReasoningRef.current = false
       closingFromToolRef.current = null
       cancelReveal()
+      // Not reset on the RESUME path above: a paused run's document tool may
+      // have run before the pause, and clearing there would lose the only
+      // evidence the title is derived from.
+      toolCallsRef.current = []
       newSessionIdRef.current = sessionId
       sessionLabelRef.current = (formData.get('message') as string) ?? ''
       try {

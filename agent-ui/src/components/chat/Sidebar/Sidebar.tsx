@@ -41,9 +41,9 @@ const SidebarHeader = () => (
   <div className="flex items-center gap-2">
     <span
       aria-hidden
-      className="grid h-6 w-6 shrink-0 place-items-center bg-[var(--surface-inverse)] text-[length:var(--text-2xs)] font-semibold text-[var(--text-inverse)]"
+      className="grid h-6 w-6 shrink-0 place-items-center overflow-hidden bg-[var(--surface-inverse)]"
     >
-      LS
+      <img src="/logo.png" alt="" className="h-[18px] w-[18px] object-contain" />
     </span>
     <span className="truncate font-[family-name:var(--font-display)] text-[length:var(--text-sm)] font-semibold tracking-[-0.01em] text-[var(--text)]">
       Legal Scout
@@ -295,7 +295,21 @@ const Sidebar = ({
 
         {/* The list users come back to. Takes every pixel left over. */}
         <div className="mt-4 min-h-0 flex-1">
-          {isMounted && isEndpointActive && <Sessions />}
+          {/*
+            Mounted whenever the rail is. It used to be gated on
+            `isEndpointActive`, which starts FALSE in the store and only flips
+            true once initialize() has finished — so on every page load this
+            slot rendered nothing at all, and if initialize() was slow or
+            failed it stayed blank permanently. "My chat history disappears
+            when I refresh" was this.
+
+            Worse, the gate made its own explanation unreachable: Sessions
+            renders a skeleton while `isEndpointLoading`, and SessionBlankState
+            has a `case !isEndpointActive` that says "Endpoint offline" — both
+            written for exactly the states the gate refused to mount them in.
+            Sessions owns those states; the parent must not pre-empt them.
+          */}
+          {isMounted && <Sessions />}
         </div>
 
         {/* Who you are, and the way out. */}

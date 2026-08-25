@@ -4,6 +4,7 @@ import { useMemo, useState } from 'react'
 import { HelpCircle, Check } from 'lucide-react'
 
 import { resolveAskUserAnswers } from './askUserPayload'
+import { formatLegalDate, looksLikeDateQuestion, todayISO } from './legalDate'
 import type {
   AskUserAnswer,
   AskUserAnswerMap,
@@ -33,8 +34,21 @@ const AskUserCard = ({ request, onSubmit, disabled }: AskUserCardProps) => {
   const [singlePick, setSinglePick] = useState<Record<string, string>>({})
   // Multi-select: question id -> chosen options (may include OTHER).
   const [multiPick, setMultiPick] = useState<Record<string, string[]>>({})
-  // Free-text questions: question id -> text.
-  const [freeText, setFreeText] = useState<Record<string, string>>({})
+  // Free-text questions: question id -> text. Seeded once from any
+  // model-declared default, so a card that opens pre-filled stays pre-filled
+  // across re-renders without an effect writing over the user's typing.
+  const [freeText, setFreeText] = useState<Record<string, string>>(() => {
+    const seed: Record<string, string> = {}
+    questions.forEach((question) => {
+      if (question.options?.length) return
+      if (question.default_value === 'today') seed[question.id] = todayISO()
+    })
+    return seed
+  })
+  // Date questions the user chose to type by hand instead. The picker is a
+  // guess whenever the model did not declare `input_type`, so there is always
+  // a way back to a plain box — a wrong guess must never trap an answer.
+  const [manualEntry, setManualEntry] = useState<Record<string, boolean>>({})
   // "Other…" text, keyed by question id (single or multi).
   const [otherText, setOtherText] = useState<Record<string, string>>({})
   const [submitting, setSubmitting] = useState(false)
@@ -55,10 +69,20 @@ const AskUserCard = ({ request, onSubmit, disabled }: AskUserCardProps) => {
     !single.multi_select &&
     !single.allow_other
 
+  /** True when this free-text question should collect a calendar date. */
+  const isDateQuestion = (question: AskUserQuestion): boolean => {
+    if (question.options?.length) return false
+    if (manualEntry[question.id]) return false
+    if (question.input_type === 'date') return true
+    return looksLikeDateQuestion(question.text, question.id)
+  }
+
   const answerFor = (question: AskUserQuestion): AskUserAnswer | null => {
     if (!question.options?.length) {
       const text = (freeText[question.id] ?? '').trim()
-      return text ? text : null
+      if (!text) return null
+      // The picker holds ISO; the document wants "30 June 2026".
+      return isDateQuestion(question) ? formatLegalDate(text) : text
     }
     if (question.multi_select) {
       const picks = multiPick[question.id] ?? []
@@ -149,6 +173,9 @@ const AskUserCard = ({ request, onSubmit, disabled }: AskUserCardProps) => {
         : 'border-[var(--border-strong)] text-[var(--text)] hover:bg-[var(--bg-secondary)]'
     } ${readOnly ? 'cursor-default opacity-70' : 'cursor-pointer'}`
 
+  const fieldClass =
+    'w-full rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface)] px-2.5 py-1.5 text-[13px] text-[var(--text)] outline-none placeholder:text-[var(--text-muted)] focus:border-[var(--brand)] focus-visible:ring-2 focus-visible:ring-[color-mix(in_srgb,var(--brand)_25%,transparent)] disabled:opacity-40'
+
   const renderChoices = (question: AskUserQuestion) => {
     const multi = question.multi_select === true
     const chosen = multi
@@ -223,6 +250,64 @@ const AskUserCard = ({ request, onSubmit, disabled }: AskUserCardProps) => {
             className="w-full rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface)] px-2.5 py-1.5 text-[13px] text-[var(--text)] outline-none placeholder:text-[var(--text-muted)] focus:border-[var(--brand)] focus-visible:ring-2 focus-visible:ring-[color-mix(in_srgb,var(--brand)_25%,transparent)] disabled:opacity-40"
           />
         )}
+      </div>
+    )
+  }
+
+  const renderDate = (question: AskUserQuestion) => {
+    const value = freeText[question.id] ?? ''
+    const set = (next: string) =>
+      setFreeText((prev) => ({ ...prev, [question.id]: next }))
+
+    return (
+      <div className="flex flex-col gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <input
+            type="date"
+            value={value}
+            disabled={readOnly}
+            onChange={(event) => set(event.target.value)}
+            className={`${fieldClass} max-w-[190px]`}
+          />
+          <button
+            type="button"
+            disabled={readOnly}
+            onClick={() => set(todayISO())}
+            className={chipClass(value === todayISO())}
+          >
+            Today
+          </button>
+          {value && (
+            <button
+              type="button"
+              disabled={readOnly}
+              onClick={() => set('')}
+              className={chipClass(false)}
+            >
+              Clear
+            </button>
+          )}
+        </div>
+        <div className="flex flex-wrap items-center gap-2 text-[12px] text-[var(--text-muted)]">
+          {/* What actually reaches the document — shown because the picker
+              displays the browser's locale format, not the document's. */}
+          {value && (
+            <span className="text-[var(--text)]">
+              Goes in the document as{' '}
+              <strong className="font-semibold">{formatLegalDate(value)}</strong>
+            </span>
+          )}
+          <button
+            type="button"
+            disabled={readOnly}
+            onClick={() =>
+              setManualEntry((prev) => ({ ...prev, [question.id]: true }))
+            }
+            className="underline underline-offset-2 hover:text-[var(--text)] disabled:opacity-40"
+          >
+            Type instead
+          </button>
+        </div>
       </div>
     )
   }
@@ -349,7 +434,9 @@ const AskUserCard = ({ request, onSubmit, disabled }: AskUserCardProps) => {
                 <span className="text-[11px] font-medium uppercase tracking-[var(--tracking-tag)] text-[var(--text-muted)]">
                   {question.text}
                 </span>
-                {renderFreeText(question)}
+                {isDateQuestion(question)
+                  ? renderDate(question)
+                  : renderFreeText(question)}
               </label>
             )}
             {questions.length > 1 && (

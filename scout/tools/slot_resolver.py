@@ -21,6 +21,12 @@ means the corporate shareholder's own directors: an AGM resolution signed by
 City Holdings on CMHL's document is signed by a City Holdings director.
 """
 
+# `str | None` in a signature is evaluated at def time on python 3.9, which is
+# the system interpreter on the dev laptop — without this the module raises
+# TypeError on IMPORT there, before any test can run. repeat_regions.py already
+# carries it; this file did not.
+from __future__ import annotations
+
 import contextlib
 import contextvars
 import json
@@ -254,7 +260,14 @@ def is_valid_entry(entry: dict) -> bool:
     """Validate an entry, preferring app.slot_contract."""
     if _contract_validate is not None:
         try:
-            return bool(_contract_validate(entry))
+            # ★ validate_mapping_entry returns (ok, error) — all 12 of its return
+            # paths are 2-tuples (app/slot_contract.py:102). `bool((False, "..."))`
+            # is TRUE, so `bool(_contract_validate(entry))` said yes to every
+            # entry, including the ones the contract had just rejected, and the
+            # rejection reason was discarded in the same expression. Read element
+            # 0; tolerate a bare bool in case the contract's shape changes.
+            ok = _contract_validate(entry)
+            return bool(ok[0] if isinstance(ok, tuple) else ok)
         except Exception as e:  # noqa: BLE001
             _logger.warning(f"slot_contract.validate_mapping_entry failed: {e}")
 
@@ -948,6 +961,162 @@ def _member_position_covered(placeholder: str, member_parties: list[dict]) -> bo
         return False
 
 
+# --------------------------------------------------------------------------- #
+# How many parties a repeating region really has                               #
+# --------------------------------------------------------------------------- #
+#
+# A template hard-codes a FIXED number of numbered positions
+# (`appointed_director_1_name` .. `_3_name`). `repeat_regions` grows or shrinks
+# that block to the company's REAL party list at fill time, so a seven-director
+# appointment renders seven lines from a three-slot template. The ask step used
+# to walk `mapping` alone, so it could never see past the third position: the
+# document came out right and the user was asked about three parties.
+#
+# The count therefore has to come from the SAME source the expander uses —
+# `repeat_regions._parties_for_family` — and not from the template's layout.
+# Re-deriving the rule here is how the two steps would drift apart again.
+
+_REPEAT_FAMILIES = ("member", "appointed_director", "signing_director")
+
+# The position digits inside a numbered placeholder. Bounded by non-digits on
+# both sides so a name like `nrc_12_name` cannot be half-rewritten, and applied
+# with count=1 so only the POSITION is replaced.
+_POSITION_DIGITS = re.compile(r"(?<![0-9])\d+(?![0-9])")
+
+# A guard, not a party count: a data source that hands back thousands of rows is
+# a bug somewhere else, and synthesising a question per row would bury the real
+# ones. Deliberately far above any real board or member list.
+_MAX_PARTY_POSITIONS = 50
+
+
+def _position_pattern(placeholder: str) -> str:
+    """`individual shareholder_2_name` -> `individual shareholder_#_name`.
+
+    The original spelling is preserved apart from the digits — these
+    placeholders carry U+00A0 and mixed spacing that any re-spelling would
+    break (see placeholders.placeholder_name).
+    """
+    return _POSITION_DIGITS.sub("#", placeholder or "", count=1)
+
+
+def _placeholder_at(pattern: str, position: int) -> str:
+    return pattern.replace("#", str(position), 1)
+
+
+def _family_tail(placeholder: str) -> str:
+    """The attribute a numbered placeholder renders (name / nrc / shares)."""
+    try:
+        from scout.tools.repeat_regions import _tail_attr
+        return _tail_attr(placeholder or "")
+    except Exception as e:  # noqa: BLE001
+        _logger.warning(f"repeat_regions tail classify failed for {placeholder!r}: {e}")
+        return "name"
+
+
+def _family_parties(
+    family: str, tail: str, data: dict, company_name: str | None
+) -> list[dict]:
+    """The party list `repeat_regions` will expand `family` to.
+
+    Empty means "we cannot prove how many parties there are", which is NOT the
+    same as zero: callers must then leave the template's declared slots alone
+    rather than inventing or deleting positions.
+    """
+    try:
+        from scout.tools.repeat_regions import _parties_for_family
+        parties = _parties_for_family(family, tail, data or {}, company_name) or []
+    except Exception as e:  # noqa: BLE001
+        _logger.warning(f"party-list resolve failed for family {family!r}: {e}")
+        return []
+    if len(parties) > _MAX_PARTY_POSITIONS:
+        _logger.warning(
+            "slot_resolver: %r resolved to %d parties for %r — capping the ask at %d",
+            family, len(parties), company_name, _MAX_PARTY_POSITIONS)
+        return parties[:_MAX_PARTY_POSITIONS]
+    return parties
+
+
+def _declared_positions(mapping: dict) -> dict[str, dict]:
+    """Per family, the numbered positions the TEMPLATE declares and how it spells
+    them.
+
+    `patterns` keeps one entry per distinct spelling — a template that declares
+    both `..._name` and `..._nrc`, or splits individual from corporate positions,
+    has several, and every one of them has to grow together.
+    """
+    declared: dict[str, dict] = {}
+    for placeholder, entry in mapping.items():
+        if not slot_of(entry, placeholder):
+            continue
+        family = _repeat_family(placeholder)
+        if family not in _REPEAT_FAMILIES:
+            continue
+        position = _slot_position(placeholder)
+        if position is None:
+            continue  # an unnumbered list slot renders inline; nothing to grow
+        info = declared.setdefault(family, {"positions": set(), "patterns": {}})
+        info["positions"].add(position)
+        info["patterns"].setdefault(_position_pattern(placeholder), entry)
+    return declared
+
+
+def _patterns_for_party(patterns: dict, party: dict) -> list[tuple[str, dict]]:
+    """The spellings that suit this party's type.
+
+    A template lays the corporate positions out differently from the individual
+    ones (`corporate shareholder_3_name` beside `individual shareholder_1_name`),
+    and `repeat_regions` clones the matching unit. Growing the wrong one would
+    print a company under an individual's role tag. When the template offers no
+    variant for this type, every spelling grows — that is the fixed-layout case,
+    where the type split does not exist.
+    """
+    items = list(patterns.items())
+    corporate = _party_is_corporate(party)
+    suited = [
+        (pattern, entry) for pattern, entry in items
+        if bool(_CORPORATE_SLOT_RE.search(_norm(pattern))) == corporate
+    ]
+    return suited or items
+
+
+def _positions_beyond_template(
+    mapping: dict, data: dict, company_name: str | None
+) -> tuple[list[tuple[str, dict]], dict[str, int]]:
+    """Placeholders for the party positions the template does not declare.
+
+    Returns the extra `(placeholder, entry)` pairs plus, per family, the real
+    party count — 0 where it could not be established, which every caller reads
+    as "leave this template's fixed slots exactly as they are".
+    """
+    extras: list[tuple[str, dict]] = []
+    counts: dict[str, int] = {}
+
+    for family, info in _declared_positions(mapping).items():
+        patterns = info["patterns"]
+        tail = _family_tail(next(iter(patterns)))
+        parties = _family_parties(family, tail, data, company_name)
+        counts[family] = len(parties)
+        if not parties:
+            continue
+
+        declared_max = max(info["positions"])
+        if len(parties) <= declared_max:
+            # The template already declares a position for every real party.
+            # Shrinking is the expander's job, and `_member_position_covered`
+            # already stops us asking about the surplus.
+            continue
+
+        for position in range(declared_max + 1, len(parties) + 1):
+            for pattern, entry in _patterns_for_party(patterns, parties[position - 1]):
+                extras.append((_placeholder_at(pattern, position), entry))
+
+    if extras:
+        _logger.info(
+            "slot_resolver: %d party position(s) beyond the template's numbered "
+            "slots — asking from the real party list, not the layout", len(extras))
+    return extras, counts
+
+
 def _explicit_value(value: Any) -> str:
     """A value somebody actually supplied. Blank and "TBD" are not answers."""
     text = str(value or "").strip()
@@ -1011,6 +1180,21 @@ _NEVER_SUPPRESS_KINDS = frozenset({
     "new_director", "resigning_director", "chairperson", "auditor",
 })
 
+# Families whose numbered positions are DISTINCT PARTIES by definition and whose
+# size no register can establish. `appointed_director` is the case: the people
+# being appointed to a NEW company's board are not on the subject company's
+# register (and must not be taken from it — see `_parties_for_family`), so the
+# party count is permanently 0 and the position-aware dedup below would fall
+# back to one question for all of them. Measured on THAZIN VALLEY HOLDINGS: the
+# template declares `appointed_director_1..3_nrc`, three different people, and
+# exactly one question was asked. For these families the TEMPLATE's declared
+# positions are the count — the layout is the only evidence available.
+#
+# Deliberately NOT a general rule: for a family the register CAN size, the real
+# party list must win, otherwise a template that hard-codes three positions
+# would interrogate a company that has one.
+_DISTINCT_POSITION_FAMILIES = frozenset({"appointed_director"})
+
 _CORPORATE_SLOT_RE = re.compile(r"corporate", re.I)
 
 
@@ -1040,11 +1224,23 @@ def collect_slot_requests(
     corp_members = [p for p in member_parties if _party_is_corporate(p)]
     corp_needs_rep = any(not _corp_rep_resolvable(p, data) for p in corp_members)
 
-    for placeholder, entry in mapping.items():
+    # The template's numbered slots are a LAYOUT, not a party count. Positions
+    # the real party list needs and the template does not spell out are added
+    # here, so a seven-party document is asked about seven parties instead of
+    # the three the .docx happens to declare. `party_counts` is 0 for any family
+    # whose size could not be established, which leaves that family's fixed
+    # slots behaving exactly as before.
+    extra_slots, party_counts = _positions_beyond_template(mapping, data, company_name)
+
+    # `required_fields` lists the placeholders the .docx contains, so a position
+    # the template never declared can never appear in it. Filtering the extras
+    # through it would delete the very questions this pass exists to add.
+    for placeholder, entry in list(mapping.items()) + extra_slots:
         slot = slot_of(entry, placeholder)
         if not slot:
             continue
-        if wanted and _norm(placeholder) not in wanted:
+        declared = placeholder in mapping
+        if declared and wanted and _norm(placeholder) not in wanted:
             continue
         if resolve_slot(placeholder, entry, data, company_name=company_name, document_id=document_id) is not None:
             continue
@@ -1061,6 +1257,20 @@ def collect_slot_requests(
         if kind == "representative" and request["of"] == "corporate_shareholder":
             if not corp_members or not corp_needs_rep:
                 continue
+
+        # A numbered position past the end of the real party list. The expander
+        # DELETES that unit, so the finished document has no such line and the
+        # question is about nothing. This is the mirror of the growth above and
+        # has to apply to every family, including the kinds below that are
+        # otherwise never suppressed: those are protected because the register
+        # cannot answer them, not because a position the document will not
+        # contain is worth asking about. Only a count we actually established
+        # (> 0) can retire a position.
+        family = _repeat_family(placeholder)
+        real_count = party_counts.get(family or "", 0)
+        position = _slot_position(placeholder)
+        if real_count and position and position > real_count:
+            continue
 
         if kind not in _NEVER_SUPPRESS_KINDS:
             # A slot that names the CORPORATE side of the member layout
@@ -1086,7 +1296,23 @@ def collect_slot_requests(
             ):
                 continue
 
-        key = (request["kind"], request["of"], request["candidates_from"], request["multi"])
+        # One question per ROLE, except in a repeating region whose real size we
+        # know: there the positions are distinct parties, and folding them
+        # together is the other half of why a seven-party document was asked
+        # about once. Where the count is unknown the old collapse stands, so a
+        # fixed-layout template still asks once for the role rather than once
+        # per numbered slot.
+        # Positions are asked about separately when we can show they are
+        # separate parties: either the real party list gave us a count, or the
+        # family is one whose numbered slots are distinct people by definition
+        # (`_DISTINCT_POSITION_FAMILIES`) and the template declares them.
+        per_position = bool(real_count) or (
+            family in _DISTINCT_POSITION_FAMILIES and bool(position)
+        )
+        key = (
+            request["kind"], request["of"], request["candidates_from"],
+            request["multi"], position if per_position else None,
+        )
         if key in seen:
             continue
         seen.add(key)
