@@ -2,10 +2,22 @@
 Directory sign-in (LDAP / Active Directory)
 ===========================================
 
-The sign-in screen does not change. A person types the same email and password
-they always did; if the local password does not match, and the account is known
-to Legal Scout, the same credentials are offered to the directory instead. So
-this module has no UI, no second form and no "sign in with LDAP" button.
+There is no "sign in with LDAP" button, and there should not be one: directory
+sign-in uses the SAME two fields as a password sign-in, so a second button would
+be a second way to submit one form. What the screen does do when a directory is
+configured is accept a bare username as well as an email, and say so — an option
+that is configured, working and unadvertised is indistinguishable from one that
+is not there.
+
+Two ways in, both through that one form:
+
+  * an EMAIL that already has a Legal Scout account — the local password is
+    tried first, and only if it fails are the same credentials offered to the
+    directory. An address with no account here is never sent on.
+  * a USERNAME (`sAMAccountName`), which cannot match a Legal Scout account on
+    its own. The directory resolves it and returns the person's `mail`, which
+    is then matched to an account. This is the one path that necessarily sends
+    an unrecognised identifier to the directory.
 
 What proves the password
 ------------------------
@@ -40,6 +52,7 @@ Scout administrator by editing a group membership.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 
 logger = logging.getLogger("legalscout.ldap")
@@ -183,6 +196,102 @@ def _connect(server, user, password, cfg, *, authentication=None):
     if not conn.bind():
         raise LdapError(f"bind failed: {conn.result}")
     return conn
+
+
+def check_filter(user_filter: str) -> str | None:
+    """Return a complaint about the search filter, or None if it looks sane.
+
+    ★ A filter with several clauses and no operator joining them — for example
+    `((a={username})(b={username})(c={username}))` — is not valid LDAP. It does
+    not match "any of these"; the directory rejects it, every sign-in fails as
+    a wrong password, and nothing says why. The fix is a leading `|`:
+    `(|(a={username})(b={username})(c={username}))`.
+
+    This is a lint, not a parser: it catches the mistake people actually make
+    when writing an OR by hand, and stays quiet otherwise.
+    """
+    f = (user_filter or "").strip()
+    if not f:
+        return "The search filter is empty."
+    if not (f.startswith("(") and f.endswith(")")):
+        return "The search filter must be wrapped in parentheses."
+    if "{username}" not in f:
+        return "The search filter must contain {username}, or it can never match the person signing in."
+    inner = f[1:-1]
+    # More than one top-level clause with no operator in front of them.
+    if inner.startswith("(") and inner.count("(") > 1 and inner[:1] not in ("|", "&", "!"):
+        return (
+            "The filter lists several conditions with nothing joining them. "
+            "For 'match any of these', it needs a leading | — for example "
+            "(|(sAMAccountName={username})(mail={username}))."
+        )
+    return None
+
+
+def test_connection() -> dict:
+    """Check the directory settings WITHOUT anybody's password.
+
+    Binds as the service account and runs one search, which is exactly what
+    steps 1 and 2 of a real sign-in do — so a pass here means the half of the
+    flow an administrator can control actually works. It deliberately cannot
+    test step 3 (the rebind that proves a password), because that needs a real
+    person's credentials and this is a settings page.
+    """
+    cfg = config()
+    out = {
+        "host": f"{cfg['host']}:{cfg['port']}",
+        "tls": "LDAPS" if cfg["use_ssl"] else ("StartTLS" if cfg["start_tls"] else "none"),
+    }
+    if not cfg["host"] or not cfg["base_dn"]:
+        return {**out, "success": False, "error": "Host and base DN are both required."}
+
+    complaint = check_filter(cfg["user_filter"])
+    if complaint:
+        return {**out, "success": False, "error": complaint}
+
+    try:
+        _require_transport_security(cfg)
+    except LdapError as e:
+        return {**out, "success": False, "error": str(e)}
+
+    try:
+        from ldap3 import ANONYMOUS
+
+        server = _server(cfg)
+        if cfg["bind_dn"]:
+            conn = _connect(server, cfg["bind_dn"], cfg["bind_password"], cfg)
+        else:
+            conn = _connect(server, None, None, cfg, authentication=ANONYMOUS)
+    except Exception as e:
+        return {**out, "success": False, "error": f"Could not bind as the service account: {type(e).__name__}: {e}"}
+
+    try:
+        # A wildcard search proves the base DN is readable by this account.
+        probe = cfg["user_filter"].replace("{username}", "*")
+        ok = conn.search(search_base=cfg["base_dn"], search_filter=probe,
+                         attributes=[cfg["email_attr"], cfg["name_attr"]], size_limit=5)
+        n = len(conn.entries) if ok else 0
+        sample = ""
+        if n:
+            e0 = conn.entries[0]
+            sample = str(getattr(e0, cfg["email_attr"], "") or "").strip()
+        return {
+            **out,
+            "success": True,
+            "entries_found": n,
+            "sample_attribute": bool(sample),
+            "message": (
+                f"Bound as the service account and searched {cfg['base_dn']} — "
+                f"{n} matching entr{'y' if n == 1 else 'ies'} visible"
+                + ("" if sample else f". ⚠ the first entry has no {cfg['email_attr']} attribute, "
+                   f"so people found this way cannot be matched to a Legal Scout account")
+            ),
+        }
+    except Exception as e:
+        return {**out, "success": False, "error": f"Bound, but the search failed: {type(e).__name__}: {e}"}
+    finally:
+        with contextlib.suppress(Exception):
+            conn.unbind()
 
 
 def authenticate(username: str, password: str) -> tuple[str, str]:

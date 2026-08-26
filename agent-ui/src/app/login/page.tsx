@@ -30,6 +30,8 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false)
   const [ssoEnabled, setSsoEnabled] = useState(false)
   const [ssoLabel, setSsoLabel] = useState("City Holdings SSO")
+  const [ldapEnabled, setLdapEnabled] = useState(false)
+  const [ldapLabel, setLdapLabel] = useState("Corporate directory")
   const router = useRouter()
 
   useEffect(() => {
@@ -53,6 +55,8 @@ export default function LoginPage() {
         const c = await res.json()
         setSsoEnabled(!!c.sso_enabled)
         if (c.sso_label) setSsoLabel(c.sso_label)
+        setLdapEnabled(!!c.ldap_enabled)
+        if (c.ldap_label) setLdapLabel(c.ldap_label)
       } catch (e) {
         console.error("Auth config fetch failed:", e)
       }
@@ -201,13 +205,19 @@ export default function LoginPage() {
           )}
 
           <form onSubmit={handleLogin} className="flex flex-col gap-[18px]">
+            {/* ★ `type="email"` is wrong once a directory is configured: the
+                BROWSER refuses to submit a bare username, so an Active
+                Directory person who knows their sAMAccountName and not the
+                address Legal Scout files them under could never even send the
+                form. The box, its size and its position are unchanged — only
+                the accepted shape and the wording. */}
             <label className={BOX}>
-              <span className={BOX_LABEL}>EMAIL</span>
+              <span className={BOX_LABEL}>{ldapEnabled ? "EMAIL OR USERNAME" : "EMAIL"}</span>
               <input
-                type="email"
+                type={ldapEnabled ? "text" : "email"}
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="you@cityholdings.com.mm"
+                placeholder={ldapEnabled ? "you@cityholdings.com.mm  ·  or your network username" : "you@cityholdings.com.mm"}
                 autoComplete="username"
                 required
                 className={BOX_INPUT}
@@ -253,8 +263,21 @@ export default function LoginPage() {
               disabled={loading}
               className="mt-[13px] h-12 rounded-[11px] bg-[#2563EB] px-4 text-[15px] font-semibold text-white transition-colors hover:bg-[#1D4ED8] disabled:opacity-60"
             >
-              {loading ? "Signing in…" : "Continue with email  →"}
+              {loading ? "Signing in…" : ldapEnabled ? "Sign in  →" : "Continue with email  →"}
             </button>
+
+            {/* Directory sign-in gets no button, and should not have one: it
+                uses these same two fields, so a second button would be a
+                second way to submit the same form. What it does need is to be
+                VISIBLE — without this line the option is configured, working,
+                and completely unadvertised, which is indistinguishable from
+                not being there at all. */}
+            {ldapEnabled && (
+              <p className="-mt-[6px] text-center text-[12px] text-[#6B7280]">
+                Staff can sign in with their <span className="font-medium text-[#334155]">{ldapLabel}</span> username
+                and password.
+              </p>
+            )}
           </form>
 
           {/* Shown only when the server says single sign-on is configured. It

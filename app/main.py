@@ -1831,6 +1831,40 @@ def _jit_provision(email: str, name: str, source: str) -> dict | None:
     return {"id": row[0], "email": row[1]} if row else None
 
 
+def _tool_result(raw) -> dict:
+    """Normalise a document-tool return value into a dict.
+
+    ★★★ `create_smart_document_tool()["generate_document"]` returns a JSON
+    **string**, not a dict — it is built to be called by the agent, where agno
+    hands the string straight back to the model. Two HTTP endpoints called it
+    like an ordinary function and did `result.get("success")` on the string,
+    which raises `AttributeError: 'str' object has no attribute 'get'`.
+
+    Both then caught that and reported failure — while the document had
+    already been written to disk. So the Fill-in view's Generate button
+    reported an error on **every** use and produced a file anyway, and bulk
+    generate reported 0/N for a run that generated all N. Measured: three
+    consecutive "failed" calls left three real 22,631-byte .docx files, which
+    is also what makes people click again and produce duplicates.
+
+    Reporting a success as a failure is worse than the reverse: the work is
+    done, nobody believes it, and the retry does it again.
+    """
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, (bytes, bytearray)):
+        raw = raw.decode("utf-8", "replace")
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except (ValueError, TypeError):
+            # Not JSON at all. Say so honestly rather than inventing a verdict
+            # in either direction.
+            return {"success": False, "error": f"unparseable tool result: {raw[:200]}"}
+        return parsed if isinstance(parsed, dict) else {"success": False, "error": str(parsed)[:200]}
+    return {"success": False, "error": f"unexpected tool result type {type(raw).__name__}"}
+
+
 def _link_auth_source(user_id: int, source: str) -> None:
     """Record that this account has now been used through `source`.
 
@@ -1917,6 +1951,111 @@ def _ldap_config_or_empty() -> dict:
     return ldap_auth.config()
 
 
+def _session_response(request: Request, row, how: str) -> JSONResponse:
+    """Mint the session for an account that has already been authenticated.
+
+    Shared by the email path and the directory-username path so the two cannot
+    drift apart — the gates below are the ones that matter, and a second copy
+    of them is a second place to forget one.
+
+    `row` is (id, email, hashed_password, full_name, role, is_active, approved).
+    """
+    # sso_only, applied after authentication and never to an admin. See the
+    # long note in auth_login for why the ordering and the exemption are both
+    # load-bearing.
+    try:
+        mode = _auth_settings_mode()
+    except Exception:
+        mode = "hybrid"
+    if mode == "sso_only" and row[4] != "admin":
+        return JSONResponse(
+            status_code=403,
+            content={"success": False, "error": "This account must sign in with single sign-on.", "sso_only": True},
+        )
+    if not row[6]:
+        return JSONResponse(
+            status_code=403,
+            content={"success": False, "error": APPROVAL_PENDING_MESSAGE, "pending_approval": True},
+        )
+
+    token = create_token(row[0], row[1], row[4])
+    log_activity(row[0], row[1], "login", how, request.client.host if request.client else "")
+    resp = JSONResponse(
+        content={
+            "success": True,
+            "token": token,
+            "user": {"id": row[0], "email": row[1], "name": row[3], "role": row[4]},
+        }
+    )
+    resp.set_cookie(
+        SESSION_COOKIE_NAME,
+        token,
+        max_age=JWT_EXPIRY_HOURS * 3600,
+        httponly=True,
+        samesite="lax",
+        secure=(request.url.scheme == "https"),
+        path="/",
+    )
+    return resp
+
+
+async def _login_by_directory_username(request: Request, username: str, password: str) -> JSONResponse:
+    """Sign in with a directory USERNAME rather than an email address.
+
+    Active Directory people usually know their `sAMAccountName`, not the
+    address Legal Scout files them under, so this resolves one to the other:
+    the directory authenticates the username and hands back its `mail`
+    attribute, and that address is matched to a Legal Scout account.
+
+    ★ This is the one path that sends an unrecognised identifier to the
+    directory. It has to — there is nothing else to resolve a username with —
+    which is why it is reachable only when an administrator has switched the
+    directory on, and why the email path deliberately still refuses to do it.
+
+    Every failure is the same flat 401. "No such directory entry", "wrong
+    password" and "authenticated but no Legal Scout account" told apart would
+    say which usernames exist in the corporate directory.
+    """
+    from app import ldap_auth
+
+    try:
+        email, name = ldap_auth.authenticate(username, password)
+    except Exception as e:
+        logger.warning(f"[AUTH] directory username sign-in refused for {username!r}: {type(e).__name__}: {e}")
+        return _login_failure("Invalid email or password")
+
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, email, hashed_password, full_name, role, is_active, approved FROM users WHERE email = %s",
+            (email,),
+        )
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        log_error("login_by_directory_username", e)
+        return _login_failure("Invalid email or password")
+
+    if not row:
+        cfg = _ldap_config_or_empty()
+        if cfg.get("auto_create"):
+            _jit_provision(email, name, "ldap")
+            return JSONResponse(
+                status_code=403,
+                content={"success": False, "error": APPROVAL_PENDING_MESSAGE, "pending_approval": True},
+            )
+        logger.warning(f"[AUTH] {username!r} authenticated as {email} but has no Legal Scout account")
+        return _login_failure("Invalid email or password")
+    if not row[5]:
+        return _login_failure("Account is disabled")
+
+    _link_auth_source(row[0], "ldap")
+    logger.info(f"[AUTH] directory username sign-in accepted for {username!r} -> {email}")
+    return _session_response(request, row, "Signed in with a directory username")
+
+
 def _login_failure(error: str) -> JSONResponse:
     """Failed login → HTTP 401, same JSON body shape as before.
 
@@ -1935,10 +2074,32 @@ async def auth_login(request: Request):
         password = body.get("password", "")
         if not email or not password:
             return _login_failure("Email and password required")
-        if not validate_email(email):
-            return _login_failure("Invalid email format")
         if len(password) < 3 or len(password) > 200:
             return _login_failure("Invalid password")
+
+        # ★ An Active Directory account is very often signed into by USERNAME
+        # (`sAMAccountName`) rather than by email, and the shipped filter is
+        # usually a `(|(sAMAccountName=…)(userPrincipalName=…)(mail=…))` OR.
+        # This check rejected anything that was not an email address, so those
+        # people could never reach the directory at all — the form refused them
+        # before a single LDAP call, with "Invalid email format" and no hint
+        # that a username was even a possibility.
+        #
+        # A non-email identifier is now allowed, but ONLY when a directory is
+        # configured — with no directory it cannot match anything, and letting
+        # it through would just move the same rejection one step later.
+        _is_email = validate_email(email)
+        if not _is_email:
+            from app import ldap_auth
+
+            if not ldap_auth.ldap_enabled():
+                return _login_failure("Invalid email format")
+            # Resolve the username through the directory, then match the
+            # resulting address to a Legal Scout account. This is the one path
+            # that necessarily sends an unrecognised identifier to the
+            # directory — there is no other way for username sign-in to work —
+            # so it is reachable only with LDAP deliberately switched on.
+            return await _login_by_directory_username(request, email, password)
 
         conn = get_db_conn()
         cur = conn.cursor()
@@ -2204,6 +2365,27 @@ async def admin_put_auth_settings(request: Request):
         request.client.host if request.client else "",
     )
     return {"success": True, "settings": auth_settings.public_view()}
+
+
+@app.post("/api/admin/auth-settings/test-ldap")
+async def admin_test_ldap(request: Request):
+    """Check the directory settings without anybody's password. Admin only.
+
+    Binds as the service account and runs one search — steps 1 and 2 of a real
+    sign-in. It cannot test step 3, the rebind that actually proves a password,
+    because that needs a real person's credentials; a settings page must not
+    ask for those.
+    """
+    require_admin(request)
+    from app import ldap_auth
+
+    try:
+        if not ldap_auth.ldap_enabled():
+            return {"success": False, "error": "Directory sign-in is switched off."}
+        return ldap_auth.test_connection()
+    except Exception as e:
+        log_error("admin_test_ldap", e)
+        return {"success": False, "error": str(e)[:300]}
 
 
 @app.post("/api/admin/auth-settings/test")
@@ -6917,7 +7099,7 @@ async def bulk_generate_documents(request: Request):
         results = []
         for company in companies:
             try:
-                result = generate(template_name=template_name, company_name=company, custom_data={})
+                result = _tool_result(generate(template_name=template_name, company_name=company, custom_data={}))
                 results.append(
                     {
                         "company": company,
@@ -6976,8 +7158,10 @@ async def documents_fill_generate(request: Request):
         from scout.tools.smart_doc import create_smart_document_tool
 
         tools = create_smart_document_tool("/documents", host=API_HOST)
-        result = tools["generate_document"](
-            template_name=template_name, company_name=company_name, custom_data=custom_data
+        result = _tool_result(
+            tools["generate_document"](
+                template_name=template_name, company_name=company_name, custom_data=custom_data
+            )
         )
         if result.get("success"):
             log_activity(

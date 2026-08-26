@@ -1581,18 +1581,26 @@ def test_approval_gate():
 def test_ldap_signin():
     import ast as _ast
 
+    import app.auth_settings as st
     import app.ldap_auth as la
     import app.main as appmain
 
     # --- U24a: off unless switched on --------------------------------------
     # Read through the module's own accessor rather than the env var, so this
     # fails if the default is ever inverted in code.
-    prev = os.environ.pop("LDAP_ENABLED", None)
-    try:
-        check("U24a", "directory sign-in is OFF unless configured", la.ldap_enabled() is False)
-    finally:
-        if prev is not None:
-            os.environ["LDAP_ENABLED"] = prev
+    # ★ Asserts the DEFAULT, not the live value. An earlier version called
+    # `la.ldap_enabled()` after clearing the environment variable — which was
+    # right until phase 4 gave the setting a database override. On a deployment
+    # where an administrator has legitimately switched the directory on, that
+    # version went red while the product was behaving exactly as asked. A test
+    # that fails because someone used the feature is a test with the wrong
+    # assumption, not a defect.
+    check(
+        "U24a",
+        "directory sign-in is OFF unless somebody switches it on",
+        st.SPEC["ldap_enabled"][2] is False,
+        f"default={st.SPEC['ldap_enabled'][2]!r} (live value may differ, and that is fine)",
+    )
 
     # --- U24b: an empty password is refused BEFORE any bind -----------------
     # A simple bind with a valid DN and a zero-length password is an
@@ -2336,6 +2344,83 @@ def test_auth_settings():
         )
 
 
+# ===========================================================================
+# U27  Document tools return a STRING to HTTP callers
+#     The one place a success can be reported as a failure, which is worse
+#     than the reverse: the work is done, nobody believes it, and the retry
+#     does it again.
+# ===========================================================================
+def test_tool_result_shape():
+    import ast as _ast
+
+    import app.main as appmain
+    from scout.tools.smart_doc import create_smart_document_tool
+
+    # --- U27a: the tool really does return a string ------------------------
+    # It is built to be called by the agent, where agno hands the string back
+    # to the model. Nothing is wrong with that; what was wrong was two HTTP
+    # endpoints calling it like an ordinary function.
+    gen = create_smart_document_tool("/documents", host="")["generate_document"]
+    check(
+        "U27a",
+        "generate_document returns a string, not a dict",
+        not hasattr(gen(template_name="__no_such_template__", company_name="__none__", custom_data={}), "get"),
+        "if this ever starts returning a dict the normaliser stays correct anyway",
+    )
+
+    # --- U27b: the normaliser handles every shape --------------------------
+    n = appmain._tool_result
+    eq("U27b1", "a JSON string is parsed", n('{"success": true, "file_name": "x.docx"}')["success"], True)
+    eq("U27b2", "a dict passes through", n({"success": False, "error": "e"})["error"], "e")
+    eq("U27b3", "bytes are decoded", n(b'{"success": true}')["success"], True)
+    check("U27b4", "unparseable input fails honestly", n("not json at all")["success"] is False)
+    check("U27b5", "an unexpected type fails honestly", n(12345)["success"] is False)
+
+    # --- U27c: no HTTP caller reads .get() off a raw tool call --------------
+    # ★ The actual defect: `result.get("success")` on the string raised, the
+    # surrounding except reported failure, and the document had ALREADY been
+    # written. The Fill-in view's Generate button therefore reported an error
+    # on every single use while producing a file, and bulk generate reported
+    # 0/N for a run that generated all N.
+    src = (REPO / "app" / "main.py").read_text(encoding="utf-8")
+    tree = _ast.parse(src)
+    bare = []
+    for node in _ast.walk(tree):
+        # `<something>(...).get(...)` where the inner call is a document tool
+        if not (isinstance(node, _ast.Call) and isinstance(node.func, _ast.Attribute) and node.func.attr == "get"):
+            continue
+        inner = node.func.value
+        if not isinstance(inner, _ast.Call):
+            continue
+        f = inner.func
+        name = (
+            f.id
+            if isinstance(f, _ast.Name)
+            else (f.attr if isinstance(f, _ast.Attribute) else None)
+        )
+        if isinstance(f, _ast.Subscript) or name in ("generate", "generate_document"):
+            bare.append(node.lineno)
+    check(
+        "U27c",
+        "no endpoint calls .get() straight off a document tool's return value",
+        not bare,
+        f"lines {bare} would raise on the string the tool returns",
+    )
+
+    # --- U27d: both known call sites go through the normaliser -------------
+    calls = [
+        n_
+        for n_ in _ast.walk(tree)
+        if isinstance(n_, _ast.Call) and isinstance(n_.func, _ast.Name) and n_.func.id == "_tool_result"
+    ]
+    check(
+        "U27d",
+        "fill-generate and bulk generate both normalise the result",
+        len(calls) >= 2,
+        f"found {len(calls)}; expected the two document endpoints",
+    )
+
+
 def main():
     for fn in (
         test_placeholders,
@@ -2354,6 +2439,7 @@ def main():
         test_ldap_signin,
         test_sso,
         test_auth_settings,
+        test_tool_result_shape,
         test_structural_contracts,
     ):
         try:

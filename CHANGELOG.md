@@ -2,6 +2,70 @@
 
 All notable changes to Legal Scout.
 
+## [1.2.55] — 2026-08-26
+
+Reported from the live deployment after configuring a real Active Directory:
+*"there is no way to test, no testing button, no way to log in on the login
+screen, no button."* All three were true.
+
+### Fixed
+
+- **A directory could be configured but never tested.** The Authentication tab
+  had a connection test for the identity provider and none for the directory —
+  so an administrator could fill in a host, a bind DN and a filter, save, and
+  have no way to learn whether any of it worked short of asking a real person
+  to try signing in. `POST /api/admin/auth-settings/test-ldap` binds as the
+  service account and runs one search — steps 1 and 2 of a real sign-in. It
+  deliberately cannot test step 3, the rebind that proves a password, because
+  that needs a real person's credentials and a settings page must not ask.
+
+- **★★★ An Active Directory username could not sign in at all.** `auth_login`
+  rejected anything that was not a valid email *before any LDAP call*, and the
+  login field was `type="email"`, so the browser refused to submit a bare
+  username too. AD people overwhelmingly know their `sAMAccountName`, not the
+  address Legal Scout files them under — and the filter people write is usually
+  a `(|(sAMAccountName=…)(userPrincipalName=…)(mail=…))` OR, which can only
+  ever match if a username is allowed through. The whole directory feature was
+  unreachable for them, answering "Invalid email format" with no hint that a
+  username was even a possibility.
+
+  A non-email identifier is now resolved through the directory — it
+  authenticates the username and returns `mail`, which is matched to a Legal
+  Scout account. This is the one path that necessarily sends an unrecognised
+  identifier to the directory; there is no other way for username sign-in to
+  work, so it is reachable only with the directory deliberately switched on,
+  and the email path still refuses to do it.
+
+- **A malformed search filter saved silently.** The one written on the live
+  deployment was `((sAMAccountName={username})(userPrincipalName={username})
+  (mail={username}))` — three conditions with no operator joining them, which
+  is not valid LDAP. The directory rejects it, every sign-in fails as an
+  ordinary wrong password, and nothing says why. Filters are now checked at the
+  write, like the enums, and the message names the fix (`(|` in front).
+
+- **Directory sign-in was invisible.** It correctly has no button — it uses the
+  same two fields, so a second button would be a second way to submit one form
+  — but nothing on the screen said the option existed. When a directory is
+  configured the field now reads "EMAIL OR USERNAME" and a line under the
+  button says staff can use their network credentials. Configured, working and
+  unadvertised is indistinguishable from absent.
+
+- **`U24a` asserted the live value instead of the default**, so it went red on
+  a deployment where an administrator had legitimately switched the directory
+  on. A test that fails because someone used the feature has the wrong
+  assumption, not the product.
+
+### Verified against a real OpenLDAP
+
+| | |
+|---|---|
+| malformed filter | refused at the save, message names the fix |
+| test button, valid config | "Bound as the service account and searched … — 1 matching entry visible" |
+| **username + directory password** | **200** (previously impossible) |
+| username + wrong password | 401 |
+| email + directory password | 200 |
+| unknown username | 401 |
+
 ## [1.2.53] — 2026-08-26
 
 ### Fixed

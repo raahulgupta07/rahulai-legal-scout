@@ -213,6 +213,18 @@ def update(updates: dict, actor: str) -> None:
                 continue
             clean[name] = str(value)
 
+    # ★ The search filter is checked HERE, at the write, for the same reason
+    # the enums are: a filter with several clauses and no operator joining them
+    # is not valid LDAP, the directory rejects it, every sign-in fails as an
+    # ordinary wrong password, and nothing anywhere says why. Saved once, it
+    # looks exactly like a working configuration.
+    if "ldap_user_filter" in clean:
+        from app.ldap_auth import check_filter
+
+        complaint = check_filter(clean["ldap_user_filter"])
+        if complaint:
+            raise SettingsError(complaint)
+
     if not clean:
         return
 

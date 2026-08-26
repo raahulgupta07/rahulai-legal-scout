@@ -96,6 +96,8 @@ export default function AuthPanel() {
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<{ ok: boolean; msg: string } | null>(null)
+  const [testingLdap, setTestingLdap] = useState(false)
+  const [ldapResult, setLdapResult] = useState<{ ok: boolean; msg: string } | null>(null)
   const [error, setError] = useState("")
 
   const load = useCallback(async () => {
@@ -148,17 +150,19 @@ export default function AuthPanel() {
     }
   }
 
-  const test = async () => {
-    setTesting(true)
-    setTestResult(null)
+  const test = async (which: "sso" | "ldap") => {
+    const setBusy = which === "ldap" ? setTestingLdap : setTesting
+    const setResult = which === "ldap" ? setLdapResult : setTestResult
+    setBusy(true)
+    setResult(null)
     try {
-      const res = await authFetch(`${API}/test`, { method: "POST" })
+      const res = await authFetch(`${API}/${which === "ldap" ? "test-ldap" : "test"}`, { method: "POST" })
       const data = await res.json()
-      setTestResult({ ok: !!data.success, msg: data.success ? data.message : data.error })
+      setResult({ ok: !!data.success, msg: data.success ? data.message : data.error })
     } catch (e: any) {
-      setTestResult({ ok: false, msg: e?.message || "Test failed" })
+      setResult({ ok: false, msg: e?.message || "Test failed" })
     } finally {
-      setTesting(false)
+      setBusy(false)
     }
   }
 
@@ -255,6 +259,30 @@ export default function AuthPanel() {
                 onChange={(v) => set("ldap_allow_insecure", v)}
                 tone="warn"
               />
+              <div className="flex items-center gap-3 pt-1">
+                <Button
+                  variant="secondary"
+                  onClick={() => test("ldap")}
+                  disabled={testingLdap}
+                  icon={<Lock className="h-3.5 w-3.5" />}
+                >
+                  {testingLdap ? "Checking…" : "Test the directory connection"}
+                </Button>
+                {ldapResult && (
+                  <span
+                    className={`text-[length:var(--text-xs)] ${
+                      ldapResult.ok ? "text-[var(--ok)]" : "text-[var(--danger-strong)]"
+                    }`}
+                  >
+                    {ldapResult.msg}
+                  </span>
+                )}
+              </div>
+              <p className="text-[length:var(--text-2xs)] text-[var(--text-muted)]">
+                Binds as the service account and runs one search — the same first two steps a real
+                sign-in takes. It cannot check anybody&apos;s password, because that needs their
+                credentials. Save first: it tests the stored settings, not what is typed above.
+              </p>
               <Toggle
                 label="Create accounts automatically from the directory"
                 hint="New people land pending approval as ordinary users. It removes the typing, not the approval — but it also means an unknown address is offered to your directory, which an internet-facing deployment should weigh against account lockouts."
@@ -331,7 +359,7 @@ export default function AuthPanel() {
               />
 
               <div className="flex items-center gap-3 pt-1">
-                <Button variant="secondary" onClick={test} disabled={testing} icon={<Lock className="h-3.5 w-3.5" />}>
+                <Button variant="secondary" onClick={() => test("sso")} disabled={testing} icon={<Lock className="h-3.5 w-3.5" />}>
                   {testing ? "Checking…" : "Test the connection"}
                 </Button>
                 {testResult && (
