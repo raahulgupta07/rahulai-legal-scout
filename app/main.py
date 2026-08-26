@@ -1484,13 +1484,37 @@ class ResumeSessionScope:
         replayed = False
 
         async def _receive():
+            """Hand the body back once, then behave like the real transport.
+
+            ★★★ Both wrong answers here look identical from the browser, and I
+            shipped each of them in turn. Neither is a stylistic choice:
+
+            * Returning `http.request` forever — what the old code in
+              SecurityHeadersMiddleware did — makes StreamingResponse's
+              `listen_for_disconnect` raise
+              `RuntimeError: Unexpected message received: http.request`, and the
+              stream dies after the first event.
+
+            * Returning `http.disconnect` once the body is spent — my first fix
+              — is worse in a quieter way. `listen_for_disconnect` is waiting
+              for exactly that message, so this TELLS Starlette the client hung
+              up, and it cancels the response generator immediately. Measured:
+              the resumed run emitted `RunContinued` and `ToolCallStarted` and
+              then stopped after 0.1s, never reaching the model, while the same
+              payload with `stream=false` completed in 5.4s with the answer
+              recorded. Same symptom as the crash it replaced, which is exactly
+              why it looked like no progress had been made.
+
+            Delegating to the real `receive` is the only correct option: after
+            the body is exhausted the transport simply does not return until the
+            client actually goes away, which is what a streaming response needs,
+            and a genuine disconnect still propagates so nothing leaks.
+            """
             nonlocal replayed
-            if replayed:
-                # ★ The replay MUST terminate. Handing back `http.request`
-                # forever is the original bug in a different costume.
-                return {"type": "http.disconnect"}
-            replayed = True
-            return {"type": "http.request", "body": raw, "more_body": False}
+            if not replayed:
+                replayed = True
+                return {"type": "http.request", "body": raw, "more_body": False}
+            return await receive()
 
         sid = ""
         try:

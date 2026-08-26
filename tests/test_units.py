@@ -2555,6 +2555,149 @@ def test_write_boundary():
         )
 
 
+# ===========================================================================
+# U29  Resuming a paused run
+#     Answering a question card is how every human-in-the-loop flow in this
+#     product continues — template choice, person picker, confirmations. It was
+#     broken for months, in two different ways, and BOTH looked identical from
+#     the browser: the card went ANSWERED and nothing else ever happened.
+#
+#     These run without a model, a network or a server: they drive the ASGI
+#     middleware directly. The tracker suites cannot catch this — they exercise
+#     a scripted runtime rather than real HTTP, which is exactly why 261 tests
+#     passed while this was dead.
+# ===========================================================================
+def test_resume_receive():
+    import ast as _ast
+    import asyncio
+    import contextlib
+
+    import app.main as appmain
+
+    mw_cls = getattr(appmain, "ResumeSessionScope", None)
+    check("U29a", "the resume middleware exists", mw_cls is not None)
+    if mw_cls is None:
+        return
+
+    BODY = b"session_id=abc-123&stream=true&tools=%5B%5D"
+
+    async def _drive(client_messages):
+        """Run one /continue through the middleware and record what the app saw."""
+        seen = {"body": b"", "receives": [], "disconnect_awaited": False}
+
+        async def receive():
+            # The real transport: yields the body, then blocks until the client
+            # genuinely goes away. Modelled here as an event that never fires
+            # unless the test arranges it.
+            if client_messages:
+                return client_messages.pop(0)
+            seen["disconnect_awaited"] = True
+            await asyncio.sleep(3600)
+
+        async def app(scope, rcv, send):
+            # Consume the body the way an endpoint does...
+            while True:
+                m = await rcv()
+                seen["receives"].append(m["type"])
+                if m["type"] != "http.request":
+                    break
+                seen["body"] += m.get("body", b"")
+                if not m.get("more_body"):
+                    break
+            # ...then behave like StreamingResponse.listen_for_disconnect,
+            # which loops on receive() waiting for http.disconnect.
+            m = await rcv()
+            seen["receives"].append(m["type"])
+
+        scope = {"type": "http", "method": "POST", "path": "/agents/scout/runs/r1/continue"}
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(mw_cls(app)(scope, receive, lambda _m: None), timeout=1.5)
+        return seen
+
+    seen = asyncio.run(_drive([{"type": "http.request", "body": BODY, "more_body": False}]))
+
+    check("U29b", "the body reaches the app intact", seen["body"] == BODY, f"{seen['body']!r}")
+
+    # ★★★ THE regression. After the body is spent, the middleware must NOT
+    # invent a disconnect. `listen_for_disconnect` is waiting for exactly that
+    # message, so returning it TELLS Starlette the client hung up and the
+    # response generator is cancelled — measured: the resumed run emitted
+    # RunContinued and ToolCallStarted, then stopped after 0.1s without ever
+    # reaching the model, while the same payload with stream=false completed in
+    # 5.4s. The run stayed PAUSED with answered=null.
+    check(
+        "U29c",
+        "no disconnect is invented once the body is spent",
+        "http.disconnect" not in seen["receives"],
+        f"received {seen['receives']} — a fabricated disconnect cancels the stream",
+    )
+    check(
+        "U29d",
+        "the disconnect listener is left waiting on the real transport",
+        seen["disconnect_awaited"],
+        "it must delegate to the real receive, which blocks until the client truly leaves",
+    )
+
+    # --- U29e: a genuine disconnect still propagates ------------------------
+    # Delegating must not swallow a real one, or a closed browser would leave
+    # the run streaming into nothing.
+    seen2 = asyncio.run(
+        _drive([
+            {"type": "http.request", "body": BODY, "more_body": False},
+            {"type": "http.disconnect"},
+        ])
+    )
+    check(
+        "U29e",
+        "a real disconnect still reaches the app",
+        "http.disconnect" in seen2["receives"],
+        f"received {seen2['receives']}",
+    )
+
+    # --- U29f: the earlier bug cannot come back either -----------------------
+    # Returning http.request forever makes listen_for_disconnect raise
+    # `RuntimeError: Unexpected message received: http.request`. One body
+    # message, exactly one.
+    check(
+        "U29f",
+        "the body is handed over exactly once",
+        seen["receives"].count("http.request") == 1,
+        f"received {seen['receives']}",
+    )
+
+    # --- U29g: no middleware reads the body inside BaseHTTPMiddleware --------
+    # ★ Reading a request body inside a BaseHTTPMiddleware makes Starlette cache
+    # and replay the request, and its wrapped_receive then hands an http.request
+    # to the streaming disconnect listener. That is the ORIGINAL crash. The body
+    # must only ever be touched by plain-ASGI middleware.
+    src = (REPO / "app" / "main.py").read_text(encoding="utf-8")
+    tree = _ast.parse(src)
+    offenders = []
+    for node in _ast.walk(tree):
+        if not (isinstance(node, _ast.ClassDef) and any(
+            (isinstance(b, _ast.Name) and b.id == "BaseHTTPMiddleware")
+            or (isinstance(b, _ast.Attribute) and b.attr == "BaseHTTPMiddleware")
+            for b in node.bases
+        )):
+            continue
+        for sub in _ast.walk(node):
+            if (
+                isinstance(sub, _ast.Await)
+                and isinstance(sub.value, _ast.Call)
+                and isinstance(sub.value.func, _ast.Attribute)
+                and sub.value.func.attr in ("body", "form", "json")
+                and isinstance(sub.value.func.value, _ast.Name)
+                and sub.value.func.value.id == "request"
+            ):
+                offenders.append(f"{node.name}.{sub.value.func.attr}()")
+    check(
+        "U29g",
+        "no BaseHTTPMiddleware reads the request body",
+        not offenders,
+        f"{offenders} — this breaks every streaming response with a request body",
+    )
+
+
 def main():
     for fn in (
         test_placeholders,
@@ -2575,6 +2718,7 @@ def main():
         test_auth_settings,
         test_tool_result_shape,
         test_write_boundary,
+        test_resume_receive,
         test_structural_contracts,
     ):
         try:

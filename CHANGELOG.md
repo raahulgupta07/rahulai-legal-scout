@@ -2,6 +2,68 @@
 
 All notable changes to Legal Scout.
 
+## [1.2.61] — 2026-08-26
+
+### Fixed — answering a question card now continues the run
+
+Every human-in-the-loop flow in this product — template choice, person picker,
+confirmations — resumes through `POST /runs/{id}/continue`. It had been dead:
+the card went to ANSWERED, no reply ever came, the run stayed `PAUSED` in the
+database with `answered=null`, and the POST returned 200.
+
+**Two different bugs, one identical symptom**, which is why fixing the first
+looked like no progress at all.
+
+1. **`SecurityHeadersMiddleware` read the request body** to bind the session id.
+   It is a `BaseHTTPMiddleware`, and reading a body there makes Starlette cache
+   and replay the request; its `wrapped_receive` then hands an `http.request`
+   to the SSE response's `listen_for_disconnect`, which raises
+   `RuntimeError: Unexpected message received: http.request` after the first
+   event has been flushed. 12 occurrences in 12 attempts. Moved to
+   `ResumeSessionScope`, plain ASGI, outside every `BaseHTTPMiddleware`.
+
+2. **That replacement then fabricated a disconnect.** Once the buffered body
+   was spent it returned `{"type": "http.disconnect"}` — and
+   `listen_for_disconnect` is waiting for exactly that, so it read it as the
+   client hanging up and cancelled the response generator. Quieter than the
+   crash and just as fatal.
+
+The `stream=false` comparison is what separated them, because the streaming
+path swallows whatever the generator raises:
+
+| | time | events | result |
+|---|---|---|---|
+| `stream=false` | 5.4s | — | **COMPLETED**, `answered=True` |
+| `stream=true` (broken) | **0.1s** | `RunContinued`, `ToolCallStarted` | still `PAUSED`, `answered=null` |
+| `stream=true` (fixed) | 3.7s | 12, incl. `RunContent`×3, `RunCompleted` | **COMPLETED**, `answered=True` |
+
+0.1s meant it never reached the model. The resume logic was never at fault —
+`acontinue_run` worked correctly the whole time, which also rules out the tool
+round-trip and the worker count.
+
+`_receive` now delegates to the real transport once the body is spent: it
+blocks until the client genuinely goes away, and a real disconnect still
+propagates.
+
+### Added
+
+- **`U29a`–`U29g`**, driving the ASGI middleware directly — no model, no
+  network, no server. Mutation-tested against **both** historical bugs:
+  fabricating a disconnect fails `U29c`/`U29d`; replaying the body forever
+  fails `U29f`. `U29g` fails if any `BaseHTTPMiddleware` reads the request body
+  again, which is the original crash at its source.
+
+  The existing tracker suites could not have caught this: they drive a scripted
+  runtime rather than real HTTP, which is how 261 tests passed while the
+  product's core interaction was dead.
+
+### Verified
+
+Three consecutive resumes, `answered=true` on all three, 3.5–3.8s each. In a
+real browser: ask → card → click → the document panel opens with *Annual
+General Meeting Minutes.docx — City Holdings Limited*, fields resolved 5/13,
+and a signatory picker asking to choose who signs. Previously: nothing at all.
+
 ## [1.2.57] — 2026-08-26
 
 ### Added
