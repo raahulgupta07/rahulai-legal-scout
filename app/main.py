@@ -254,58 +254,24 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         # Body is read only for the resume path, which is already size-capped
         # above, and is replayed to the app afterwards — consuming it without
         # putting it back would leave agno with an empty form.
-        if request.method == "POST" and str(request.url.path).rstrip("/").endswith("/continue"):
-            try:
-                raw = await request.body()
-
-                # ★★★ The replay must END. It hands the body back ONCE and then
-                # reports a disconnect forever after.
-                #
-                # The previous version returned the same `http.request` message
-                # on every call, and that silently broke every resumed run. The
-                # response to /continue is an SSE stream, and Starlette's
-                # StreamingResponse runs `listen_for_disconnect`, which loops on
-                # receive() waiting for `http.disconnect`. Given an endless
-                # supply of `http.request` it raises
-                #
-                #     RuntimeError: Unexpected message received: http.request
-                #
-                # inside the streaming task group — AFTER the first event had
-                # been flushed. So the browser saw `RunContinued`, then the
-                # stream aborted: the card went to ANSWERED, no content ever
-                # arrived, and the run stayed PAUSED in the database with
-                # `answered=null`. The POST itself returned 200, and the
-                # traceback landed in the container log where nobody was
-                # looking. Reproduced 12 times out of 12 against the deployed
-                # build before this line changed.
-                #
-                # This is the "silent stop after answering a question" — it was
-                # never the model.
-                _replayed = False
-
-                async def _replay() -> dict:
-                    nonlocal _replayed
-                    if _replayed:
-                        return {"type": "http.disconnect"}
-                    _replayed = True
-                    return {"type": "http.request", "body": raw, "more_body": False}
-
-                request._receive = _replay
-                sid = ""
-                for part in raw.split(b"&"):
-                    if part.startswith(b"session_id="):
-                        from urllib.parse import unquote_plus
-
-                        sid = unquote_plus(part.split(b"=", 1)[1].decode("utf-8", "replace"))
-                        break
-                if sid:
-                    from scout.tools.slot_resolver import session_scope
-
-                    with session_scope(sid):
-                        return await self._finish(request, call_next)
-            except Exception as e:
-                logger.warning(f"[SCOPE] could not bind session on resume: {e}")
-
+        # ★★★ The resume body is NOT read here, and must not be.
+        #
+        # Binding the session id used to happen in this method: read the body of
+        # /runs/{id}/continue, pull session_id out of it, replay the body so
+        # agno still saw the form. That broke EVERY resumed run.
+        #
+        # The response to /continue is an SSE stream. Reading the body inside a
+        # BaseHTTPMiddleware makes Starlette cache and replay the request, and
+        # its own wrapped_receive then hands an `http.request` message to the
+        # StreamingResponse's disconnect listener, which raises
+        # `RuntimeError: Unexpected message received: http.request` after the
+        # first event has been flushed. The browser saw RunContinued and then
+        # silence; the run stayed PAUSED with answered=null; the POST returned
+        # 200 and the traceback went to the container log.
+        #
+        # Replaying the body more carefully does NOT fix it — the raise comes
+        # from Starlette's caching layer, not from the replay. The body has to
+        # be handled OUTSIDE this stack, which is what ResumeSessionScope does.
         return await self._finish(request, call_next)
 
     async def _finish(self, request: StarletteRequest, call_next):
@@ -1443,6 +1409,113 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
 
 
 app.add_middleware(RequestLoggingMiddleware)
+
+
+class ResumeSessionScope:
+    """Bind the conversation for a resumed run — as PURE ASGI, outside the rest.
+
+    ★★★ This class exists because of one defect, and the shape of it matters.
+
+    Resuming a paused run posts the whole tool payload back to
+    `/agents/{id}/runs/{run_id}/continue`, and the session id lives in that
+    body. A `requires_user_input=True` tool cannot read its own session (agno
+    builds `user_input_schema` from `sig.parameters`, so declaring
+    `run_context` puts it in the schema, the frontend echoes it back, and the
+    entrypoint receives it twice), so the id has to be bound from the request.
+
+    That binding used to happen inside `SecurityHeadersMiddleware`, which is a
+    `BaseHTTPMiddleware`. Reading a request body there makes Starlette cache
+    and replay the request — and the response to `/continue` is an SSE stream,
+    whose `listen_for_disconnect` loop then receives an `http.request` message
+    it does not expect and raises
+
+        RuntimeError: Unexpected message received: http.request
+
+    *after* the first event has been flushed. Every resumed run therefore
+    emitted `RunContinued` and then died: the card showed ANSWERED, no reply
+    ever came, the run stayed PAUSED in the database with `answered=null`, and
+    the POST returned 200 with the traceback going only to the container log.
+    Measured 12 for 12 against the deployed build.
+
+    Replaying the body more carefully from inside that class does NOT help; the
+    raise comes from Starlette's caching layer, not from the replay. So the body
+    is handled HERE instead — plain ASGI, added last so it sits OUTSIDE every
+    `BaseHTTPMiddleware`. It buffers the body once, hands it to the stack below
+    as a single well-formed `http.request`, and reports `http.disconnect`
+    thereafter, which is exactly what a streaming response expects.
+
+    Nothing below this middleware can tell the difference from an ordinary
+    request, which is the point.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    @staticmethod
+    def _session_id(raw: bytes) -> str:
+        from urllib.parse import unquote_plus
+
+        # The resume body is form-encoded; session_id is one field among many.
+        for part in raw.split(b"&"):
+            if part.startswith(b"session_id="):
+                return unquote_plus(part.split(b"=", 1)[1].decode("utf-8", "replace"))
+        return ""
+
+    async def __call__(self, scope, receive, send):
+        if (
+            scope.get("type") != "http"
+            or scope.get("method") != "POST"
+            or not scope.get("path", "").rstrip("/").endswith("/continue")
+        ):
+            return await self.app(scope, receive, send)
+
+        chunks: list[bytes] = []
+        while True:
+            message = await receive()
+            if message["type"] == "http.disconnect":
+                # The client went away mid-upload. Nothing to bind and nothing
+                # to replay; let the app below see the disconnect as it is.
+                return await self.app(scope, receive, send)
+            chunks.append(message.get("body", b""))
+            if not message.get("more_body"):
+                break
+        raw = b"".join(chunks)
+
+        replayed = False
+
+        async def _receive():
+            nonlocal replayed
+            if replayed:
+                # ★ The replay MUST terminate. Handing back `http.request`
+                # forever is the original bug in a different costume.
+                return {"type": "http.disconnect"}
+            replayed = True
+            return {"type": "http.request", "body": raw, "more_body": False}
+
+        sid = ""
+        try:
+            sid = self._session_id(raw)
+        except Exception as e:
+            logger.warning(f"[SCOPE] could not read session id from the resume body: {e}")
+
+        if not sid:
+            return await self.app(scope, _receive, send)
+
+        try:
+            from scout.tools.slot_resolver import session_scope
+        except Exception as e:
+            # Binding is a convenience; failing to import it must not cost the
+            # user their resumed run.
+            logger.warning(f"[SCOPE] session_scope unavailable: {e}")
+            return await self.app(scope, _receive, send)
+
+        with session_scope(sid):
+            return await self.app(scope, _receive, send)
+
+
+# Added LAST, so it is the OUTERMOST middleware — outside every
+# BaseHTTPMiddleware, which is the whole reason it works.
+app.add_middleware(ResumeSessionScope)
 
 
 # ---------------------------------------------------------------------------
