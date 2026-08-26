@@ -89,4 +89,18 @@ RUN chmod +x /app/scripts/entrypoint.sh
 EXPOSE 8000
 
 ENTRYPOINT ["tini", "--", "/app/scripts/entrypoint.sh"]
+# ★★★ Do NOT assume the worker count is innocent here.
+#
+# Agno appears to keep a paused run's state in the process that created it, so a
+# `POST /runs/{id}/continue` that lands on the other worker has nothing to
+# resume. That was investigated as the cause of the "silent stop after answering
+# a question" and it is NOT sufficient: with --workers 1 the same flow still
+# leaves the run PAUSED with answered=null and produces no reply. Measured, so
+# nobody has to re-derive it:
+#
+#     --workers 2   continue returns ~140ms, run stays PAUSED, answered=null
+#     --workers 1   continue does real work (13s), run STILL PAUSED, answered=null
+#
+# Left at 2 because dropping to 1 halves request concurrency and buys nothing
+# demonstrated. Revisit together with the resume defect, not before.
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
