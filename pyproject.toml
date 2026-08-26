@@ -11,6 +11,9 @@ dependencies = [
   "agno",
   "fastapi[standard]",
   "httpx",
+  # Directory sign-in (app/ldap_auth.py). Pinned in requirements.txt, which
+  # is what the image actually installs.
+  "ldap3",
   "mcp",
   "openai",
   "openinference-instrumentation-agno",

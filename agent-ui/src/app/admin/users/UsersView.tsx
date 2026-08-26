@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect, useCallback, useMemo } from "react"
-import { Pencil, Plus, Shield, Trash2 } from "lucide-react"
+import { Ban, Clock, Pencil, Plus, Shield, Trash2 } from "lucide-react"
 import { authFetch } from "@/lib/api-client"
 import { toast } from "sonner"
 import {
@@ -40,9 +40,28 @@ interface User {
   email: string
   name: string
   role: string
-  status: string
+  /**
+   * ★ The API sends `is_active`, and always has. It has never sent `status`.
+   * Every read of it was therefore `undefined`, the `|| "active"` fallback
+   * beside each one always won, and a DISABLED account rendered with the green
+   * Active badge while the Inactive stat card sat at 0 — a control that looked
+   * like policy and reported nothing. Kept optional so any caller still reading
+   * it type-checks; `is_active` is the field to use.
+   */
+  status?: string
+  is_active: boolean
+  /** Has an administrator let this account in? See migration_030. */
+  approved: boolean
+  /** A LIST — one person may hold a local password AND arrive via a directory. */
+  auth_sources: string[]
   created_at: string
 }
+
+/** `is_active` is the truth; `status` is only consulted for older payloads. */
+const isActive = (u: User): boolean => (u.status !== undefined ? u.status === "active" : u.is_active !== false)
+
+const SOURCE_LABEL: Record<string, string> = { local: "Local", ldap: "LDAP", oidc: "SSO" }
+const SOURCE_TONE: Record<string, Tone> = { local: "neutral", ldap: "warn", oidc: "info" }
 
 interface ActivityLog {
   id: number
@@ -77,6 +96,11 @@ export default function UsersView() {
   const [showModal, setShowModal] = useState(false)
   const [editingUser, setEditingUser] = useState<User | null>(null)
   const [saving, setSaving] = useState(false)
+  /** id of the account whose approval decision is in flight, or null. */
+  const [deciding, setDeciding] = useState<number | null>(null)
+  /** Whether this deployment has a directory configured, from the server. */
+  const [ldapEnabled, setLdapEnabled] = useState(false)
+  const [ldapLabel, setLdapLabel] = useState("the corporate directory")
   const [error, setError] = useState("")
   const [formError, setFormError] = useState("")
   const [searchTerm, setSearchTerm] = useState("")
@@ -115,6 +139,21 @@ export default function UsersView() {
   useEffect(() => {
     fetchUsers()
     fetchLogs()
+    // Which sign-in routes exist is the SERVER's answer, not a guess from the
+    // client. Public endpoint, booleans only. A failure leaves the defaults —
+    // no directory — so the password field stays required, which is the safe
+    // way to be wrong.
+    ;(async () => {
+      try {
+        const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || ""}/api/auth/config`)
+        if (!res.ok) return
+        const c = await res.json()
+        setLdapEnabled(!!c.ldap_enabled)
+        if (c.ldap_label) setLdapLabel(c.ldap_label)
+      } catch (e) {
+        console.error("Fetch auth config error:", e)
+      }
+    })()
   }, [fetchUsers, fetchLogs])
 
   const openCreateModal = () => {
@@ -180,6 +219,27 @@ export default function UsersView() {
     }
   }
 
+  const setApproval = async (user: User, approved: boolean) => {
+    setDeciding(user.id)
+    try {
+      const res = await authFetch(`${API_BASE}/users/${user.id}/approval`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ approved }),
+      })
+      if (!res.ok) throw new Error(await errorMessage(res, "Failed to change access"))
+      await assertSuccess(res, "Failed to change access")
+      toast.success(`${user.name || user.email} ${approved ? "approved" : "refused"}`)
+      await fetchUsers()
+      await fetchLogs()
+    } catch (e: any) {
+      console.error("Set approval error:", e)
+      toast.error(e?.message || "Failed to change access")
+    } finally {
+      setDeciding(null)
+    }
+  }
+
   const term = searchTerm.trim().toLowerCase()
   const filtered = useMemo(
     () =>
@@ -195,11 +255,14 @@ export default function UsersView() {
     const byRole = (role: string) => users.filter((u) => u.role === role).length
     return {
       total: users.length,
+      pending: users.filter((u) => !u.approved).length,
       admins: byRole("admin"),
       editors: byRole("editor"),
-      inactive: users.filter((u) => (u.status || "active") !== "active").length,
+      inactive: users.filter((u) => !isActive(u)).length,
     }
   }, [users])
+
+  const pending = useMemo(() => users.filter((u) => !u.approved), [users])
 
   if (loading) return <LoadingScreen label="Loading users" />
 
@@ -234,17 +297,38 @@ export default function UsersView() {
       ),
     },
     {
+      key: "sources",
+      header: "Signs in via",
+      hideBelow: "md",
+      sortValue: (u) => (u.auth_sources || []).join(","),
+      render: (u) => (
+        <span className="inline-flex flex-wrap items-center gap-1">
+          {(u.auth_sources?.length ? u.auth_sources : ["local"]).map((s) => (
+            <Badge key={s} tone={SOURCE_TONE[s] || "neutral"} dot>
+              {SOURCE_LABEL[s] || s}
+            </Badge>
+          ))}
+        </span>
+      ),
+    },
+    {
       key: "status",
-      header: "Status",
-      sortValue: (u) => u.status || "active",
+      header: "Access",
+      sortValue: (u) => (!u.approved ? "0pending" : isActive(u) ? "1active" : "2disabled"),
       render: (u) =>
-        (u.status || "active") === "active" ? (
+        !u.approved ? (
+          // Pending outranks disabled in the display: an account nobody has let
+          // in yet is a decision waiting to be made, not a state somebody chose.
+          <Badge tone="warn" dot>
+            Pending
+          </Badge>
+        ) : isActive(u) ? (
           <Badge tone="ok" dot>
             Active
           </Badge>
         ) : (
           <Badge tone="danger" dot>
-            {u.status}
+            Disabled
           </Badge>
         ),
     },
@@ -262,7 +346,27 @@ export default function UsersView() {
       width: "1%",
       stopClickPropagation: true,
       render: (u) => (
-        <div className="flex items-center justify-end gap-0.5">
+        <div className="flex items-center justify-end gap-1">
+          {!u.approved ? (
+            <>
+              <Button
+                variant="primary"
+                size="sm"
+                disabled={deciding === u.id}
+                onClick={() => setApproval(u, true)}
+              >
+                {deciding === u.id ? "Working…" : "Approve"}
+              </Button>
+              {/* Refusing does not delete the row — it holds it refused, so the
+                  same person signing in again does not re-open the decision. */}
+              <ConfirmButton
+                compact
+                label={`Refuse access for ${u.name || u.email}`}
+                icon={<Ban className="w-3.5 h-3.5" />}
+                onConfirm={() => setApproval(u, false)}
+              />
+            </>
+          ) : null}
           <IconButton
             aria-label={`Edit ${u.name || u.email}`}
             title="Edit"
@@ -323,8 +427,31 @@ export default function UsersView() {
           />
         ) : (
           <>
+            {/* The only thing on this page carrying an outstanding decision,
+                so it sits above the numbers rather than among them. Rendered
+                only when there IS a queue — a banner that is always present
+                stops being read. */}
+            {pending.length > 0 && (
+              <Notice
+                tone="warn"
+                title={`${pending.length} ${pending.length === 1 ? "person is" : "people are"} waiting for approval`}
+              >
+                <span className="inline-flex items-center gap-1.5">
+                  <Clock className="w-3.5 h-3.5 shrink-0" />
+                  They have proved who they are, but reach nothing until you approve them:{" "}
+                  {pending.map((u) => u.email).join(", ")}
+                </span>
+              </Notice>
+            )}
+
             <StatRow>
               <StatTile label="Accounts" value={stats.total} />
+              <StatTile
+                label="Pending"
+                value={stats.pending}
+                hint="Authenticated, not yet let in"
+                tone={stats.pending > 0 ? "warn" : undefined}
+              />
               <StatTile label="Admins" value={stats.admins} hint="Full access, including settings" />
               <StatTile label="Editors" value={stats.editors} hint="Can manage the registers" />
               <StatTile
@@ -339,7 +466,7 @@ export default function UsersView() {
               columns={columns}
               rowKey={(u) => u.id}
               caption="User accounts"
-              rowTone={(u) => ((u.status || "active") === "active" ? null : "var(--danger-strong)")}
+              rowTone={(u) => (!u.approved ? "var(--warn)" : isActive(u) ? null : "var(--danger-strong)")}
               empty={
                 <div className="py-2">
                   <p className="text-[length:var(--text-sm)] text-[var(--text)]">
@@ -441,15 +568,33 @@ export default function UsersView() {
               wide
               placeholder="Full name"
             />
+            {/* When a directory is configured, a blank password on a NEW
+                account is meaningful rather than missing: it creates a
+                directory-only account, whose password lives in the directory
+                and deliberately not here. With no directory configured the
+                field stays required, because a blank one would otherwise make
+                an account that cannot sign in by any route at all. */}
             <TextField
               label="Password"
               type="password"
               value={formData.password}
               onChange={(v) => setFormData({ ...formData, password: v })}
-              required={!editingUser}
+              required={!editingUser && !ldapEnabled}
               wide
-              placeholder={editingUser ? "Leave blank to keep the current one" : "At least 10 characters"}
-              hint={editingUser ? "Only set this to reset the password" : "Minimum 10 characters"}
+              placeholder={
+                editingUser
+                  ? "Leave blank to keep the current one"
+                  : ldapEnabled
+                    ? `Leave blank to use ${ldapLabel}`
+                    : "At least 10 characters"
+              }
+              hint={
+                editingUser
+                  ? "Only set this to reset the password"
+                  : ldapEnabled
+                    ? `Minimum 10 characters — or leave blank and they sign in with their ${ldapLabel} password`
+                    : "Minimum 10 characters"
+              }
             />
             <SelectField
               label="Role"

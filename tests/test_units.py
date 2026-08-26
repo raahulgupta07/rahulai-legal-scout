@@ -20,6 +20,7 @@ no test reads or writes application data.
 """
 
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -1423,6 +1424,918 @@ def test_register_authority():
         eq("U22d", "the untyped slot still carries the member", cd.get("shareholder_1_name"), "CITY HOLDINGS LIMITED")
 
 
+# ===========================================================================
+# U23  The approval gate
+#     A valid JWT proves someone authenticated. It does not prove an
+#     administrator let them in. Everything below exists because the gap
+#     between those two facts is where LDAP and SSO put a stranger.
+#
+#     Every structural case here walks the AST rather than grepping the file.
+#     A text scan cannot tell a live call from the same words inside a comment
+#     — and the comments around this feature are full of the exact strings a
+#     regex would look for, so a grep-based version of U23b would pass with
+#     the gate deleted and the explanation left behind.
+# ===========================================================================
+def test_approval_gate():
+    import ast as _ast
+
+    import app.main as appmain
+
+    src = (REPO / "app" / "main.py").read_text(encoding="utf-8")
+    tree = _ast.parse(src)
+
+    # --- U23a: the migration adds the columns AND backfills -----------------
+    mig = REPO / "db" / "migration_030_auth_approval.sql"
+    check("U23a", "migration_030 is present", mig.exists(), str(mig))
+    if mig.exists():
+        body = mig.read_text(encoding="utf-8")
+        # Comments in that file discuss the backfill at length, so match on the
+        # statement's own shape rather than on the word "backfill" — and strip
+        # the comments LINE BY LINE before splitting on `;`, not by testing
+        # whether a chunk starts with `--`. Every statement in that file is
+        # introduced by a comment block, so splitting first leaves the comment
+        # glued to the front of the statement it explains: the chunk-level test
+        # discarded the very UPDATE it was hunting for, and reported a missing
+        # backfill against a migration that had demonstrably just run one.
+        code = "\n".join(ln for ln in body.splitlines() if not ln.strip().startswith("--"))
+        stmts = [" ".join(s.split()).lower() for s in code.split(";") if s.strip()]
+        check(
+            "U23b",
+            "the migration BACKFILLS existing accounts to approved",
+            any(s.startswith("update users") and "approved = true" in s for s in stmts),
+            "without this, the first boot after deploy locks out every existing account "
+            "and nobody is left approved who could approve them",
+        )
+
+    # --- U23c: the gate is at BOTH decode sites ----------------------------
+    # The middleware decodes a JWT in two separate branches — one for the
+    # AgentOS/static roots, one for /api/. Gate only the second and a pending
+    # account is refused the admin panel while keeping the chat, the agent and
+    # document generation: the entire product, guarded by a control that looks
+    # present. Counting CALLS in the AST is what makes this checkable at all.
+    dispatch = None
+    for node in _ast.walk(tree):
+        if isinstance(node, _ast.ClassDef) and node.name == "AuthMiddleware":
+            for sub in node.body:
+                if isinstance(sub, _ast.AsyncFunctionDef) and sub.name == "dispatch":
+                    dispatch = sub
+    check("U23c", "AuthMiddleware.dispatch is present", dispatch is not None)
+    if dispatch is not None:
+        calls = [
+            n
+            for n in _ast.walk(dispatch)
+            if isinstance(n, _ast.Call) and isinstance(n.func, _ast.Name) and n.func.id == "_is_approved"
+        ]
+        check(
+            "U23d",
+            "every JWT-decoding branch of the middleware consults the gate",
+            len(calls) >= 2,
+            f"found {len(calls)} call(s), need one per decode site (2)",
+        )
+
+    # --- U23e: no INSERT into users may omit `approved` --------------------
+    # The column defaults to FALSE. An INSERT that leaves it out therefore
+    # creates a PENDING account — which is right for a directory and fatal for
+    # the bootstrap admin, who on a fresh install is the only row in the table.
+    inserts = [
+        n.value
+        for n in _ast.walk(tree)
+        if isinstance(n, _ast.Constant) and isinstance(n.value, str) and "insert into users" in n.value.lower()
+    ]
+    check("U23e", "the user INSERT statements are findable", len(inserts) >= 2, f"{len(inserts)} found")
+    silent = [s for s in inserts if "approved" not in s.lower()]
+    check(
+        "U23f",
+        "no INSERT INTO users leaves `approved` to the column default",
+        not silent,
+        f"{len(silent)} statement(s) would create a pending account silently",
+    )
+
+    # --- U23g: the internal training principal survives the gate -----------
+    # `training_jobs.py` mints create_token(0, "system@training", "admin") and
+    # drives the 15-step pipeline through this app's own HTTP endpoints, so it
+    # passes through the middleware like any browser. users.id is SERIAL from
+    # 1, so id 0 matches no row and would fail closed — taking all template
+    # training with it, and reporting it as a per-template 403 rather than as
+    # anything that looks like an auth problem.
+    check(
+        "U23g",
+        "the background training worker is not locked out by its own gate",
+        appmain._is_approved(appmain.SYSTEM_USER_ID) is True,
+        "training_jobs.py:376 mints user_id=0; a False here kills all training",
+    )
+
+    # --- U23h: it fails CLOSED --------------------------------------------
+    # Pure inputs only: these return before any query, so this case reads and
+    # writes nothing, in keeping with the rest of this suite.
+    check(
+        "U23h",
+        "a malformed user id is refused, not admitted",
+        appmain._is_approved("not-an-id") is False and appmain._is_approved(None) is False,
+        "a gate that returns True when it cannot identify the caller is not a gate",
+    )
+
+    # --- U23i: every write that changes access busts the cache -------------
+    # The decision is cached for _APPROVAL_TTL seconds, so a write that does
+    # not invalidate it leaves a revoked account working — including the
+    # `is_active` flag on the general update endpoint, which is half of what
+    # the gate answers.
+    busts = [
+        n
+        for n in _ast.walk(tree)
+        if isinstance(n, _ast.Call) and isinstance(n.func, _ast.Name) and n.func.id == "_bust_approval_cache"
+    ]
+    check(
+        "U23i",
+        "approve, update and delete all invalidate the cached decision",
+        len(busts) >= 3,
+        f"found {len(busts)}; need the approval route, the update route and the delete route",
+    )
+
+    # --- U23j/k: the cache TTL is tied to the WORKER COUNT ------------------
+    # `_approval_cache` is a plain dict inside one process, so a bust reaches
+    # only the worker that served the write. Under `--workers 2` a non-zero TTL
+    # makes revocation non-deterministic — refused here, admitted there — which
+    # presents exactly like the half-gated build U23d exists to catch, and will
+    # pass a hand-check on a coin flip. This reads the real worker count out of
+    # the Dockerfile so that raising one without fixing the other cannot ship.
+    dockerfile = (REPO / "Dockerfile").read_text(encoding="utf-8") if (REPO / "Dockerfile").exists() else ""
+    m = re.search(r'"--workers"\s*,\s*"(\d+)"', dockerfile)
+    workers = int(m.group(1)) if m else 1
+    check("U23j", "the served worker count is discoverable", bool(m) or not dockerfile, f"workers={workers}")
+    check(
+        "U23k",
+        "an in-process approval cache is not used across multiple workers",
+        appmain._APPROVAL_TTL == 0 or workers <= 1,
+        f"_APPROVAL_TTL={appmain._APPROVAL_TTL}s with --workers {workers}: a bust reaches one process, "
+        f"so revocation depends on which worker answers next. Needs a SHARED cache before this may be non-zero.",
+    )
+
+
+# ===========================================================================
+# U24  Directory sign-in (LDAP)
+#     The directory proves WHO somebody is; this application still decides what
+#     they may do. Every case below guards one of the ways that separation, or
+#     the password handling underneath it, can be quietly lost.
+# ===========================================================================
+def test_ldap_signin():
+    import ast as _ast
+
+    import app.ldap_auth as la
+    import app.main as appmain
+
+    # --- U24a: off unless switched on --------------------------------------
+    # Read through the module's own accessor rather than the env var, so this
+    # fails if the default is ever inverted in code.
+    prev = os.environ.pop("LDAP_ENABLED", None)
+    try:
+        check("U24a", "directory sign-in is OFF unless configured", la.ldap_enabled() is False)
+    finally:
+        if prev is not None:
+            os.environ["LDAP_ENABLED"] = prev
+
+    # --- U24b: an empty password is refused BEFORE any bind -----------------
+    # A simple bind with a valid DN and a zero-length password is an
+    # UNAUTHENTICATED simple bind (RFC 4513 §5.1.2), and some Active Directory
+    # deployments answer success — on those, knowing any provisioned address
+    # would be enough to sign in as that person. The guard must sit in
+    # authenticate(), not only in the login endpoint, because it is this
+    # function that decides whether a password is right.
+    #
+    # Reaching a bind at all requires a directory, so the assertion is that it
+    # raises WITHOUT one: the empty-password branch returns before the host
+    # check is ever consulted.
+    os.environ["LDAP_HOST"] = "ldap.invalid.test"
+    os.environ["LDAP_BASE_DN"] = "ou=users,dc=invalid,dc=test"
+    try:
+        la.authenticate("someone@example.test", "")
+        check("U24b", "an empty password is refused before any bind", False, "authenticate() returned")
+    except la.LdapError as e:
+        check("U24b", "an empty password is refused before any bind", "empty password" in str(e), str(e)[:90])
+    except Exception as e:
+        check("U24b", "an empty password is refused before any bind", False, f"{type(e).__name__}: {e}")
+
+    # --- U24c: plaintext binds are refused, not merely warned about ---------
+    # The flow rebinds as the user, so the password crosses the wire on every
+    # sign-in. A warning about that is a log line nobody reads until after the
+    # credentials have been collected — and nothing looks broken meanwhile.
+    for env, label in (
+        ({"LDAP_USE_SSL": "false", "LDAP_START_TLS": "false"}, "no TLS"),
+        ({"LDAP_USE_SSL": "true", "LDAP_VALIDATE_CERT": "false"}, "unvalidated certificate"),
+    ):
+        saved = {k: os.environ.get(k) for k in env}
+        os.environ.update(env)
+        os.environ["LDAP_ALLOW_INSECURE"] = "false"
+        try:
+            la._require_transport_security(la.config())
+            check("U24c", f"a bind with {label} is refused", False, "no refusal")
+        except la.LdapError:
+            check("U24c", f"a bind with {label} is refused", True)
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+    # --- U24d: the filter cannot be re-shaped by what someone types ---------
+    from ldap3.utils.conv import escape_filter_chars
+
+    hostile = "*)(objectClass=*"
+    check(
+        "U24d",
+        "a hostile username is escaped, not interpolated into the filter",
+        "(mail={username})".replace("{username}", escape_filter_chars(hostile)) == r"(mail=\2a\29\28objectClass=\2a)",
+        escape_filter_chars(hostile),
+    )
+
+    # --- U24e: no password, no match ---------------------------------------
+    # migration_031 made hashed_password nullable so a directory-only account
+    # can exist. That is only safe because the local path refuses a null or
+    # empty hash outright: an account with no password is one nobody may sign
+    # into, not one anybody may. This is the local twin of U24b.
+    check(
+        "U24e",
+        "a null or empty password hash never matches anything",
+        appmain.verify_password("anything", None) is False
+        and appmain.verify_password("anything", "") is False
+        and appmain.verify_password("", "") is False,
+        "bcrypt.checkpw(pw, None) would raise rather than answer",
+    )
+
+    # --- U24f: the directory is a fallback, and only for a known account ----
+    # If LDAP were tried before the local password, or for an email with no
+    # `users` row, this public login form would become a password-spraying
+    # proxy for the corporate directory — complete with the account lockouts
+    # that causes for real staff. Structure, via the AST: the call must live
+    # inside auth_login, and the `not row` branch must return before it.
+    src = (REPO / "app" / "main.py").read_text(encoding="utf-8")
+    tree = _ast.parse(src)
+    login_fn = next(
+        (
+            n
+            for n in _ast.walk(tree)
+            if isinstance(n, (_ast.FunctionDef, _ast.AsyncFunctionDef)) and n.name == "auth_login"
+        ),
+        None,
+    )
+    check("U24f", "auth_login is present", login_fn is not None)
+    if login_fn is not None:
+        ldap_calls = [
+            n
+            for n in _ast.walk(login_fn)
+            if isinstance(n, _ast.Call) and isinstance(n.func, _ast.Name) and n.func.id == "_try_ldap_login"
+        ]
+        verify_calls = [
+            n
+            for n in _ast.walk(login_fn)
+            if isinstance(n, _ast.Call) and isinstance(n.func, _ast.Name) and n.func.id == "verify_password"
+        ]
+        check("U24g", "the directory is consulted from auth_login", bool(ldap_calls), f"{len(ldap_calls)} call(s)")
+
+        # ★ There are legitimately TWO call sites since phase 4, and they have
+        # opposite orderings, so a single "LDAP comes after verify_password"
+        # assertion is now wrong:
+        #
+        #   * the FALLBACK, for an account that exists — must come after the
+        #     local password has been tried, so an ordinary sign-in never
+        #     touches the directory;
+        #   * the JIT path, for an email with NO account — must come before,
+        #     because there is no stored password to verify. It is reachable
+        #     only when ldap_auto_create is on, which is the switch that
+        #     accepts relaying unknown credentials to the directory.
+        #
+        # So the property is: every directory call is either after
+        # verify_password, or guarded by the auto-create flag. A call that is
+        # neither would relay every unknown sign-in attempt to corporate AD
+        # with nobody having asked for it.
+        vpos = min(((c.lineno, c.col_offset) for c in verify_calls), default=(0, 0))
+        guarded_ranges = [
+            (n.lineno, n.end_lineno or n.lineno)
+            for n in _ast.walk(login_fn)
+            if isinstance(n, _ast.If)
+            and any(
+                isinstance(sub, _ast.Constant) and isinstance(sub.value, str) and "auto_create" in sub.value
+                for sub in _ast.walk(n.test)
+            )
+        ]
+        unguarded_early = [
+            c
+            for c in ldap_calls
+            if (c.lineno, c.col_offset) < vpos
+            and not any(lo <= c.lineno <= hi for lo, hi in guarded_ranges)
+        ]
+        check(
+            "U24h",
+            "the directory is only asked before the local password when auto-create is on",
+            not unguarded_early,
+            "an unguarded early call relays every unknown sign-in to the corporate directory",
+        )
+
+    # --- U24i: an unknown email never reaches the directory -----------------
+    # The `not row` branch returns, so nothing an attacker can name is sent on.
+    if login_fn is not None:
+        returns_before = [
+            n.lineno
+            for n in _ast.walk(login_fn)
+            if isinstance(n, _ast.Return) and ldap_calls and n.lineno < ldap_calls[0].lineno
+        ]
+        check(
+            "U24i",
+            "an email with no account returns before the directory is asked",
+            len(returns_before) >= 2,
+            f"{len(returns_before)} early return(s) guard the directory call",
+        )
+
+    # --- U24j: the directory's answer must be for the SAME address ----------
+    # A filter that matched a different entry — an alias, a shared mailbox, a
+    # filter somebody widened — would otherwise authenticate whoever holds THAT
+    # password into THIS account. Email is the merge key everywhere else in
+    # this design; it has to be the merge key here too.
+    merge_fn = next(
+        (
+            n
+            for n in _ast.walk(tree)
+            if isinstance(n, (_ast.FunctionDef, _ast.AsyncFunctionDef)) and n.name == "_try_ldap_login"
+        ),
+        None,
+    )
+    check("U24j", "_try_ldap_login is present", merge_fn is not None)
+    if merge_fn is not None:
+        compares = [n for n in _ast.walk(merge_fn) if isinstance(n, _ast.Compare)]
+        check(
+            "U24k",
+            "the address the directory returned is compared with the one signing in",
+            any(isinstance(op, _ast.NotEq) for c in compares for op in c.ops),
+            "without this, a filter matching another entry signs that person into this account",
+        )
+        # It must return a plain bool, never re-raise: the caller answers every
+        # directory failure with the same flat 401, because "no such entry",
+        # "wrong password" and "unreachable" told apart are an enumeration
+        # oracle.
+        raises = [n for n in _ast.walk(merge_fn) if isinstance(n, _ast.Raise)]
+        check(
+            "U24l",
+            "no directory failure escapes as a distinguishable error",
+            not raises,
+            f"{len(raises)} raise(s) would let the caller tell failures apart",
+        )
+
+    # --- U24n: every directory variable is delivered to the container -------
+    # ★★★ compose.yaml's `environment:` is an ALLOWLIST. A variable set in
+    # .env and not named there never reaches the container, and NOTHING
+    # reports it — the module reads its default instead. That produced a
+    # deployment where LDAP_ENABLED=true yielded `"ldap_enabled": false` from
+    # /api/auth/config, no directory contacted, every directory sign-in
+    # failing as an ordinary wrong password, and no error anywhere. Found by
+    # running it. Now driven off auth_settings.SPEC, which since phase 4 is
+    # the single place that says which environment variables exist.
+    import app.auth_settings as asettings
+
+    ldap_env = {env for name, (env, _k, _d) in asettings.SPEC.items() if name.startswith("ldap_")}
+    absent = sorted(v for v in ldap_env if v not in os.environ)
+    check(
+        "U24n",
+        "every LDAP variable in the settings spec is delivered to the container",
+        not absent and bool(ldap_env),
+        (
+            f"declared in auth_settings.SPEC but absent from the environment: {absent} — "
+            "compose.yaml's `environment:` block is an ALLOWLIST, not a passthrough"
+        )
+        if absent
+        else f"{len(ldap_env)} variables",
+    )
+
+    # --- U24m: nothing in this path can grant a role ------------------------
+    # The whole separation rests on it: the directory says who you are, this
+    # table says what you may do. If _try_ldap_login could write `role`, then
+    # whoever administers the corporate directory could make themselves a
+    # Legal Scout administrator by editing a group.
+    if merge_fn is not None:
+        sql = " ".join(
+            n.value.lower()
+            for n in _ast.walk(merge_fn)
+            if isinstance(n, _ast.Constant) and isinstance(n.value, str)
+        )
+        check(
+            "U24m",
+            "the directory path never writes a role or an approval",
+            "role" not in sql and "approved" not in sql,
+            "a directory sign-in may prove identity; it may not grant access",
+        )
+
+
+# ===========================================================================
+# U25  Single sign-on (OIDC)
+#     The provider proves identity. It grants nothing. Everything below guards
+#     one way that separation, or the token verification underneath it, can be
+#     lost — several of which are live vulnerabilities in other people's code.
+# ===========================================================================
+def test_sso():
+    import ast as _ast
+
+    import app.main as appmain
+    import app.oidc as oidc
+
+    check("U25a", "single sign-on is OFF unless configured", oidc.sso_enabled() is False)
+
+    # --- U25b: the flow keeps NO state in this process ----------------------
+    # Two uvicorn workers, no shared store. Anything stashed in module state by
+    # /sso/login is simply absent when /sso/callback lands on the other worker,
+    # so sign-in would fail about half the time and read as an intermittent
+    # provider fault. Same class as the approval cache in U23k — found there,
+    # guarded here before it could happen again.
+    src_oidc = (REPO / "app" / "oidc.py").read_text(encoding="utf-8")
+    tree_oidc = _ast.parse(src_oidc)
+    mutable_module_state = [
+        t.id
+        for node in tree_oidc.body
+        if isinstance(node, (_ast.Assign, _ast.AnnAssign))
+        for t in ([node.target] if isinstance(node, _ast.AnnAssign) else node.targets)
+        if isinstance(t, _ast.Name)
+        and isinstance(node.value, (_ast.Dict, _ast.List, _ast.Set))
+        and not t.id.isupper()
+        and "cache" not in t.id
+    ]
+    check(
+        "U25b",
+        "no per-sign-in state is held in module memory",
+        not mutable_module_state,
+        f"{mutable_module_state} would be absent when the callback hits the other worker",
+    )
+
+    os.environ["JWT_SECRET_KEY"] = os.environ.get("JWT_SECRET_KEY") or "test-secret-for-unit-tests-only"
+
+    # --- U25c: state mismatch is refused (CSRF) -----------------------------
+    # Without this an attacker hands somebody a callback URL carrying the
+    # ATTACKER's authorization code, signing that person into the attacker's
+    # account — where everything they then do is visible to the attacker.
+    flow, cookie, _challenge = oidc.new_flow()
+    try:
+        oidc.read_flow(cookie, "not-the-state")
+        check("U25c", "a mismatched state parameter is refused", False, "read_flow returned")
+    except oidc.OidcError as e:
+        check("U25c", "a mismatched state parameter is refused", "state" in str(e).lower(), str(e)[:80])
+
+    check(
+        "U25d",
+        "the matching state parameter is accepted",
+        oidc.read_flow(cookie, flow["state"])["nonce"] == flow["nonce"],
+    )
+
+    # --- U25e: a tampered cookie is refused ---------------------------------
+    _body, sig = cookie.split(".", 1)
+    forged = json.dumps({"state": flow["state"], "nonce": "x", "verifier": "y", "exp": 9999999999})
+    tampered = oidc._b64u(forged.encode()) + "." + sig
+    try:
+        oidc.read_flow(tampered, flow["state"])
+        check("U25e", "a tampered sign-in cookie is refused", False, "read_flow returned")
+    except oidc.OidcError as e:
+        check("U25e", "a tampered sign-in cookie is refused", "signature" in str(e).lower(), str(e)[:80])
+
+    # --- U25f: a missing cookie is refused ----------------------------------
+    try:
+        oidc.read_flow("", flow["state"])
+        check("U25f", "a callback with no sign-in cookie is refused", False, "read_flow returned")
+    except oidc.OidcError:
+        check("U25f", "a callback with no sign-in cookie is refused", True)
+
+    # --- U25g: an expired flow is refused -----------------------------------
+    import hashlib as _h
+    import hmac as _hm
+
+    stale = {"state": "s", "nonce": "n", "verifier": "v", "exp": 1}
+    sb = oidc._b64u(json.dumps(stale, separators=(",", ":")).encode())
+    ss = oidc._b64u(_hm.new(oidc._secret(), sb.encode(), _h.sha256).digest())
+    try:
+        oidc.read_flow(f"{sb}.{ss}", "s")
+        check("U25g", "an expired sign-in flow is refused", False, "read_flow returned")
+    except oidc.OidcError as e:
+        check("U25g", "an expired sign-in flow is refused", "too long" in str(e), str(e)[:80])
+
+    # --- U25h: PKCE challenge is S256 of the verifier -----------------------
+    flow2, _c2, challenge2 = oidc.new_flow()
+    expect = oidc._b64u(_h.sha256(flow2["verifier"].encode()).digest())
+    check("U25h", "the PKCE challenge is the S256 hash of the verifier", challenge2 == expect)
+
+    # --- U25i: the token algorithm is PINNED, never read from the header ----
+    # ★ The classic confusion attack: an attacker signs a token with HS256
+    # using the provider's PUBLIC key as the HMAC secret, and a verifier that
+    # trusts the header's `alg` accepts it. The public key is, by definition,
+    # public. This asserts on the SOURCE via the AST rather than by grepping,
+    # because the surrounding comment names every algorithm involved.
+    verify_fn = next(
+        (
+            n
+            for n in _ast.walk(tree_oidc)
+            if isinstance(n, (_ast.FunctionDef, _ast.AsyncFunctionDef)) and n.name == "verify_id_token"
+        ),
+        None,
+    )
+    check("U25i", "verify_id_token is present", verify_fn is not None)
+    if verify_fn is not None:
+        allowed = set()
+        for node in _ast.walk(verify_fn):
+            if isinstance(node, _ast.Compare) and any(isinstance(o, _ast.NotIn) for o in node.ops):
+                for cmp_ in node.comparators:
+                    if isinstance(cmp_, _ast.Tuple):
+                        allowed |= {
+                            e.value for e in cmp_.elts if isinstance(e, _ast.Constant) and isinstance(e.value, str)
+                        }
+        check(
+            "U25j",
+            "the id_token algorithm is restricted to asymmetric ones",
+            bool(allowed) and all(a.startswith(("RS", "ES", "PS")) for a in allowed),
+            f"accepted: {sorted(allowed) or 'NOTHING — the header would be trusted'}",
+        )
+        check(
+            "U25k",
+            "no HMAC algorithm is accepted for a provider-signed token",
+            not any(a.startswith("HS") for a in allowed),
+            "HS256 with the public key as the secret is the algorithm-confusion attack",
+        )
+
+    # --- U25l: no "first key in the set" fallback ---------------------------
+    # On a rotation the first key is the NEW one while the token in hand was
+    # signed by the OLD one, so such a fallback turns a precise "unknown key
+    # id" into a confusing signature error — and invites accepting a token
+    # verified against a key it was not signed with.
+    check(
+        "U25l",
+        "an unknown key id is an error, not a reason to try the first key",
+        oidc._find_kid({"keys": [{"kid": "a"}, {"kid": "b"}]}, "c") is None
+        and oidc._find_kid({"keys": [{"kid": "a"}]}, "a") is not None,
+    )
+
+    # --- U25m: the callback grants nothing ----------------------------------
+    # The provider proves who somebody is. If this path could write `role` or
+    # `approved`, whoever administers the realm could make themselves a Legal
+    # Scout administrator with a group mapping.
+    src_main = (REPO / "app" / "main.py").read_text(encoding="utf-8")
+    tree_main = _ast.parse(src_main)
+    cb = next(
+        (
+            n
+            for n in _ast.walk(tree_main)
+            if isinstance(n, (_ast.FunctionDef, _ast.AsyncFunctionDef)) and n.name == "sso_callback"
+        ),
+        None,
+    )
+    check("U25m", "sso_callback is present", cb is not None)
+    if cb is not None:
+        sql = " ".join(
+            n.value.lower() for n in _ast.walk(cb) if isinstance(n, _ast.Constant) and isinstance(n.value, str)
+        )
+        check(
+            "U25n",
+            "the callback never writes a role, an approval or a new account",
+            "insert into users" not in sql and "update users set role" not in sql and "set approved" not in sql,
+            "identity is not authorisation",
+        )
+        # It must apply the SAME approval gate the password path does, or SSO
+        # becomes a way around phase 1 entirely.
+        names = {n.id for n in _ast.walk(cb) if isinstance(n, _ast.Name)}
+        check(
+            "U25o",
+            "the callback applies the same approval gate as the password path",
+            "APPROVAL_PENDING_MESSAGE" in names,
+            "otherwise single sign-on walks straight past the approval gate",
+        )
+        # The token must go back in the FRAGMENT. A query string is sent to the
+        # server, written into access logs and carried in Referer headers.
+        check(
+            "U25p",
+            "the session token is handed back in the URL fragment, not a query string",
+            "#sso_token=" in src_main and "?sso_token=" not in src_main,
+        )
+
+    # --- U25q: every OIDC variable is delivered to the container ------------
+    # The same allowlist trap that made LDAP_ENABLED=true a no-op in phase 2.
+    import app.auth_settings as asettings2
+
+    oidc_env = {env for name, (env, _k, _d) in asettings2.SPEC.items() if name.startswith("oidc_")}
+    absent = sorted(v for v in oidc_env if v not in os.environ)
+    check(
+        "U25q",
+        "every OIDC variable in the settings spec is delivered to the container",
+        not absent and bool(oidc_env),
+        (
+            f"declared in auth_settings.SPEC but absent from the environment: {absent} — "
+            "compose.yaml's `environment:` block is an ALLOWLIST, not a passthrough"
+        )
+        if absent
+        else f"{len(oidc_env)} variables",
+    )
+
+    # --- U25r: the public config endpoint leaks nothing ---------------------
+    cfg_fn = next(
+        (
+            n
+            for n in _ast.walk(tree_main)
+            if isinstance(n, (_ast.FunctionDef, _ast.AsyncFunctionDef)) and n.name == "auth_config"
+        ),
+        None,
+    )
+    if cfg_fn is not None:
+        keys = {
+            k.value
+            for n in _ast.walk(cfg_fn)
+            if isinstance(n, _ast.Dict)
+            for k in n.keys
+            if isinstance(k, _ast.Constant) and isinstance(k.value, str)
+        }
+        leaky = {k for k in keys if any(w in k for w in ("secret", "client_id", "discovery", "redirect", "host", "dn"))}
+        check(
+            "U25r",
+            "the public auth config exposes no provider configuration",
+            not leaky,
+            f"would expose: {sorted(leaky)}" if leaky else f"{len(keys)} keys, all cosmetic",
+        )
+
+    # --- U25s: the SSO routes are reachable before sign-in ------------------
+    # They exist to produce a token, so they cannot require one. Both are
+    # nonetheless guarded — by the signed flow cookie and by JWKS verification.
+    for route in ("/api/auth/sso/login", "/api/auth/sso/callback"):
+        check(f"U25s{route[-5:]}", f"{route} is reachable without a token", route in appmain.PUBLIC_ROUTES)
+
+
+# ===========================================================================
+# U26  Sign-in settings, sign-in mode, and just-in-time provisioning
+#     A settings page that stores a value the code does not read is worse than
+#     no settings page: it reports success and changes nothing. Most of what
+#     follows guards that, and the rest guards the two ways an auto-created
+#     account could arrive with more than it should.
+# ===========================================================================
+def test_auth_settings():
+    import ast as _ast
+
+    import app.auth_settings as st
+    import app.ldap_auth as la
+    import app.main as appmain
+    import app.oidc as oidc
+
+    # --- U26a: the modules read THROUGH the settings layer ------------------
+    # ★ This is the check that stops the Authentication tab being decorative.
+    # If ldap_auth/oidc call os.getenv directly — as they did in phases 2 and
+    # 3 — an administrator saves a corrected host, the row is written, the page
+    # shows the new value, and sign-in goes on using the one from .env with
+    # nothing anywhere to indicate the difference. Same failure family as the
+    # dead SSO button and the decorative Inactive badge.
+    #
+    # Scoped to the variables that ARE settings — the ones declared in
+    # auth_settings.SPEC. `JWT_SECRET_KEY` is read directly by app/oidc.py to
+    # sign the sign-in cookie and that is correct: it is the application's own
+    # secret, not a sign-in setting, and it is deliberately not editable from a
+    # web page. A blanket "no getenv anywhere" rule would fail on it, which is
+    # a test being wrong rather than the code.
+    spec_envs = {env for _n, (env, _k, _d) in st.SPEC.items()}
+    for mod, path in (("ldap_auth", "app/ldap_auth.py"), ("oidc", "app/oidc.py")):
+        src = (REPO / path).read_text(encoding="utf-8")
+        tree = _ast.parse(src)
+        direct = [
+            n.args[0].value
+            for n in _ast.walk(tree)
+            if isinstance(n, _ast.Call)
+            and (
+                (isinstance(n.func, _ast.Name) and n.func.id == "getenv")
+                or (isinstance(n.func, _ast.Attribute) and n.func.attr == "getenv")
+            )
+            and n.args
+            and isinstance(n.args[0], _ast.Constant)
+            and n.args[0].value in spec_envs
+        ]
+        check(
+            f"U26a-{mod}",
+            f"{mod} reads settings through the settings layer, not the environment",
+            not direct,
+            f"read directly from the environment: {direct} — the admin panel could not change them",
+        )
+
+    # --- U26b: an enum is validated BEFORE the write ------------------------
+    # Storing signin_mode="sso-only" (a hyphen) writes fine and reads back as
+    # unrecognised, falling through to the default — so a deployment meant to
+    # be SSO-only goes on accepting passwords while the settings page shows
+    # exactly what the administrator asked for.
+    try:
+        st.update({"signin_mode": "sso-only"}, "test")
+        check("U26b", "an invalid sign-in mode is refused at the write", False, "update() accepted it")
+    except st.SettingsError as e:
+        check("U26b", "an invalid sign-in mode is refused at the write", "must be one of" in str(e), str(e)[:70])
+
+    try:
+        st.update({"not_a_setting": "x"}, "test")
+        check("U26c", "an unknown setting key is refused", False, "update() accepted it")
+    except st.SettingsError:
+        check("U26c", "an unknown setting key is refused", True)
+
+    # --- U26d: validation is all-or-nothing ---------------------------------
+    # A loop that writes as it validates leaves the settings half from the form
+    # and half from before it — a state nobody chose and nobody can see.
+    #
+    # Asserted structurally rather than by attempting a bad save: driving that
+    # for real would WRITE to app_settings whenever the code was broken, which
+    # is exactly when a test suite must not be mutating the deployment it is
+    # inspecting. The property is that no database call appears inside the
+    # validation loop; the writes come after it, in a second pass.
+    st_src_early = (REPO / "app" / "auth_settings.py").read_text(encoding="utf-8")
+    upd = next(
+        (
+            n
+            for n in _ast.walk(_ast.parse(st_src_early))
+            if isinstance(n, _ast.FunctionDef) and n.name == "update"
+        ),
+        None,
+    )
+    if upd is not None:
+        loops = [n for n in upd.body if isinstance(n, _ast.For)]
+        writes_in_validation = any(
+            isinstance(c, _ast.Call)
+            and isinstance(c.func, _ast.Attribute)
+            and c.func.attr in ("execute", "commit")
+            for loop in loops[:1]
+            for c in _ast.walk(loop)
+        )
+        check(
+            "U26d",
+            "nothing is written until every supplied setting has validated",
+            loops and not writes_in_validation,
+            "a partial write leaves the settings half-applied",
+        )
+
+    # --- U26e: secrets are write-only ---------------------------------------
+    # A settings page that renders a client secret puts it in the DOM, in the
+    # browser's memory, and in any screenshot of that page.
+    view = st.public_view()
+    leaked = sorted(k for k in st.SECRET_KEYS if k in view)
+    check(
+        "U26e",
+        "no secret is ever returned by the settings API",
+        not leaked,
+        f"would return: {leaked}" if leaked else f"{len(st.SECRET_KEYS)} secrets reported as set/not-set only",
+    )
+    check(
+        "U26f",
+        "each secret is reported as set or not set",
+        all(f"{k}_set" in view for k in st.SECRET_KEYS),
+    )
+
+    # --- U26g: a blank secret means "keep", not "clear" ---------------------
+    # The form cannot show the current value, so it posts blank on every save.
+    # Treating that as a clear would wipe the client secret the first time
+    # anybody edited an unrelated field on the same page.
+    upd_fn = next(
+        (n for n in _ast.walk(_ast.parse((REPO / "app" / "auth_settings.py").read_text())) if isinstance(n, _ast.FunctionDef) and n.name == "update"),
+        None,
+    )
+    check("U26g", "auth_settings.update is present", upd_fn is not None)
+    if upd_fn is not None:
+        has_skip = any(
+            isinstance(n, _ast.Continue) for n in _ast.walk(upd_fn)
+        )
+        check(
+            "U26h",
+            "an empty secret is skipped rather than written",
+            has_skip,
+            "otherwise saving any other field on the page clears the stored secret",
+        )
+
+    # --- U26i: sso_only is applied AFTER the password, and exempts an admin -
+    # ★★★ Both halves matter. Applied before the password check, the differing
+    # status code tells an anonymous caller which addresses have accounts.
+    # Without the admin exemption, one mistyped provider URL locks every human
+    # out — including whoever has to sign in to correct it — and the only way
+    # back is editing Postgres by hand.
+    src_main = (REPO / "app" / "main.py").read_text(encoding="utf-8")
+    tree_main = _ast.parse(src_main)
+    login_fn = next(
+        (
+            n
+            for n in _ast.walk(tree_main)
+            if isinstance(n, (_ast.FunctionDef, _ast.AsyncFunctionDef)) and n.name == "auth_login"
+        ),
+        None,
+    )
+    if login_fn is not None:
+        verify_ln = min(
+            (
+                n.lineno
+                for n in _ast.walk(login_fn)
+                if isinstance(n, _ast.Call) and isinstance(n.func, _ast.Name) and n.func.id == "verify_password"
+            ),
+            default=0,
+        )
+        mode_ln = min(
+            (
+                n.lineno
+                for n in _ast.walk(login_fn)
+                if isinstance(n, _ast.Call) and isinstance(n.func, _ast.Name) and n.func.id == "_auth_settings_mode"
+            ),
+            default=0,
+        )
+        check(
+            "U26i",
+            "sso_only is enforced after the password is verified",
+            verify_ln and mode_ln and verify_ln < mode_ln,
+            "checked earlier, the status code enumerates which addresses have accounts",
+        )
+        consts = {
+            n.value
+            for n in _ast.walk(login_fn)
+            if isinstance(n, _ast.Constant) and isinstance(n.value, str)
+        }
+        check(
+            "U26j",
+            "an administrator keeps password sign-in under sso_only (break-glass)",
+            "sso_only" in consts and "admin" in consts,
+            "without it, one bad provider URL locks everyone out including whoever must fix it",
+        )
+
+    # --- U26k: JIT cannot mint anything privileged --------------------------
+    # ★★★ role and approved are SQL LITERALS with no parameter, so no claim,
+    # group, mapper or caller can reach them.
+    jit = next(
+        (n for n in _ast.walk(tree_main) if isinstance(n, _ast.FunctionDef) and n.name == "_jit_provision"),
+        None,
+    )
+    check("U26k", "_jit_provision is present", jit is not None)
+    if jit is not None:
+        args = {a.arg for a in jit.args.args}
+        check(
+            "U26l",
+            "just-in-time provisioning takes no role or approval argument",
+            not (args & {"role", "approved", "is_admin"}),
+            f"arguments: {sorted(args)}",
+        )
+        sql = " ".join(
+            n.value.lower() for n in _ast.walk(jit) if isinstance(n, _ast.Constant) and isinstance(n.value, str)
+        )
+        # The property is that `role` and `approved` appear in the VALUES clause
+        # as LITERALS. An earlier version of this check also asserted that the
+        # string `"%s, 'user'"` was absent, meaning to catch role being passed
+        # as a parameter — but that substring occurs in the perfectly correct
+        # statement too (the placeholder before it belongs to `full_name`), so
+        # the check failed on code that was right. The literals plus U26l's
+        # "no role or approved argument" are together the real guarantee.
+        values = sql[sql.index("values") :] if "values" in sql else sql
+        check(
+            "U26m",
+            "an auto-created account is always an unprivileged, unapproved one",
+            "'user'" in values and "false" in values,
+            f"role/approved must be literals in the VALUES clause — got: {values[:90]}",
+        )
+        check(
+            "U26n",
+            "a parallel sign-in by the same new person cannot fail",
+            "on conflict" in sql,
+            "a browser reloading the callback is the ordinary case, not the exotic one",
+        )
+
+    # --- U26o: both auto-create switches default to OFF ---------------------
+    for key in ("ldap_auto_create", "oidc_auto_create"):
+        check(f"U26o-{key}", f"{key} is off unless switched on", st.SPEC[key][2] is False)
+
+    # --- U26p: settings live in the existing table, not a second one --------
+    check(
+        "U26p",
+        "sign-in settings reuse app_settings under their own prefix",
+        st.PREFIX.endswith(".") and st.PREFIX != "",
+        f"prefix={st.PREFIX!r} — a second key/value table for the same job would be the drift",
+    )
+
+    # --- U26q: the settings layer holds no in-process cache -----------------
+    # Two workers. A value cached at import in one is stale in the other the
+    # moment somebody saves, so a setting would appear to take effect or not
+    # depending on which worker answered. Same class as U23k and U25b.
+    st_src = (REPO / "app" / "auth_settings.py").read_text(encoding="utf-8")
+    st_tree = _ast.parse(st_src)
+    caches = [
+        t.id
+        for node in st_tree.body
+        if isinstance(node, (_ast.Assign, _ast.AnnAssign))
+        for t in ([node.target] if isinstance(node, _ast.AnnAssign) else node.targets)
+        if isinstance(t, _ast.Name) and isinstance(node.value, (_ast.Dict, _ast.List)) and not t.id.isupper()
+    ]
+    check(
+        "U26q",
+        "the settings layer caches nothing in module memory",
+        not caches,
+        f"{caches} would be stale in the other worker the moment a setting is saved",
+    )
+
+    # --- U26r: config() actually exposes the JIT flag -----------------------
+    # The flag has to reach the login path, or turning it on does nothing.
+    check("U26r", "the directory config exposes auto_create", "auto_create" in la.config())
+    check("U26s", "the provider config exposes auto_create", "auto_create" in oidc.config())
+
+    # --- U26t: the admin settings routes exist and are NOT public -----------
+    for route in ("/api/admin/auth-settings",):
+        check(
+            f"U26t{route[-5:]}",
+            "the settings endpoint is not reachable without admin",
+            route not in appmain.PUBLIC_ROUTES,
+        )
+
+
 def main():
     for fn in (
         test_placeholders,
@@ -1437,6 +2350,10 @@ def main():
         test_fill_view,
         test_blank_reporting,
         test_register_authority,
+        test_approval_gate,
+        test_ldap_signin,
+        test_sso,
+        test_auth_settings,
         test_structural_contracts,
     ):
         try:

@@ -19,7 +19,7 @@ import jwt
 from agno.os import AgentOS
 from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from app import training_jobs
@@ -964,6 +964,18 @@ from starlette.middleware.base import BaseHTTPMiddleware
 PUBLIC_ROUTES = [
     "/api/auth/login",
     "/api/auth/logout",  # clearing your own cookie needs no token
+    # Which sign-in routes exist. Public because the sign-in screen has to read
+    # it before anyone has a token — and safe because it carries only booleans
+    # and a display label: no host, no bind DN, no filter, nothing that says
+    # anything about who has an account.
+    "/api/auth/config",
+    # The two halves of single sign-on. Both necessarily run before the caller
+    # has a token — that is what they exist to produce. They are not
+    # unguarded: /sso/login mints a signed, HttpOnly flow cookie, and
+    # /sso/callback refuses anything whose state does not match that cookie and
+    # whose id_token does not verify against the provider's published keys.
+    "/api/auth/sso/login",
+    "/api/auth/sso/callback",
     "/api/version",
     # PDF preview endpoints validate token via query param themselves
     "/api/templates/preview-pdf/",
@@ -1078,6 +1090,116 @@ def _request_jwt(request: Request) -> str:
         return ""
 
 
+# ---------------------------------------------------------------------------
+# Approval gate
+# ---------------------------------------------------------------------------
+#
+# A valid JWT proves the bearer authenticated. It does not prove an administrator
+# has let them in — see migration_030. Approval is therefore checked against the
+# DATABASE rather than read from the token: a claim baked in at login would keep
+# working for the whole token lifetime (JWT_EXPIRY_HOURS), so revoking someone
+# would not take effect until they happened to sign in again, which is precisely
+# when you least want to wait.
+#
+# ★★★ _APPROVAL_TTL MUST STAY 0 WHILE UVICORN RUNS MORE THAN ONE WORKER.
+#
+# `Dockerfile:92` is `--workers 2`. `_approval_cache` is a plain dict living
+# inside ONE process, so `_bust_approval_cache` clears it only in the worker
+# that happened to serve the approval request. The other worker keeps serving
+# its cached answer until the entry expires.
+#
+# The effect of that is worse than a slow revocation: it is a NON-DETERMINISTIC
+# one. Refuse an account and its next request is refused or admitted depending
+# on which worker the load balancer picks — so the same revocation looks
+# instant, then looks broken, then looks instant again. Measured on the baked
+# image with a 30s TTL and a refused account whose token was still valid:
+#
+#     GET /api/auth/me        403      (worker that served the revoke)
+#     GET /sessions           200      (the other worker, still cached)
+#     POST /agents/scout/runs 200      (ditto — the whole product)
+#
+# which is indistinguishable from the half-gated build this feature's own
+# mutation test exists to catch. It also means an earlier "verified" run of
+# exactly this check passed on a coin flip rather than on the code being right.
+#
+# So the answer is read from the database on every request. The cost is one
+# connection and one indexed lookup per request — `get_db_conn()` has no pool,
+# which is the thing to fix if this ever shows up in a latency measurement.
+# Middleware runs once per HTTP request, so an open SSE stream pays this once,
+# not once per chunk.
+#
+# The cache machinery is kept, and every write still busts it, because the
+# moment this app has a SHARED store (a pool plus Redis, or LISTEN/NOTIFY) a
+# non-zero TTL becomes correct — and it is guarded by U23k, which reads the
+# worker count out of the Dockerfile so raising one without the other fails.
+_APPROVAL_TTL = 0.0
+_approval_cache: dict[int, tuple[float, bool]] = {}
+
+# The user_id carried by the token the background training worker mints for
+# itself. Not a row in `users` — see _is_approved.
+SYSTEM_USER_ID = 0
+
+APPROVAL_PENDING_MESSAGE = "Your account is waiting for administrator approval."
+
+
+def _bust_approval_cache(user_id: int | None = None) -> None:
+    """Forget a cached approval decision. No argument clears the lot."""
+    if user_id is None:
+        _approval_cache.clear()
+    else:
+        _approval_cache.pop(int(user_id), None)
+
+
+def _is_approved(user_id) -> bool:
+    """Is this account approved AND active?
+
+    Both, in one query, because the two answers are wanted at the same moments
+    and a second round trip per request buys nothing. Fails CLOSED: an unknown
+    id, a malformed id, or a database that will not answer all return False. An
+    approval check that returns True when it cannot reach the source of truth is
+    not a check.
+    """
+    try:
+        uid = int(user_id)
+    except (TypeError, ValueError):
+        return False
+
+    # ★ The internal system principal. `training_jobs.py:376` mints
+    # `create_token(0, "system@training", "admin")` and drives the 15-step
+    # training pipeline by calling this app's own HTTP endpoints on
+    # 127.0.0.1 — so the background training worker is a client of the gate
+    # above like any browser. `users.id` is SERIAL and starts at 1, so id 0
+    # matches no account and would fail the lookup below: without this
+    # carve-out, adding the approval gate silently kills all template
+    # training, with the failure surfacing as a per-template 403 in a job log
+    # rather than as anything resembling an auth problem.
+    #
+    # It grants nothing. The token is signed with JWT_SECRET_KEY, so producing
+    # one already requires the app's own secret — and anyone holding that can
+    # mint a token for a real approved admin instead.
+    if uid == SYSTEM_USER_ID:
+        return True
+
+    hit = _approval_cache.get(uid)
+    if hit and (_time.time() - hit[0]) < _APPROVAL_TTL:
+        return hit[1]
+
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT approved, is_active FROM users WHERE id = %s", (uid,))
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        logger.warning(f"[AUTH] approval lookup failed for user {uid}: {e}")
+        return False
+
+    ok = bool(row) and bool(row[0]) and bool(row[1])
+    _approval_cache[uid] = (_time.time(), ok)
+    return ok
+
+
 class AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         from starlette.responses import JSONResponse
@@ -1101,6 +1223,16 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 return JSONResponse(status_code=401, content={"detail": "Token expired. Please login again."})
             except jwt.InvalidTokenError:
                 return JSONResponse(status_code=401, content={"detail": "Invalid token."})
+
+            # ★ Approval gate — site 1 of 2. The other is in the /api/ branch
+            # further down, and BOTH are load-bearing. This branch guards the
+            # AgentOS routes: /agents, /sessions, /teams, the SSE run stream.
+            # Gating only /api/ would lock a pending account out of the admin
+            # panel while leaving it able to chat with the agent and generate
+            # documents — which is the entire product. If you ever delete one of
+            # these two, delete the feature instead.
+            if not _is_approved(payload.get("user_id")):
+                return JSONResponse(status_code=403, content={"detail": APPROVAL_PENDING_MESSAGE})
 
             # ★ Pin every Agno route to the caller's own identity.
             #
@@ -1163,7 +1295,12 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if auth.startswith("Bearer "):
             token = auth[7:]
             try:
-                jwt.decode(token, getenv("JWT_SECRET_KEY", ""), algorithms=["HS256"])
+                _payload = jwt.decode(token, getenv("JWT_SECRET_KEY", ""), algorithms=["HS256"])
+                # ★ Approval gate — site 2 of 2. See the comment at site 1: the
+                # two branches guard different halves of the app and neither is
+                # sufficient alone.
+                if not _is_approved(_payload.get("user_id")):
+                    return JSONResponse(status_code=403, content={"detail": APPROVAL_PENDING_MESSAGE})
                 return await call_next(request)
             except jwt.ExpiredSignatureError:
                 return JSONResponse(status_code=401, content={"detail": "Token expired. Please login again."})
@@ -1292,7 +1429,28 @@ def hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
 
 
-def verify_password(password: str, hashed: str) -> bool:
+def verify_password(password: str, hashed: str | None) -> bool:
+    """Does `password` match `hashed`? False for anything that is not a real pair.
+
+    ★ The None/empty guard is load-bearing since migration_031 made
+    `users.hashed_password` nullable so that a DIRECTORY-ONLY account can exist
+    without a Legal Scout password. Two things follow, and both are the reason
+    this is written as an explicit refusal rather than left to bcrypt:
+
+      * `bcrypt.checkpw(pw, None)` raises AttributeError on the `.encode()`, and
+        an exception is not an answer — it surfaces as a 500 on an ordinary
+        wrong password, or gets swallowed by whichever handler is nearest.
+      * an empty password against an empty hash must never be a match. That is
+        the local-sign-in twin of the unauthenticated-bind hole guarded in
+        `ldap_auth.authenticate`: an account with no password is an account
+        nobody may sign into, not one anybody may.
+
+    Widening the column and hardening this function are one change. Porting the
+    migration without this guard opens the hole the migration's own comment
+    warns about.
+    """
+    if not password or not hashed:
+        return False
     return bcrypt.checkpw(password.encode(), hashed.encode())
 
 
@@ -1482,8 +1640,17 @@ def _init_admin():
             if not admin_pass:
                 print("Admin NOT created: set ADMIN_PASSWORD to seed the admin account")
             else:
+                # ★ `approved` is written explicitly and must stay that way.
+                # The column defaults to FALSE (migration_030), so an INSERT
+                # that omits it seeds a PENDING administrator — on a fresh
+                # install that is the only account in the table, so there is
+                # nobody approved who could approve it, and the product comes
+                # up with no way in at all. This is the seed for the very first
+                # account, created from a secret in the environment: it is the
+                # act of approval.
                 cur.execute(
-                    "INSERT INTO users (email, hashed_password, full_name, role) VALUES (%s, %s, %s, %s)",
+                    "INSERT INTO users (email, hashed_password, full_name, role, approved, approved_at, approved_by) "
+                    "VALUES (%s, %s, %s, %s, TRUE, now(), 'bootstrap')",
                     (admin_email, hash_password(admin_pass), "Admin", "admin"),
                 )
                 print(f"Admin user created: {admin_email}")
@@ -1613,6 +1780,143 @@ async def admin_test_email(request: Request):
         return {"success": False, "error": str(e)}
 
 
+def _auth_settings_mode() -> str:
+    """The effective `signin_mode`. Falls back to the permissive default.
+
+    A settings lookup that fails must not lock people out: if the table cannot
+    be read, sign-in behaves as it did before this feature existed.
+    """
+    from app import auth_settings
+
+    return str(auth_settings.effective().signin_mode)
+
+
+def _jit_provision(email: str, name: str, source: str) -> dict | None:
+    """Create a PENDING, plain-`user` account for an externally proved identity.
+
+    ★★★ `role` and `approved` are SQL LITERALS, not parameters, and this
+    function deliberately takes no argument for either. There is therefore no
+    path — no claim, no LDAP group, no role mapper, no caller — through which
+    an auto-created account can arrive as anything other than an unprivileged,
+    unapproved one. An administrator still has to let them in.
+
+    That is the entire design of just-in-time provisioning here: **it removes
+    the typing, not the approval.**
+
+    `ON CONFLICT DO NOTHING` because two parallel sign-ins by the same new
+    person is the ordinary case, not the exotic one — a browser reloading the
+    callback does it. Returns None when another request won that race; the
+    caller then re-reads the row that request created.
+    """
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO users (email, hashed_password, full_name, role, is_active, approved, auth_sources) "
+            "VALUES (%s, NULL, %s, 'user', TRUE, FALSE, %s) "
+            "ON CONFLICT (email) DO NOTHING "
+            "RETURNING id, email, full_name, role, is_active, approved",
+            (email, name or email, [source]),
+        )
+        row = cur.fetchone()
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        logger.warning(f"[AUTH] just-in-time provisioning failed for {email}: {e}")
+        return None
+    if row:
+        logger.info(f"[AUTH] provisioned pending account for {email} via {source} (role=user, approved=false)")
+        log_activity(row[0], row[1], "user_autocreate", f"Provisioned pending account via {source}", "")
+    return {"id": row[0], "email": row[1]} if row else None
+
+
+def _link_auth_source(user_id: int, source: str) -> None:
+    """Record that this account has now been used through `source`.
+
+    Idempotent by construction — the array is only appended to when the value
+    is not already in it, so signing in twice does not grow it. This is
+    bookkeeping for the admin panel's "Signs in via" column, never an input to
+    any decision: nothing reads `auth_sources` to work out what somebody may do.
+    """
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE users SET auth_sources = array_append(auth_sources, %s) "
+            "WHERE id = %s AND NOT (%s = ANY(auth_sources))",
+            (source, user_id, source),
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        # Bookkeeping must never be able to fail a sign-in that already
+        # succeeded. Its own connection, so a failure here cannot poison a
+        # caller's transaction.
+        logger.warning(f"[AUTH] could not record auth source {source} for user {user_id}: {e}")
+
+
+def _try_ldap_login(email: str, password: str, row) -> bool:
+    """Offer these credentials to the directory. True if the directory accepts.
+
+    Called only after the local password has failed for an account that EXISTS
+    here — see the comment at the call site for why that ordering is a security
+    property and not a preference.
+
+    Every failure returns False rather than raising: the caller answers all of
+    them with the same flat 401, because "no such entry", "wrong password" and
+    "the directory is unreachable" told apart are an enumeration oracle. The
+    distinction is written to the log, where it is what an administrator needs
+    and no attacker can read it.
+    """
+    from app import ldap_auth
+
+    if not ldap_auth.ldap_enabled():
+        return False
+
+    try:
+        ldap_email, _ldap_name = ldap_auth.authenticate(email, password)
+    except Exception as e:
+        # Broad on purpose: ldap3 raises its own exception hierarchy plus
+        # socket and TLS errors, and a directory that is down must produce a
+        # refused sign-in, never a 500.
+        logger.warning(f"[AUTH] directory sign-in refused for {email}: {type(e).__name__}: {e}")
+        return False
+
+    # ★ The directory's own mail attribute must agree with the account being
+    # signed into. Without this, a filter that matched a DIFFERENT entry — a
+    # shared mailbox, an alias, a filter someone widened — would authenticate
+    # the person who holds THAT password into THIS account. Email is the merge
+    # key everywhere else in this design; it has to be the merge key here too.
+    if ldap_email != (email or "").strip().lower():
+        logger.warning(
+            f"[AUTH] directory authenticated {ldap_email!r} but the sign-in was for {email!r}; refusing"
+        )
+        return False
+
+    # `row` is None on the just-in-time path: the account does not exist yet,
+    # so there is nothing to link a source to. The caller provisions it and
+    # links the source there.
+    if row is not None:
+        _link_auth_source(row[0], "ldap")
+    logger.info(f"[AUTH] directory sign-in accepted for {email}")
+    return True
+
+
+def _ldap_config_or_empty() -> dict:
+    """The directory settings, or {} if the directory is not switched on.
+
+    Separate from ldap_auth.config() so the login path can ask "is JIT on?"
+    without needing the directory to be reachable or fully configured.
+    """
+    from app import ldap_auth
+
+    if not ldap_auth.ldap_enabled():
+        return {}
+    return ldap_auth.config()
+
+
 def _login_failure(error: str) -> JSONResponse:
     """Failed login → HTTP 401, same JSON body shape as before.
 
@@ -1639,7 +1943,8 @@ async def auth_login(request: Request):
         conn = get_db_conn()
         cur = conn.cursor()
         cur.execute(
-            "SELECT id, email, hashed_password, full_name, role, is_active FROM users WHERE email = %s", (email,)
+            "SELECT id, email, hashed_password, full_name, role, is_active, approved FROM users WHERE email = %s",
+            (email,),
         )
         row = cur.fetchone()
         cur.close()
@@ -1648,11 +1953,110 @@ async def auth_login(request: Request):
         if not row:
             # Always hash-check to prevent timing attack (email enumeration)
             bcrypt.checkpw(b"dummy", b"$2b$12$LJ3m4ys3Gn/0FWpfKMNbIeDjQJz2GnnKTjPVTqJjLYKmWFjGEQ3ya")
+
+            # ★★★ Just-in-time provisioning from the DIRECTORY, off by default,
+            # and the one place where turning a setting on genuinely widens the
+            # attack surface rather than only saving typing.
+            #
+            # Phase 2 deliberately refused to contact the directory for an
+            # email with no account here, so that this public form could not be
+            # used to relay arbitrary username/password guesses to corporate
+            # Active Directory — password spraying, with the account lockouts
+            # that causes for real staff. `ldap_auto_create` means "the
+            # directory decides who exists", so that relay is no longer
+            # avoidable: an unknown email HAS to be offered to the directory,
+            # or nobody could ever be provisioned.
+            #
+            # It is off unless an administrator turns it on, the settings page
+            # says this in as many words, and the created account is still
+            # `role='user'` and `approved=FALSE`. But this is a real trade, not
+            # a free convenience, and it should not be turned on for an
+            # internet-facing deployment whose directory locks accounts out.
+            try:
+                _ldap_cfg = _ldap_config_or_empty()
+            except Exception:
+                _ldap_cfg = {}
+            if _ldap_cfg.get("auto_create") and _try_ldap_login(email, password, None):
+                _jit_provision(email, "", "ldap")
+                return JSONResponse(
+                    status_code=403,
+                    content={"success": False, "error": APPROVAL_PENDING_MESSAGE, "pending_approval": True},
+                )
             return _login_failure("Invalid email or password")
         if not row[5]:
             return _login_failure("Account is disabled")
-        if not verify_password(password, row[2]):
+        # ★ The directory is a FALLBACK, and only for an account that already
+        # exists here. The `and` short-circuits, so the local password is
+        # always tried first and the directory is only asked when it failed.
+        # Three deliberate consequences:
+        #
+        #   * A directory-only account has a NULL hash, so verify_password
+        #     refuses it above without ever reaching bcrypt and falls through
+        #     to the directory — the ordinary path for those people, not an
+        #     error.
+        #
+        #   * An email with no `users` row returned above and never reaches
+        #     this line. That matters for more than provisioning policy: it
+        #     means Legal Scout will not relay an arbitrary attacker-chosen
+        #     username and password to the corporate directory. Trying LDAP
+        #     first, or trying it for unknown emails, turns a public login form
+        #     into a password-spraying proxy for Active Directory — complete
+        #     with the account lockouts that causes for real staff.
+        #
+        #   * Both failures answer with the SAME flat 401. Telling "wrong local
+        #     password" apart from "the directory refused you" would say which
+        #     accounts are directory-backed.
+        if not verify_password(password, row[2]) and not _try_ldap_login(email, password, row):
             return _login_failure("Invalid email or password")
+
+        # ★ signin_mode = "sso_only": password sign-in is refused — but only
+        # AFTER the password has been verified, and never for an admin.
+        #
+        # The ordering is a security property. Refusing before the password is
+        # checked would answer differently for a real account than for an
+        # unknown one, handing an anonymous caller a way to enumerate which
+        # addresses exist. By the time this runs the caller has already proved
+        # they hold this account's password, so the message tells them nothing
+        # they did not know.
+        #
+        # ★★★ The admin exemption is the break-glass, and it is not optional.
+        # These settings are edited through a web page that requires signing
+        # in. One mistyped discovery URL with no exemption locks every human
+        # out of the application — including the person who has to correct it —
+        # and the only way back is editing rows in Postgres by hand. The
+        # exemption is checked here, after authentication, so it also cannot be
+        # used to discover which addresses are admins.
+        try:
+            _mode = _auth_settings_mode()
+        except Exception:
+            _mode = "hybrid"
+        if _mode == "sso_only" and row[4] != "admin":
+            return JSONResponse(
+                status_code=403,
+                content={
+                    "success": False,
+                    "error": "This account must sign in with single sign-on.",
+                    "sso_only": True,
+                },
+            )
+
+        # ★ Approval is checked AFTER the password, never before, and this is
+        # the one place in this function that answers with something other than
+        # a flat 401. The ordering is the whole reason that is safe: the caller
+        # has already proved they hold this account's password, so telling them
+        # the account is pending discloses nothing they could not learn by
+        # asking the administrator they are being sent to. Moved above
+        # verify_password, the different status code would hand an anonymous
+        # caller a way to enumerate which addresses have accounts — exactly what
+        # the dummy-bcrypt check above exists to prevent.
+        #
+        # No token is minted on this path. A pending account has no session at
+        # all, rather than a session that every request then rejects.
+        if not row[6]:
+            return JSONResponse(
+                status_code=403,
+                content={"success": False, "error": APPROVAL_PENDING_MESSAGE, "pending_approval": True},
+            )
 
         token = create_token(row[0], row[1], row[4])
         log_activity(row[0], row[1], "login", "User logged in", request.client.host if request.client else "")
@@ -1685,6 +2089,281 @@ async def auth_login(request: Request):
         return JSONResponse(status_code=500, content={"success": False, "error": "Login failed"})
 
 
+@app.get("/api/auth/config")
+async def auth_config():
+    """Which sign-in routes this deployment offers. No authentication required.
+
+    Deliberately only booleans and a label. It must not report the directory
+    host, the bind DN or the search filter: this is served to anyone who can
+    reach the login page, and those values describe the corporate directory's
+    internal layout. Nor does it say anything about any particular account, so
+    it cannot be used to test whether an address is known.
+
+    `ldap_enabled` is what lets the admin panel offer a directory-only account
+    (one with no Legal Scout password); the sign-in form itself does not change
+    shape, because a directory sign-in uses the same email and password fields.
+    """
+    from app import ldap_auth, oidc
+
+    mode = _auth_settings_mode()
+    # `local` hides single sign-on from the screen entirely, and the routes
+    # refuse it too — the button is not the enforcement.
+    sso = oidc.sso_enabled() and mode != "local"
+    cfg = oidc.config() if sso else {}
+    ldap_cfg = ldap_auth.config() if ldap_auth.ldap_enabled() else {}
+    return {
+        "success": True,
+        "ldap_enabled": ldap_auth.ldap_enabled(),
+        "ldap_label": ldap_cfg.get("label") or "Corporate directory",
+        "sso_enabled": sso,
+        # So the sign-in screen can lead with the right control. It is a hint
+        # for layout, never the enforcement: `auth_login` applies sso_only
+        # itself, after the password check.
+        "signin_mode": mode,
+        # The label and provider type are cosmetic — which words and which logo
+        # the button shows. Deliberately NOT the discovery URL, the client id or
+        # the redirect URI: this endpoint is public, and those describe the
+        # identity provider's configuration.
+        "sso_label": cfg.get("label", "single sign-on"),
+        "sso_provider": cfg.get("provider_type", ""),
+    }
+
+
+SSO_FLOW_COOKIE = "ls_sso_flow"
+
+
+def _sso_failure(reason: str, log_detail: str) -> RedirectResponse:
+    """Send the browser back to the sign-in page with a short, generic reason.
+
+    The detail goes to the log and nowhere else. "No such account", "bad
+    signature" and "the provider is unreachable" told apart on the login screen
+    would say which addresses have accounts here — the same reasoning that
+    makes every password failure a flat 401.
+    """
+    logger.warning(f"[SSO] sign-in refused: {log_detail}")
+    from urllib.parse import quote
+
+    resp = RedirectResponse(url=f"/login?sso_error={quote(reason)}", status_code=303)
+    resp.delete_cookie(SSO_FLOW_COOKIE, path="/")
+    return resp
+
+
+@app.get("/api/admin/auth-settings")
+async def admin_get_auth_settings(request: Request):
+    """The sign-in settings in force, for the Authentication tab. Admin only.
+
+    Secrets are reported as set / not set, never returned. A page that renders
+    a client secret puts it in the DOM, in the browser's memory and in any
+    screenshot of that page.
+    """
+    require_admin(request)
+    from app import auth_settings
+
+    try:
+        return {
+            "success": True,
+            "settings": auth_settings.public_view(),
+            "signin_modes": list(auth_settings.SIGNIN_MODES),
+            "provider_types": list(auth_settings.OIDC_PROVIDER_TYPES),
+            "secret_keys": sorted(auth_settings.SECRET_KEYS),
+        }
+    except Exception as e:
+        log_error("admin_get_auth_settings", e)
+        return {"success": False, "error": str(e)}
+
+
+@app.put("/api/admin/auth-settings")
+async def admin_put_auth_settings(request: Request):
+    """Save sign-in settings. Admin only.
+
+    Read fresh on the next sign-in — no restart, and no cache to go stale in
+    the other uvicorn worker.
+    """
+    admin = require_admin(request)
+    from app import auth_settings
+
+    try:
+        body = await request.json()
+        updates = body.get("settings") if isinstance(body.get("settings"), dict) else body
+        auth_settings.update(updates, admin.get("email") or "admin")
+    except auth_settings.SettingsError as e:
+        # A rejected write is the administrator's own input being refused, so
+        # the reason is safe — and useful — to show them.
+        return {"success": False, "error": str(e)}
+    except Exception as e:
+        log_error("admin_put_auth_settings", e)
+        return {"success": False, "error": str(e)}
+
+    # Log WHICH settings changed, never their values: this audit trail would
+    # otherwise be where the client secret ends up in plain text.
+    log_activity(
+        admin.get("user_id"),
+        admin.get("email"),
+        "update_auth_settings",
+        f"Changed sign-in settings: {', '.join(sorted(updates))}",
+        request.client.host if request.client else "",
+    )
+    return {"success": True, "settings": auth_settings.public_view()}
+
+
+@app.post("/api/admin/auth-settings/test")
+async def admin_test_auth_settings(request: Request):
+    """Check a provider is reachable, using the settings actually in force.
+
+    Reads the discovery document and its key set. That is deliberately the same
+    path a real sign-in takes, so a green result here means the thing sign-in
+    depends on works — not that a URL is syntactically valid.
+    """
+    require_admin(request)
+    from app import oidc
+
+    try:
+        meta = await oidc.metadata()
+        cfg = oidc.config()
+        jwks = await oidc._fetch_jwks(meta["jwks_uri"], cfg["timeout"])
+        keys = jwks.get("keys", []) or []
+        return {
+            "success": True,
+            "issuer": meta["issuer"],
+            "keys": len(keys),
+            "message": f"Discovery document reachable · {len(keys)} signing key(s)",
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)[:300]}
+
+
+@app.get("/api/auth/sso/login")
+async def sso_login(request: Request):
+    """Begin single sign-on: mint the flow, set the cookie, redirect out."""
+    from app import oidc
+
+    if not oidc.sso_enabled() or _auth_settings_mode() == "local":
+        raise HTTPException(status_code=403, detail="Single sign-on is not enabled")
+    try:
+        flow, cookie_value, challenge = oidc.new_flow()
+        url = await oidc.authorize_url(flow, challenge)
+    except Exception as e:
+        logger.warning(f"[SSO] could not start sign-in: {type(e).__name__}: {e}")
+        raise HTTPException(status_code=503, detail="Single sign-on is not available") from e
+
+    resp = RedirectResponse(url=url, status_code=303)
+    # SameSite=Lax, deliberately, not Strict: the callback arrives as a
+    # top-level navigation FROM the provider's domain, and Lax is exactly the
+    # setting that still sends the cookie on such a navigation. Strict would
+    # withhold it and every sign-in would fail with "no sign-in cookie" —
+    # which reads like a browser problem rather than a configuration one.
+    resp.set_cookie(
+        SSO_FLOW_COOKIE,
+        cookie_value,
+        max_age=oidc.SSO_FLOW_TTL,
+        httponly=True,
+        samesite="lax",
+        secure=(request.url.scheme == "https"),
+        path="/",
+    )
+    return resp
+
+
+@app.get("/api/auth/sso/callback")
+async def sso_callback(request: Request):
+    """Finish single sign-on. Every failure lands back on the sign-in page."""
+    from app import oidc
+
+    if not oidc.sso_enabled() or _auth_settings_mode() == "local":
+        # Refused here as well as on the way out. A sign-in that was already in
+        # flight when an administrator switched single sign-on off, or set the
+        # mode to `local`, must not be allowed to complete — otherwise turning
+        # it off leaves a window in which it still works.
+        return _sso_failure("Single sign-on is not enabled", "callback arrived while SSO is off or mode is local")
+
+    err = request.query_params.get("error")
+    if err:
+        return _sso_failure(
+            "Sign-in was not completed",
+            f"provider returned error={err} {request.query_params.get('error_description', '')}",
+        )
+
+    code = request.query_params.get("code", "")
+    state = request.query_params.get("state", "")
+    if not code:
+        return _sso_failure("Sign-in was not completed", "callback carried no authorization code")
+
+    try:
+        flow = oidc.read_flow(request.cookies.get(SSO_FLOW_COOKIE, ""), state)
+        tokens = await oidc.exchange_code(code, flow["verifier"])
+        claims = await oidc.verify_id_token(tokens["id_token"], flow["nonce"])
+    except Exception as e:
+        return _sso_failure("Sign-in could not be verified", f"{type(e).__name__}: {e}")
+
+    email = claims["email"]
+
+    # ★ The provider has proved WHO this is. It has not granted anything. An
+    # administrator still has to have created the account — there is no
+    # just-in-time provisioning on this path, so an authenticated stranger is
+    # refused rather than admitted as a new user. Roles are not read from the
+    # token at all: whoever administers the realm cannot make themselves a
+    # Legal Scout administrator by editing a group or a mapper.
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, email, full_name, role, is_active, approved FROM users WHERE email = %s",
+            (email,),
+        )
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        return _sso_failure("Sign-in could not be completed", f"user lookup failed: {e}")
+
+    if not row:
+        # Just-in-time provisioning, off by default. When on, an authenticated
+        # stranger gets a row — always `role='user'`, always `approved=FALSE`
+        # (SQL literals in _jit_provision) — and lands on the pending screen
+        # rather than being turned away. It removes the typing, not the
+        # approval.
+        if oidc.config().get("auto_create"):
+            _jit_provision(email, str(claims.get("name") or "").strip(), "oidc")
+            return _sso_failure(
+                APPROVAL_PENDING_MESSAGE,
+                f"{email} provisioned pending via oidc (role=user, approved=false)",
+            )
+        return _sso_failure(
+            "There is no Legal Scout account for that address — ask an administrator",
+            f"{email} authenticated with the provider but has no users row",
+        )
+    if not row[4]:
+        return _sso_failure("That account is disabled", f"{email} is inactive")
+    if not row[5]:
+        # Same wording the password path uses, so the two cannot disagree.
+        return _sso_failure(APPROVAL_PENDING_MESSAGE, f"{email} is not approved")
+
+    _link_auth_source(row[0], "oidc")
+    token = create_token(row[0], row[1], row[3])
+    log_activity(row[0], row[1], "login", "Signed in with SSO", request.client.host if request.client else "")
+
+    # ★ The token goes back in the URL FRAGMENT, not a query string. The
+    # frontend is a static export with no server route to receive it, so it has
+    # to arrive in the URL — and a fragment is never sent to the server, never
+    # written into an access log and never carried in a Referer header, which a
+    # query parameter would be on all three counts.
+    resp = RedirectResponse(url=f"/login#sso_token={token}", status_code=303)
+    resp.delete_cookie(SSO_FLOW_COOKIE, path="/")
+    # The session cookie is set here too, exactly as the password path does it,
+    # so the AgentOS routes work for an SSO session without the frontend
+    # having to attach a header to every request.
+    resp.set_cookie(
+        SESSION_COOKIE_NAME,
+        token,
+        max_age=JWT_EXPIRY_HOURS * 3600,
+        httponly=True,
+        samesite="lax",
+        secure=(request.url.scheme == "https"),
+        path="/",
+    )
+    return resp
+
+
 @app.post("/api/auth/logout")
 async def auth_logout():
     """Clears the session cookie.
@@ -1711,8 +2390,13 @@ async def admin_list_users(request: Request):
     try:
         conn = get_db_conn()
         cur = conn.cursor()
+        # Pending accounts sort FIRST, and only then by recency. They are the
+        # only rows on this page that carry an outstanding decision; a queue
+        # buried three screens down is a queue nobody works.
         cur.execute(
-            "SELECT id, email, full_name, role, is_active, created_at, updated_at FROM users ORDER BY created_at DESC"
+            "SELECT id, email, full_name, role, is_active, created_at, updated_at, "
+            "approved, auth_sources, approved_at, approved_by "
+            "FROM users ORDER BY approved ASC, created_at DESC"
         )
         rows = cur.fetchall()
         cur.close()
@@ -1726,6 +2410,12 @@ async def admin_list_users(request: Request):
                 "is_active": r[4],
                 "created_at": r[5].isoformat() if r[5] else None,
                 "updated_at": r[6].isoformat() if r[6] else None,
+                "approved": bool(r[7]),
+                # A list, not a value — one person who has a local password and
+                # also arrives through a directory is ONE row carrying both.
+                "auth_sources": list(r[8] or ["local"]),
+                "approved_at": r[9].isoformat() if r[9] else None,
+                "approved_by": r[10],
             }
             for r in rows
         ]
@@ -1743,20 +2433,52 @@ async def admin_create_user(request: Request):
         password = body.get("password", "")
         name = sanitize_string(body.get("name", ""), 255)
         role = body.get("role", "user")
-        if not email or not password:
+        # ★ An empty password means a DIRECTORY-ONLY account: the person's
+        # password lives in Active Directory and deliberately not here, so
+        # there is nothing for an administrator to type. The row is created
+        # with a NULL hash, which `verify_password` refuses outright, so the
+        # local sign-in path is closed for them rather than left open behind a
+        # value nobody knows.
+        #
+        # Only offered when LDAP is actually configured. Otherwise a blank
+        # password would silently create an account that CANNOT sign in by any
+        # route at all, and would look like an ordinary one in the table.
+        from app import ldap_auth
+
+        directory_only = not password and ldap_auth.ldap_enabled()
+
+        if not email or (not password and not directory_only):
             return {"success": False, "error": "Email and password required"}
         if not validate_email(email):
             return {"success": False, "error": "Invalid email format"}
-        if len(password) < 10:
+        if password and len(password) < 10:
             return {"success": False, "error": "Password must be at least 10 characters"}
         if role not in ("user", "editor", "admin"):
             return {"success": False, "error": "Role must be user, editor, or admin"}
 
         conn = get_db_conn()
         cur = conn.cursor()
+        # ★ Approved on creation, deliberately, and only on THIS path. An
+        # administrator typing an email, a name, a password and a role IS the
+        # approval — making them then approve the row they just created would
+        # be a second click that decides nothing, and a queue that fills with
+        # entries nobody is waiting on stops being read.
+        #
+        # The `approved` column exists for the paths that are NOT this one: a
+        # directory or an identity provider introducing somebody no
+        # administrator has ever seen. Those land FALSE from the column default
+        # precisely because they do not pass through here.
         cur.execute(
-            "INSERT INTO users (email, hashed_password, full_name, role) VALUES (%s, %s, %s, %s) RETURNING id",
-            (email, hash_password(password), name, role),
+            "INSERT INTO users (email, hashed_password, full_name, role, approved, approved_at, approved_by, "
+            "auth_sources) VALUES (%s, %s, %s, %s, TRUE, now(), %s, %s) RETURNING id",
+            (
+                email,
+                None if directory_only else hash_password(password),
+                name,
+                role,
+                admin.get("email") or "admin",
+                ["ldap"] if directory_only else ["local"],
+            ),
         )
         new_id = cur.fetchone()[0]
         conn.commit()
@@ -1803,9 +2525,86 @@ async def admin_update_user(user_id: int, request: Request):
 
         cur.close()
         conn.close()
+        # ★ `is_active` is half of what _is_approved answers, so a change made
+        # here has to invalidate the cached decision or disabling an account
+        # would leave that account working for up to _APPROVAL_TTL seconds.
+        # Cheap and unconditional: busting an entry that did not change costs
+        # one lookup on the next request.
+        _bust_approval_cache(user_id)
         log_activity(admin.get("user_id"), admin.get("email"), "update_user", f"Updated user id={user_id}", "")
         return {"success": True, "message": "User updated"}
     except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/admin/users/{user_id}/approval")
+async def admin_set_user_approval(user_id: int, request: Request):
+    """Approve or refuse an account that is waiting at the door.
+
+    Separate from the general update endpoint on purpose. This decision is not
+    a field edit alongside a name and a role: it is the moment somebody the
+    application has never seen is either let in or is not, and it wants its own
+    route, its own audit line and its own reason to exist in the log.
+
+    Refusing does NOT delete the row. A deleted account can be re-created by
+    the same person simply signing in again through the directory, so the
+    refusal would have to be repeated every time — a rejected row held at
+    `approved = false` stays rejected, and the log keeps who decided it.
+    """
+    admin = require_admin(request)
+    try:
+        body = await request.json()
+        if "approved" not in body:
+            return {"success": False, "error": "Body must carry `approved`"}
+        approved = bool(body["approved"])
+
+        conn = get_db_conn()
+        cur = conn.cursor()
+        # RETURNING gives the email for the audit line without a second query,
+        # and tells us whether the id existed at all.
+        # Both stamps come from the DATABASE clock, via CASE, rather than from
+        # `datetime.now()` here. Every other timestamp on this table is written
+        # by Postgres (`DEFAULT CURRENT_TIMESTAMP`, `NOW()`), and a container
+        # whose TZ differs from the server's would file approvals hours away
+        # from the rows they sit beside — with nothing to indicate which clock
+        # any given row came from.
+        cur.execute(
+            "UPDATE users SET approved = %s, "
+            "approved_at = CASE WHEN %s THEN NOW() ELSE NULL END, "
+            "approved_by = CASE WHEN %s THEN %s ELSE NULL END, "
+            "updated_at = NOW() "
+            "WHERE id = %s RETURNING email",
+            (approved, approved, approved, admin.get("email") or "admin", user_id),
+        )
+        row = cur.fetchone()
+        conn.commit()
+        cur.close()
+        conn.close()
+
+        if not row:
+            return {"success": False, "error": "User not found"}
+
+        # ★ Before returning, not after: the response is the administrator's
+        # signal that it is done, and a stale cache would make a revocation
+        # they have just been told succeeded keep working for another half
+        # minute. This is what keeps revocation immediate despite the cache.
+        _bust_approval_cache(user_id)
+
+        verb = "approve_user" if approved else "reject_user"
+        log_activity(
+            admin.get("user_id"),
+            admin.get("email"),
+            verb,
+            f"{'Approved' if approved else 'Refused'} access for {row[0]} (id={user_id})",
+            request.client.host if request.client else "",
+        )
+        return {
+            "success": True,
+            "approved": approved,
+            "message": f"{row[0]} {'approved' if approved else 'refused'}",
+        }
+    except Exception as e:
+        log_error("admin_set_user_approval", e)
         return {"success": False, "error": str(e)}
 
 
@@ -1820,6 +2619,9 @@ async def admin_delete_user(user_id: int, request: Request):
         conn.commit()
         cur.close()
         conn.close()
+        # The row is gone, so the next lookup would fail closed anyway — but it
+        # would do so only after the cached True expired. Bust it now.
+        _bust_approval_cache(user_id)
         if deleted:
             log_activity(admin.get("user_id"), admin.get("email"), "delete_user", f"Deleted user id={user_id}", "")
             return {"success": True, "message": "User deleted"}

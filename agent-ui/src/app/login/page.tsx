@@ -28,6 +28,8 @@ export default function LoginPage() {
   const [error, setError] = useState("")
   const [errorHint, setErrorHint] = useState("")
   const [loading, setLoading] = useState(false)
+  const [ssoEnabled, setSsoEnabled] = useState(false)
+  const [ssoLabel, setSsoLabel] = useState("City Holdings SSO")
   const router = useRouter()
 
   useEffect(() => {
@@ -37,6 +39,62 @@ export default function LoginPage() {
       setRememberMe(true)
     }
   }, [])
+
+  // Which sign-in routes this deployment actually offers. The button below has
+  // been rendered since the page was written but was never wired to anything —
+  // it had no onClick at all, only a tooltip — so clicking it did nothing.
+  // Whether it should be shown is the server's answer, and a failure here
+  // leaves it hidden rather than showing a control that cannot work.
+  useEffect(() => {
+    ;(async () => {
+      try {
+        const res = await fetch((process.env.NEXT_PUBLIC_API_URL || "") + "/api/auth/config")
+        if (!res.ok) return
+        const c = await res.json()
+        setSsoEnabled(!!c.sso_enabled)
+        if (c.sso_label) setSsoLabel(c.sso_label)
+      } catch (e) {
+        console.error("Auth config fetch failed:", e)
+      }
+    })()
+  }, [])
+
+  // The SSO callback hands the token back in the URL FRAGMENT: this frontend is
+  // a static export with no server route that could receive it, and a fragment
+  // — unlike a query string — is never sent to the server, never written into
+  // an access log and never carried in a Referer header.
+  //
+  // It is removed from the address bar immediately, so the token does not sit
+  // in browser history or get copied along with the URL.
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    const frag = new URLSearchParams(window.location.hash.replace(/^#/, ""))
+    const token = frag.get("sso_token")
+    if (token) {
+      window.history.replaceState(null, "", window.location.pathname)
+      localStorage.setItem("ls_token", token)
+      fetch((process.env.NEXT_PUBLIC_API_URL || "") + "/api/auth/me", {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => {
+          if (d?.user) localStorage.setItem("ls_user", JSON.stringify(d.user))
+          router.push("/")
+        })
+        .catch(() => router.push("/"))
+      return
+    }
+    // A failed SSO attempt comes back as a short, generic reason. The specific
+    // cause is in the server log, not here — telling "no such account" apart
+    // from "bad signature" on this screen would say which addresses exist.
+    const params = new URLSearchParams(window.location.search)
+    const ssoErr = params.get("sso_error")
+    if (ssoErr) {
+      setError(ssoErr)
+      setErrorHint("")
+      window.history.replaceState(null, "", window.location.pathname)
+    }
+  }, [router])
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -199,27 +257,45 @@ export default function LoginPage() {
             </button>
           </form>
 
-          <div className="mt-[18px] flex items-center gap-3">
-            <span className="flex-1 border-t border-[#E2E8F0]" />
-            <span className="text-[11px] font-medium tracking-[.14em] text-[#94A3B8]">
-              OR CONTINUE WITH
-            </span>
-            <span className="flex-1 border-t border-[#E2E8F0]" />
-          </div>
-          <button
-            type="button"
-            title="Ask your administrator to enable SSO"
-            className="mt-3 flex h-12 w-full items-center justify-center gap-[9px] rounded-[11px] border border-[#E2E8F0] bg-[#F8FAFC] px-4 text-[14px] font-medium text-[#0F172A]"
-          >
-            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden>
-              <path
-                d="M12 2l8 4v6c0 5-3.5 8-8 10-4.5-2-8-5-8-10V6l8-4z"
-                stroke="#2563EB"
-                strokeWidth="1.7"
-              />
-            </svg>
-            Continue with City Holdings SSO
-          </button>
+          {/* Shown only when the server says single sign-on is configured. It
+              used to render unconditionally with no onClick and a tooltip
+              reading "Ask your administrator to enable SSO" — a control that
+              could be clicked and did nothing. A button that cannot work is
+              better absent than present. Same markup, same position, same
+              styling: this is a wiring change, not a redesign. */}
+          {ssoEnabled && (
+            <>
+              <div className="mt-[18px] flex items-center gap-3">
+                <span className="flex-1 border-t border-[#E2E8F0]" />
+                <span className="text-[11px] font-medium tracking-[.14em] text-[#94A3B8]">
+                  OR CONTINUE WITH
+                </span>
+                <span className="flex-1 border-t border-[#E2E8F0]" />
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  // A full navigation, not fetch(): the provider answers with a
+                  // redirect to its own login page, which the browser has to
+                  // follow at the top level. An XHR would follow it invisibly
+                  // and land the HTML of somebody else's login page in a
+                  // response body.
+                  window.location.href =
+                    (process.env.NEXT_PUBLIC_API_URL || "") + "/api/auth/sso/login"
+                }}
+                className="mt-3 flex h-12 w-full items-center justify-center gap-[9px] rounded-[11px] border border-[#E2E8F0] bg-[#F8FAFC] px-4 text-[14px] font-medium text-[#0F172A] transition-colors hover:bg-[#F1F5F9]"
+              >
+                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden>
+                  <path
+                    d="M12 2l8 4v6c0 5-3.5 8-8 10-4.5-2-8-5-8-10V6l8-4z"
+                    stroke="#2563EB"
+                    strokeWidth="1.7"
+                  />
+                </svg>
+                Continue with {ssoLabel}
+              </button>
+            </>
+          )}
         </div>
 
         </div>
