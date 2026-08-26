@@ -39,18 +39,17 @@ AI-powered legal document automation system for Myanmar corporate law. Generate 
 >    A fresh install shows an empty template list until you upload them through
 >    `/admin/templates` or run the one-shot sync shown in **Setup Order** below.
 
-The repositories are **private**. Get a GitHub invite before cloning.
+The repository is **private**. Get a GitHub invite before cloning.
 
-| Remote | URL |
-|---|---|
-| `origin` | `https://github.com/raahulgupta07/CHLLegalScout.git` |
-| `airg` | `git@github.com:raahulgupta07/airg-legal-scout.git` |
+```
+https://github.com/raahulgupta07/rahulai-legal-scout
+```
 
 ### Step 1: Clone
 
 ```bash
-git clone https://github.com/raahulgupta07/CHLLegalScout.git
-cd CHLLegalScout
+git clone https://github.com/raahulgupta07/rahulai-legal-scout.git
+cd rahulai-legal-scout
 ```
 
 ### Step 2: Configure
@@ -247,7 +246,7 @@ docker compose version
 
 ```bash
 cd /opt
-sudo git clone https://github.com/raahulgupta07/CHLLegalScout.git legalscout
+sudo git clone https://github.com/raahulgupta07/rahulai-legal-scout.git legalscout
 sudo chown -R $USER:$USER /opt/legalscout
 cd /opt/legalscout
 
@@ -319,8 +318,8 @@ curl -fsSL https://get.docker.com | sh
 sudo usermod -aG docker $USER
 
 # Clone and configure
-git clone https://github.com/raahulgupta07/CHLLegalScout.git
-cd CHLLegalScout
+git clone https://github.com/raahulgupta07/rahulai-legal-scout.git
+cd rahulai-legal-scout
 ./scripts/setup.sh   # generates secrets, prompts for OpenRouter key + admin login
 
 # Deploy
@@ -637,7 +636,7 @@ docker compose exec scout-api python -m db.migrate
 ## Project Structure
 
 ```
-CHLLegalScout/
+rahulai-legal-scout/
 ├── app/                          # FastAPI backend
 │   ├── main.py                   # API server (50+ endpoints)
 │   ├── model_config.py           # AI model configuration

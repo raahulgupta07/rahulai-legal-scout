@@ -878,12 +878,22 @@ Suite **139 PASS** at the time · Layer 1 **25/25** (before the wipe).
 
 Also landed in that pass: duplicate signature block (sole corporate member signing twice, 5 rows → 3); board-authority guard; cessation honoured on both candidate paths; type-aware member slot assignment; 7 dead skill tool references purged (migration 021) plus a write-time validator in `app/main.py` (`_reject_unknown_skill_tools`); stale `known_locations` removed from `intents.json`; the unfilled badge counting `custom_data` keys instead of template placeholders.
 
-### ★★★ THERE ARE REMOTES, AND THEY ARE PUBLIC
+### ★★★ ONE REMOTE. IT IS PRIVATE. (was: two, public)
 
 Earlier notes in this file said "no remote configured". That is **false** and led to a wrong recommendation (that a history rewrite was cheap because nothing had been published). Two remotes exist and both are **public GitHub repositories**:
 
-- `origin` → `github.com/raahulgupta07/CHLLegalScout`
-- `airg` → `github.com/raahulgupta07/airg-legal-scout`
+**Current state (2026-08-26):** the only remote is
+`origin` → `github.com/raahulgupta07/rahulai-legal-scout`, **private**. Use no
+other repo. The two below were dropped as remotes on 2026-08-26; both still
+exist on GitHub, both private, both holding `8763a9e` as dormant backups:
+
+- ~~`origin` → `github.com/raahulgupta07/CHLLegalScout`~~ — no longer a remote
+- ~~`airg` → `github.com/raahulgupta07/airg-legal-scout`~~ — no longer a remote
+
+The exposure described below was real and is now closed on all three (all
+private since 2026-08-25). The historical record is kept because the blob is
+still in history: if any of these is ever made public again, that has to be
+dealt with first.
 
 Commit `be8d9e4` (2026-03-29) is an ancestor of `main` on **both**, and it contains the real client filing `DICA_Extract_ARCTIC_SUN_COMPANY_LIMITED_20260327.pdf` (44,587 bytes) plus 3 of the firm's `.docx` templates. Verified anonymously retrievable via the GitHub API on 2026-08-06 — roughly four months of exposure. `.env` was NEVER committed (only `example.env`; `/.env` is 404 on both), so no credentials are out.
 
