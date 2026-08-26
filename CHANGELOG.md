@@ -2,6 +2,411 @@
 
 All notable changes to Legal Scout.
 
+## [1.2.52] — 2026-08-26
+
+Phase 4, the last of the sign-in work: **Settings → Authentication**. Every
+directory and provider setting becomes editable from the admin panel, plus the
+sign-in mode and just-in-time provisioning. Nothing changes for a deployment
+that leaves it alone.
+
+### Added
+
+- **`app/auth_settings.py`** — one rule: the environment is the default, a row
+  in `app_settings` overrides it, read fresh on every sign-in. Reuses the table
+  that already holds the model, SMTP and S3 settings, under an `auth.` prefix;
+  a second key/value store for the same job would have been the drift.
+- **Settings → Authentication** — sign-in mode, the directory block, the
+  provider block, both auto-create switches, and a connection test that reads
+  the discovery document and the key set (the same path a real sign-in takes,
+  so a pass means what sign-in depends on actually works).
+- **`signin_mode`** — `local` | `hybrid` (default) | `sso_only`.
+- **Just-in-time provisioning**, off by default for both sources.
+- **`U26a`–`U26t`.**
+
+### The check that stops this being a decorative page
+
+`U26a` fails if `ldap_auth.py` or `oidc.py` reads any variable declared in the
+settings spec straight from the environment. Without it, the failure mode is
+the one this codebase keeps producing: an administrator saves a corrected host,
+the row is written, the page shows the new value, and sign-in goes on using the
+one from `.env` with nothing anywhere to say so. Same family as the dead SSO
+button and the Inactive badge that never fired.
+
+### Rules, and the reason for each
+
+- **Secrets are write-only.** `oidc_client_secret` and `ldap_bind_password` can
+  be saved and cannot be read back; the API reports set / not set. A page that
+  renders a client secret puts it in the DOM, in the browser's memory and in
+  any screenshot of that page. A blank secret on save means *keep*, not
+  *clear* — the form cannot show the current value so it posts blank every
+  time, and treating that as a clear would wipe the secret the first time
+  anybody edited an unrelated field.
+- **Enums are validated before the write, and a rejected save writes nothing.**
+  `signin_mode = "sso-only"` (a hyphen) would store fine, read back as
+  unrecognised and fall through to the default — so a deployment meant to be
+  SSO-only would go on accepting passwords while the page showed exactly what
+  was asked for.
+- **`sso_only` is applied after the password is verified, and always exempts an
+  administrator.** Checked earlier, the differing status code would enumerate
+  which addresses have accounts. Without the exemption, one mistyped provider
+  URL locks every human out — including whoever has to sign in to fix it — and
+  the only way back is editing Postgres by hand.
+- **Just-in-time provisioning removes the typing, not the approval.** `role`
+  and `approved` are SQL literals in `_jit_provision`, which takes no argument
+  for either, so no claim, group, mapper or caller can reach them: an
+  auto-created account is always `role='user'`, always `approved=FALSE`, and
+  lands on the pending screen. `ON CONFLICT DO NOTHING`, because two parallel
+  sign-ins by the same new person is the ordinary case — a browser reloading
+  the callback does it.
+- **Nothing is cached in this process.** Two workers, no shared store: a value
+  cached at import in one is stale in the other the moment somebody saves, so a
+  setting would appear to take effect or not depending on which worker
+  answered. `U26q` guards it, as `U23k` and `U25b` do for the other two.
+
+### An honest note on `ldap_auto_create`
+
+It is the one switch here that genuinely widens the attack surface rather than
+only saving typing. Phase 2 deliberately refused to contact the directory for
+an email with no account, so this public form could not relay arbitrary
+guesses to corporate Active Directory — password spraying, with the account
+lockouts that causes for real staff. "The directory decides who exists" makes
+that relay unavoidable. It is off unless switched on, the settings page says so
+in as many words, and the account still lands pending — but it should not be
+turned on for an internet-facing deployment whose directory locks accounts out.
+The provider equivalent has no such cost: the person authenticates at the
+provider and no credential passes through here.
+
+### Landmine, caught again by its own guard
+
+`LDAP_AUTO_CREATE` and `OIDC_AUTO_CREATE` were added to the settings spec and
+**not** to `compose.yaml`, so they would never have reached the container — the
+same allowlist trap that made `LDAP_ENABLED=true` a no-op in phase 2. `U24n`
+and `U25q`, now driven off `auth_settings.SPEC` rather than off a regex over
+the source, went red naming both variables. Fixed, along with `SIGNIN_MODE`.
+
+### Verified live
+
+An override saved through the admin API changed `/api/auth/config` in the same
+running process with nothing restarted. `signin_mode="sso-only"` refused at the
+write, naming the permitted values. The client secret is stored, never
+returned, absent from the whole payload, and survives an unrelated save.
+
+| sign-in mode | ordinary user | administrator | `/api/auth/sso/login` |
+|---|---|---|---|
+| `hybrid` | 200 | 200 | offered |
+| `sso_only` | **403** — must use single sign-on | **200** | offered |
+| `local` | 200 | 200 | **403** |
+
+The `sso_only` row is the break-glass working: the ordinary account is refused
+and the administrator is not.
+
+## [1.2.50] — 2026-08-26
+
+Phase 3: **single sign-on (OpenID Connect)**. Off by default. The button that
+has been on the sign-in page since it was written now does something.
+
+### Added
+
+- **`app/oidc.py`** — authorization-code flow with PKCE, `state`, `nonce`, and
+  `id_token` verification against the provider's published JWKS.
+- **`GET /api/auth/sso/login` / `GET /api/auth/sso/callback`**.
+- The **existing** SSO button is wired, and now renders only when the server
+  says single sign-on is configured. Same markup, same position, same styling —
+  a wiring change, not a redesign.
+
+### Fixed
+
+- **The SSO button did nothing.** It had no `onClick` at all — only a tooltip
+  reading "Ask your administrator to enable SSO". It has been shipping to the
+  client as a clickable control with no behaviour. It is now either functional
+  or absent: a button that cannot work is better not drawn.
+
+### How the token is verified, and why each rule is there
+
+- **The algorithm is pinned to the asymmetric ones and never read from the
+  token.** Trusting the header's `alg` permits the confusion attack: sign with
+  HS256 using the provider's *public* key as the HMAC secret. Attempted against
+  the running verifier with a hand-crafted token (PyJWT refuses to mint one, so
+  it was built with raw HMAC — an attacker is not using our library): refused.
+- **No "use the first key in the set" fallback.** On a rotation the first key is
+  the new one while the token in hand was signed by the old, so the fallback
+  turns a precise "unknown key id" into a confusing signature error, and invites
+  accepting a token verified against a key it was not signed with. An unknown
+  `kid` refetches the key set exactly once.
+- **Audience accepts `aud` *or* `azp`.** Keycloak puts `aud: "account"` in its
+  id_tokens and names the client in `azp`, so a plain audience check rejects
+  every real login against a default realm. Skipping the check entirely would
+  accept a token minted for a different application on the same realm.
+- **`state` is checked against a signed, HttpOnly cookie.** Without it an
+  attacker hands somebody a callback URL carrying the attacker's own
+  authorization code, signing that person into the attacker's account, where
+  everything they then do is visible to the attacker.
+- **The token is handed back in the URL FRAGMENT.** The frontend is a static
+  export with no server route that could receive it, so it has to arrive in the
+  URL — and a fragment is never sent to the server, never written into an access
+  log and never carried in a `Referer` header. It is stripped from the address
+  bar on arrival so it does not sit in history.
+- **`SameSite=Lax`, deliberately not `Strict`.** The callback is a top-level
+  navigation from the provider's domain; `Strict` would withhold the flow cookie
+  and every sign-in would fail as "no sign-in cookie", reading like a browser
+  fault rather than a configuration one.
+- **No state is kept in this process.** Two uvicorn workers, no shared store —
+  anything stashed in module memory by `/sso/login` is absent when the callback
+  lands on the other worker, and sign-in would fail about half the time while
+  looking like an intermittent provider fault. `U25b` fails on any mutable
+  module-level state in `app/oidc.py`; the first draft had exactly that, in a
+  `_pending_nonce` dict, and it was removed before it ran.
+
+### The provider proves identity. It grants nothing.
+
+No just-in-time provisioning on this path: an authenticated stranger with no
+Legal Scout account is refused, not created. Roles are never read from the
+token, so whoever administers the realm cannot make themselves a Legal Scout
+administrator with a group mapping. And SSO does **not** walk past phase 1 —
+the same approval gate applies, with the same wording.
+
+### Verified against a live Keycloak 26
+
+A throwaway realm, confidential client, PKCE S256, fictional user; the whole
+flow driven end to end (authorize → login form → callback), then torn down.
+
+| case | result |
+|---|---|
+| correct password, account exists and approved | **token issued** |
+| wrong password | refused at Keycloak, never reaches us |
+| authenticated, but no Legal Scout account | refused — "ask an administrator" |
+| forged `state` on the callback | refused |
+| forged `code` on the callback | refused |
+| approval revoked, then sign in again | refused — pending approval |
+| account disabled, then sign in again | refused — disabled |
+
+`auth_sources` merged to `{local,oidc}`; role untouched; the issued token works
+on `/api/` and on the AgentOS routes.
+
+**Forged tokens, put through the real verifier — 6 attempted, 0 accepted:**
+
+| forgery | outcome |
+|---|---|
+| HS256 signed with the provider's public key | refused on algorithm |
+| `alg=none` | refused on algorithm |
+| RS256 signed by an unrelated key, real `kid` | refused on signature |
+| RS256 with a `kid` absent from the key set | refused — no key, no fallback |
+| **genuinely signed by Keycloak, minted for another client on the same realm** | refused on audience |
+| wrong issuer | refused |
+
+The audience row is the one worth noting: two of the earlier forgeries failed on
+*signature* rather than on the specific check, because they were signed with my
+own key. So a second client was created on the same realm and a real token
+minted with Keycloak's own signing key — valid signature, correct issuer, only
+the audience different. Refused, naming `aud` and `azp`.
+
+## [1.2.49] — 2026-08-26
+
+Phase 2 of LDAP/SSO: **directory sign-in**. Off by default. **No change to the
+sign-in screen** — a directory sign-in uses the same email and password fields,
+because the directory is a fallback behind the local password rather than a
+second way in.
+
+### Added
+
+- **`app/ldap_auth.py`** — bind as a read-only service account, search for the
+  person, then **rebind as their own DN** with the password they typed. Only
+  that last step proves anything: binding as the service account proves the
+  service account's password, and finding an entry proves only that the entry
+  exists. A version that stopped after the search would admit anybody named in
+  the directory, with any password.
+- **`migration_031`** makes `hashed_password` nullable, so an account can exist
+  with no Legal Scout password at all. Leave the password blank in Settings →
+  Users and the person signs in with their directory password; nothing is
+  stored here for them. Generating a random password instead would have left a
+  real, never-rotated local credential on an account whose whole purpose was to
+  have none.
+- **`GET /api/auth/config`** — public, booleans and a display label only. No
+  host, no bind DN, no filter: it is served to anyone who can reach the login
+  page, and it says nothing about any particular account.
+- **`U24a`–`U24n`.**
+
+### Security properties, and why each is written the way it is
+
+- **Empty passwords are refused before any bind.** A simple bind with a valid
+  DN and a zero-length password is an *unauthenticated* simple bind (RFC 4513
+  §5.1.2), and some Active Directory deployments answer **success** — on those,
+  knowing any provisioned address would be enough to sign in as that person.
+  The guard is in `authenticate()`, not only in the endpoint, because this is
+  the function that decides whether a password is right.
+- **Plaintext binds are refused, not warned about.** The flow rebinds as the
+  user, so their password crosses the wire on every sign-in. A warning is a log
+  line nobody reads until after the credentials have been collected, and
+  nothing looks broken meanwhile. `LDAP_ALLOW_INSECURE=true` is the explicit
+  override.
+- **The directory is only consulted for an account that already exists, and
+  only after the local password failed.** Trying it first, or for unknown
+  emails, turns a public login form into a password-spraying proxy for Active
+  Directory — with the account lockouts that causes for real staff.
+- **The address the directory returns must match the one signing in.** A filter
+  that matched a different entry — an alias, a shared mailbox, a filter someone
+  widened — would otherwise sign whoever holds *that* password into *this*
+  account.
+- **Nothing on this path writes a role or an approval.** The directory proves
+  who someone is; the `users` table decides what they may do. Whoever
+  administers the corporate directory cannot make themselves a Legal Scout
+  administrator by editing a group.
+- **Every failure answers with the same flat 401.** "No such entry", "wrong
+  password" and "the directory is unreachable" told apart are an enumeration
+  oracle; the distinction goes to the log, where an administrator needs it and
+  an attacker cannot read it.
+
+### Landmine closed: compose's `environment:` is an ALLOWLIST
+
+Setting `LDAP_ENABLED=true` in `.env` did **nothing**. `compose.yaml` names
+each variable it passes through, so anything not listed never reaches the
+container and the app silently reads its default: `/api/auth/config` answered
+`"ldap_enabled": false`, no directory was ever contacted, every directory
+sign-in failed as an ordinary wrong password, and there was no error anywhere
+to explain it. Found by running it, not by reading it. `U24n` now asserts that
+every `LDAP_*` variable `app/ldap_auth.py` reads is actually present in the
+container's environment — checked at runtime rather than by parsing
+`compose.yaml`, which is not in the image and would only have produced a skip.
+Mutation-tested by removing one variable: red, naming the variable.
+
+### Verified against a real OpenLDAP
+
+A throwaway directory on the compose network, fictional people, torn down
+afterwards:
+
+| case | result |
+|---|---|
+| directory user, correct directory password | **200** |
+| directory user, wrong password | 401 |
+| directory user, empty password | 401 |
+| in the directory, no Legal Scout account | 401 |
+| `*)(objectClass=*` as the username | 401 |
+| local admin, unchanged | 200 |
+
+The merge was exercised separately: an account created with a local password
+signs in locally (`auth_sources = {local}`), then signs in with its directory
+password (`{local,ldap}`), then again (**still** `{local,ldap}` — idempotent),
+with the local password still working and the role untouched.
+
+**Honest limit.** The positive case above was proven over plaintext with the
+explicit insecure override, because the test image's own TLS was broken — its
+bundled certificate had expired, and after replacing it slapd still aborted the
+handshake at the socket level, from a plain Python client as well as from the
+app. TLS enforcement and certificate validation were proven separately, and by
+genuine negative controls rather than by assertion: the no-TLS config was
+refused before any bind, and the expired certificate was rejected by
+verification. What has **not** been exercised end to end is one successful
+sign-in over validated TLS.
+
+## [1.2.47] — 2026-08-26
+
+Phase 1 of LDAP/SSO groundwork: the approval gate. No directory and no identity
+provider yet — this is the control that makes adding them safe, and it ships and
+is useful on its own. **No change to the sign-in screen.**
+
+### Added
+
+- **`users.approved` — an administrator has to let an account in**
+  (`migration_030`). Until now every account was created by an administrator
+  typing it in, so approval was implicit; the only other state was `is_active`.
+  That stops holding the moment a directory can authenticate somebody this
+  application has never heard of. Also adds `auth_sources TEXT[]` — a list, not
+  a value, so one person holding a local password *and* arriving through a
+  directory stays one row with one role rather than two rows that drift apart.
+
+- **`POST /api/admin/users/{id}/approval`** — approve or refuse, with its own
+  audit line. Refusing holds the row at `approved = false` rather than deleting
+  it: a deleted account is re-created by the same person simply signing in
+  again, so the refusal would have to be repeated every time.
+
+- **Settings → Users** gains a `Signs in via` column, an `Access` column, a
+  pending banner, a Pending stat card and Approve/Refuse actions on pending
+  rows only.
+
+- **`U23a`–`U23j`** in `tests/test_units.py`. The structural cases walk the AST
+  rather than grepping — the comments around this feature contain the exact
+  strings a regex would look for, so a text-scan version of `U23d` would pass
+  with the gate deleted and the explanation left behind.
+
+### Fixed
+
+- **A disabled account rendered as Active in the admin panel.**
+  `GET /api/admin/users` returns `is_active`; `UsersView.tsx` read `u.status`,
+  which the API has never sent. Every read was `undefined`, the `|| "active"`
+  fallback beside each one always won, so the green Active badge showed on
+  disabled accounts, the Inactive stat card sat permanently at 0 and `rowTone`
+  never fired. Third decorative control found on this page's stack this week.
+
+### Landmines closed before they shipped
+
+- **The middleware decodes a JWT in two places, and only one is obvious.**
+  One branch guards the AgentOS/static roots (`/agents`, `/sessions`, the run
+  stream, the documents tree), the other guards `/api/`. Gating only `/api/`
+  locks a refused account out of the admin panel while leaving chat, the agent
+  and document generation working — the entire product, behind a control that
+  looks present. Measured against a deliberately half-gated build, refused
+  account, same still-valid token:
+
+  | surface | both gates | `/api/` gate only |
+  |---|---|---|
+  | `GET /api/auth/me` | 403 | 403 |
+  | `GET /sessions` | 403 | **200** |
+  | `POST /agents/scout/runs` | 403 | **200** |
+
+  `U23d` counts the calls in the AST and fails on either deletion; both
+  mutations were run and both turned it red.
+
+- **The background training worker would have locked itself out.**
+  `training_jobs.py:376` mints `create_token(0, "system@training", "admin")` and
+  drives the 15-step pipeline through this app's own HTTP endpoints, so it
+  passes the same gate a browser does. `users.id` is `SERIAL` from 1, so id 0
+  matches no row and fails closed — killing all template training, and
+  surfacing as a per-template 403 in a job log rather than as anything that
+  looks like an auth problem. Carved out as `SYSTEM_USER_ID`, which grants
+  nothing: minting that token already requires `JWT_SECRET_KEY`.
+
+- **The seeded admin would have come up pending.** `approved` defaults to
+  FALSE, and the bootstrap `INSERT` did not name it — so on a fresh install the
+  only row in the table would have been unapproved, with nobody left who could
+  approve it. `U23f` fails on any `INSERT INTO users` that omits the column.
+
+- **The migration backfills existing accounts to approved.** Without it, the
+  first boot after deploy locks out every account including the administrator
+  running it. Safe precisely because every pre-existing row was hand-created.
+
+- **An in-process cache made revocation a coin flip, and nearly shipped.**
+  The gate first cached its answer for 30s in a module-level dict, busted on
+  every write. That reasoning is sound in one process and wrong in two:
+  `Dockerfile:92` runs `--workers 2`, so a bust reaches only the worker that
+  served the write while the other keeps serving its cached answer. Measured on
+  the baked image, refused account, token still valid:
+
+  | surface | with the 30s in-process cache | without |
+  |---|---|---|
+  | `GET /api/auth/me` | 403 | 403 |
+  | `GET /sessions` | **200** | 403 |
+  | `POST /agents/scout/runs` | **200** | 403 |
+
+  Identical to the half-gated failure above — and worse than a slow revocation,
+  because it is non-deterministic: refused here, admitted there, depending on
+  which worker answers. It also means the hand-verification that had already
+  "passed" this check passed on a coin flip. `_APPROVAL_TTL` is now `0`, and
+  `U23k` reads the worker count out of the Dockerfile so it cannot be raised
+  again without a shared store. Re-verified with 30 consecutive hits per
+  surface rather than one: **90 of 90 refused, zero stale.**
+
+### Notes
+
+- Approval is read from the **database on every request**, not from the token,
+  so revocation is not deferred to token expiry and does not depend on which
+  worker answers. The cost is one connection and one indexed lookup per
+  request; `get_db_conn()` has no pool, which is the thing to fix if this ever
+  shows up in a latency measurement. Middleware runs once per HTTP request, so
+  an open SSE stream pays it once, not once per chunk.
+- Login answers 403 with `pending_approval: true`, and does so **after** the
+  password check, so the differing status code cannot be used to enumerate
+  which addresses have accounts.
+
 ## [1.2.45] — 2026-08-26
 
 ### Fixed

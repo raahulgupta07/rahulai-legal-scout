@@ -93,6 +93,48 @@ services:
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:?Set JWT_SECRET_KEY in .env — run scripts/setup.sh}
       ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@legalscout.com}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in .env — run scripts/setup.sh}
+      # ★★★ This `environment:` block is an ALLOWLIST, not a passthrough. A
+      # variable set in .env and NOT named here never reaches the container,
+      # and nothing reports that: the app simply reads its default. Setting
+      # LDAP_ENABLED=true in .env without these lines produces a deployment
+      # where /api/auth/config answers `"ldap_enabled": false`, no directory is
+      # ever contacted, every directory sign-in fails as a wrong password, and
+      # there is no error anywhere to explain it. Guarded by U24n, which fails
+      # if app/ldap_auth.py reads a variable this file does not pass through.
+      LDAP_ENABLED: "${LDAP_ENABLED:-false}"
+      LDAP_HOST: "${LDAP_HOST:-}"
+      LDAP_PORT: "${LDAP_PORT:-636}"
+      LDAP_USE_SSL: "${LDAP_USE_SSL:-true}"
+      LDAP_START_TLS: "${LDAP_START_TLS:-false}"
+      LDAP_VALIDATE_CERT: "${LDAP_VALIDATE_CERT:-true}"
+      LDAP_CA_CERT_FILE: "${LDAP_CA_CERT_FILE:-}"
+      LDAP_BIND_DN: "${LDAP_BIND_DN:-}"
+      LDAP_BIND_PASSWORD: "${LDAP_BIND_PASSWORD:-}"
+      LDAP_BASE_DN: "${LDAP_BASE_DN:-}"
+      LDAP_USER_FILTER: "${LDAP_USER_FILTER:-(mail={username})}"
+      LDAP_EMAIL_ATTR: "${LDAP_EMAIL_ATTR:-mail}"
+      LDAP_NAME_ATTR: "${LDAP_NAME_ATTR:-cn}"
+      LDAP_LABEL: "${LDAP_LABEL:-Corporate directory}"
+      LDAP_TIMEOUT: "${LDAP_TIMEOUT:-8}"
+      LDAP_ALLOW_INSECURE: "${LDAP_ALLOW_INSECURE:-false}"
+      LDAP_AUTO_CREATE: "${LDAP_AUTO_CREATE:-false}"
+      # Single sign-on. Same allowlist rule as the LDAP block above — a
+      # variable not named here never reaches the container, whatever .env
+      # says. Guarded by U25n.
+      OIDC_ENABLED: "${OIDC_ENABLED:-false}"
+      OIDC_DISCOVERY_URL: "${OIDC_DISCOVERY_URL:-}"
+      OIDC_CLIENT_ID: "${OIDC_CLIENT_ID:-}"
+      OIDC_CLIENT_SECRET: "${OIDC_CLIENT_SECRET:-}"
+      OIDC_REDIRECT_URI: "${OIDC_REDIRECT_URI:-}"
+      OIDC_SCOPES: "${OIDC_SCOPES:-openid email profile}"
+      OIDC_LABEL: "${OIDC_LABEL:-single sign-on}"
+      OIDC_PROVIDER_TYPE: "${OIDC_PROVIDER_TYPE:-keycloak}"
+      OIDC_REQUIRE_VERIFIED_EMAIL: "${OIDC_REQUIRE_VERIFIED_EMAIL:-true}"
+      OIDC_TIMEOUT: "${OIDC_TIMEOUT:-10}"
+      OIDC_AUTO_CREATE: "${OIDC_AUTO_CREATE:-false}"
+      # Sign-in mode. `local` | `hybrid` | `sso_only`. Overridable from
+      # the Authentication settings tab, which is the usual way to set it.
+      SIGNIN_MODE: "${SIGNIN_MODE:-hybrid}"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s

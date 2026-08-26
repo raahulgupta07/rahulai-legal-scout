@@ -9,6 +9,7 @@ import {
   Brain,
   Cloud,
   Database,
+  KeyRound,
   Download,
   Eye,
   EyeOff,
@@ -26,6 +27,7 @@ import { authFetch } from "@/lib/api-client"
 import { toast } from "sonner"
 import { cn } from "@/lib/utils"
 import UsersView from "../users/UsersView"
+import AuthPanel from "./AuthPanel"
 import KnowledgeView from "../knowledge/KnowledgeView"
 import { RANK, getRole, useUserRole } from "../roleClient"
 import {
@@ -112,7 +114,7 @@ const TIMEZONES = [
   ] },
 ]
 
-type Tab = "models" | "email" | "system" | "activity" | "users" | "knowledge"
+type Tab = "models" | "email" | "system" | "activity" | "users" | "auth" | "knowledge"
 
 /**
  * Tabs with the minimum role that may see each. The four configuration tabs
@@ -125,6 +127,7 @@ const SETTINGS_TABS: { id: Tab; label: string; icon: React.ReactNode; minRole: s
   { id: "system", label: "System", icon: <HardDrive className="w-3.5 h-3.5" />, minRole: "admin" },
   { id: "activity", label: "Activity", icon: <BarChart3 className="w-3.5 h-3.5" />, minRole: "admin" },
   { id: "users", label: "Users", icon: <Shield className="w-3.5 h-3.5" />, minRole: "admin" },
+  { id: "auth", label: "Authentication", icon: <KeyRound className="w-3.5 h-3.5" />, minRole: "admin" },
   { id: "knowledge", label: "Knowledge", icon: <Brain className="w-3.5 h-3.5" />, minRole: "editor" },
 ]
 
@@ -513,6 +516,13 @@ function SettingsInner() {
       {active === "users" ? (
         <div className="flex-1 min-h-0 overflow-y-auto">
           <UsersView />
+        </div>
+      ) : active === "auth" ? (
+        // overflow-y-auto, not hidden: the directory and provider sections
+        // expand well past a viewport when both are switched on, and this tab
+        // band clips its children otherwise.
+        <div className="flex-1 min-h-0 overflow-y-auto p-4">
+          <AuthPanel />
         </div>
       ) : active === "knowledge" ? (
         <div className="flex-1 min-h-0 overflow-y-auto">
