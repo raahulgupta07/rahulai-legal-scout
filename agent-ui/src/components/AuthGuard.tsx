@@ -18,7 +18,7 @@ function getUser(): UserInfo | null {
   } catch { return null }
 }
 
-const RANK: Record<string, number> = { user: 0, editor: 1, admin: 2 }
+const RANK: Record<string, number> = { user: 0, editor: 1, admin: 2, super_admin: 3 }
 
 /**
  * Minimum role required to LOAD each admin path. Longest-prefix match wins, so

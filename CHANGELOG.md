@@ -2,6 +2,57 @@
 
 All notable changes to Legal Scout.
 
+## [1.2.63] — 2026-08-26
+
+### Added — `super_admin`, and an honest label for `editor`
+
+The roles were `user` / `editor` / `admin`. `super_admin` was asked for
+repeatedly, and it is a real distinction in a firm: several people manage
+templates, companies and people day to day; far fewer should decide who can
+sign in at all.
+
+- **`migration_032`** widens `chk_users_role`. Without it every attempt to
+  create or promote a super administrator fails as a constraint violation from
+  the database — an opaque 500 rather than anything an administrator could act
+  on. Nothing is promoted by the migration: widening what is allowed and
+  deciding who gets it are separate acts, and the second is the firm's.
+
+- **You cannot grant a role above your own.** That is the whole rule, chosen
+  because it cannot lock anybody out: an admin still creates admins exactly as
+  before, so a deployment with no super administrator keeps working, and only a
+  super administrator can mint another. Enforced on **both** creation and
+  update — checking only creation would be decorative, since you could make a
+  plain user and then edit them upward.
+
+### Fixed
+
+- **`require_admin` compared `role != "admin"` by equality**, which refuses
+  the tier that is meant to do strictly more — on every admin route at once. A
+  brand-new super administrator would have been locked out of the entire panel
+  by the check that exists to admit them. Now compared by rank, as are both
+  `sso_only` break-glass sites.
+
+- **`editor` was labelled "manage registers" and grants nothing beyond
+  `user`.** Every write goes through `require_write`, which demands admin, so
+  an editor was shown the management screens and got 403 on every save — a
+  promise the UI made and the API refused. Relabelled "view only (same as User
+  today)" until it is either given real write access or retired. The honest
+  label is the fix; the capability decision is yours.
+
+### Verified live, not just asserted
+
+| | |
+|---|---|
+| admin creates a super_admin | refused — "You cannot create an account with the super_admin role." |
+| super_admin signs in | 200, role `super_admin` |
+| super_admin reaches `/api/admin/users`, `/auth-settings`, `/activity-logs` | 200, 200, 200 |
+| super_admin creates a super_admin | allowed |
+| admin promotes someone to super_admin | refused — "You cannot grant the super_admin role." |
+
+`U28h`–`U28j` cover the rank gates and both grant paths. Full sweep: units 299,
+`tracker_layer1` 25/25, `tracker_layer2` 30, `tracker_layer3` 16,
+`tracker_fill` 52.
+
 ## [1.2.62] — 2026-08-26
 
 ### Added — a guard against the wrong legal instrument

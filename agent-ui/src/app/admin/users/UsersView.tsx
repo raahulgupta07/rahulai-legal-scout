@@ -74,18 +74,25 @@ interface ActivityLog {
 const API_BASE = `${process.env.NEXT_PUBLIC_API_URL || ""}/api/admin`
 
 const ROLE_OPTIONS = [
-  { value: "user", label: "User — chat only" },
-  { value: "editor", label: "Editor — manage registers" },
-  { value: "admin", label: "Admin — full access" },
+  { value: "user", label: "User — view only" },
+  // ★ `editor` grants nothing beyond `user` on the server today: every write
+  // goes through require_write, which demands admin. Saying "manage registers"
+  // here was a promise the API refused — an editor was shown the management
+  // screens and got 403 on every save. Labelled honestly until it is either
+  // given real write access or retired.
+  { value: "editor", label: "Editor — view only (same as User today)" },
+  { value: "admin", label: "Admin — can change everything" },
+  { value: "super_admin", label: "Super admin — Admin, and can create other super admins" },
 ]
 
-const ROLE_TONE: Record<string, Tone> = { admin: "danger", editor: "info", user: "neutral" }
+const ROLE_TONE: Record<string, Tone> = { super_admin: "danger", admin: "danger", editor: "info", user: "neutral" }
 
 /** What each role can actually reach, mirroring the sidebar's gating. */
 const ROLE_SCOPE: Record<string, string> = {
+  super_admin: "Everything, including users and sign-in settings",
   admin: "Everything, including users and settings",
   editor: "Templates, companies, people and knowledge",
-  user: "Chat, documents and emails",
+  user: "Chat, documents, and read-only access to the registers",
 }
 
 export default function UsersView() {

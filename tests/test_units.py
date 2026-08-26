@@ -2533,6 +2533,65 @@ def test_write_boundary():
     finally:
         m.get_current_user = real
 
+    # --- U28h: super_admin is admitted everywhere admin is ------------------
+    # ★ `require_admin` compared `role != "admin"` by EQUALITY, which refuses
+    # the tier meant to be able to do strictly more — and it does so on every
+    # admin route at once, so a brand-new super administrator would have been
+    # locked out of the whole panel by the check that exists to let them in.
+    real2 = m.get_current_user
+    try:
+        for role, allowed in (("super_admin", True), ("admin", True), ("editor", False), ("user", False)):
+            m.get_current_user = lambda _r, _role=role: {"user_id": 1, "email": "x@y.z", "role": _role}
+            for gate in ("require_admin", "require_write"):
+                try:
+                    getattr(m, gate)(_Req(role))
+                    got = True
+                except Exception:
+                    got = False
+                check(
+                    f"U28h-{gate}-{role}",
+                    f"{gate} {'admits' if allowed else 'refuses'} {role}",
+                    got is allowed,
+                    f"{gate}({role}) allowed={got}, expected {allowed}",
+                )
+    finally:
+        m.get_current_user = real2
+
+    # --- U28i: nobody can grant a role above their own ----------------------
+    # Both halves matter. Checking it only on creation is decorative: make a
+    # plain user, then edit them into a super_admin.
+    for actor_role, target, allowed in (
+        ("admin", "admin", True),
+        ("admin", "super_admin", False),
+        ("super_admin", "super_admin", True),
+        ("super_admin", "admin", True),
+        ("editor", "admin", False),
+    ):
+        check(
+            f"U28i-{actor_role}->{target}",
+            f"a {actor_role} {'may' if allowed else 'may not'} grant {target}",
+            m._may_grant({"role": actor_role}, target) is allowed,
+        )
+
+    src_main2 = (REPO / "app" / "main.py").read_text(encoding="utf-8")
+    tree2 = _ast.parse(src_main2)
+    for fname in ("admin_create_user", "admin_update_user"):
+        fn2 = next(
+            (n for n in _ast.walk(tree2)
+             if isinstance(n, (_ast.FunctionDef, _ast.AsyncFunctionDef)) and n.name == fname),
+            None,
+        )
+        called2 = {
+            x.func.id for x in _ast.walk(fn2)
+            if isinstance(x, _ast.Call) and isinstance(x.func, _ast.Name)
+        } if fn2 else set()
+        check(
+            f"U28j-{fname}",
+            f"{fname} enforces the grant rule",
+            "_may_grant" in called2,
+            "a rule checked on only one of the two paths is not a rule",
+        )
+
     # --- U28f: the ranking agrees between server and browser ----------------
     # ROLE_RANK here and RANK in roleClient.ts decide the same thing in two
     # places; if they disagree, the UI offers what the API refuses (or hides

@@ -1613,14 +1613,36 @@ def get_current_user(request: Request) -> dict:
 # management screens and got 403 on every write they attempted — a promise the
 # UI made and the API refused. It is kept here so existing rows stay valid and
 # so the ranking is written down in one place.
-ROLE_RANK = {"user": 0, "editor": 1, "admin": 2}
+ROLE_RANK = {"user": 0, "editor": 1, "admin": 2, "super_admin": 3}
 
 
 def require_admin(request: Request) -> dict:
+    """Admin or above.
+
+    ★ Compared by RANK, not by equality. `role != "admin"` refuses
+    `super_admin` — the tier that is meant to be able to do strictly more —
+    and it does it on every admin route at once, so the symptom would be a
+    brand-new super administrator locked out of the entire admin panel.
+    """
     user = get_current_user(request)
-    if not user or user.get("role") != "admin":
+    if not user or ROLE_RANK.get(user.get("role", "user"), 0) < ROLE_RANK["admin"]:
         raise HTTPException(status_code=403, detail="Admin access required")
     return user
+
+
+def _may_grant(actor: dict, target_role: str) -> bool:
+    """May this account hand out `target_role`?
+
+    ★ You cannot grant a role above your own. That is the entire rule, and it
+    is chosen because it cannot lock anybody out: an admin can still create
+    admins exactly as before, so a deployment with no super_admin at all keeps
+    working, and only a super_admin can mint another super_admin.
+
+    A rule like "only a super_admin may create admins" would have been a
+    lockout on every existing deployment — there are none yet, so nobody could
+    have created the first one.
+    """
+    return ROLE_RANK.get(actor.get("role", "user"), 0) >= ROLE_RANK.get(target_role, 99)
 
 
 def require_write(request: Request) -> dict:
@@ -2131,7 +2153,7 @@ def _session_response(request: Request, row, how: str) -> JSONResponse:
         mode = _auth_settings_mode()
     except Exception:
         mode = "hybrid"
-    if mode == "sso_only" and row[4] != "admin":
+    if mode == "sso_only" and ROLE_RANK.get(row[4], 0) < ROLE_RANK["admin"]:
         return JSONResponse(
             status_code=403,
             content={"success": False, "error": "This account must sign in with single sign-on.", "sso_only": True},
@@ -2355,7 +2377,7 @@ async def auth_login(request: Request):
             _mode = _auth_settings_mode()
         except Exception:
             _mode = "hybrid"
-        if _mode == "sso_only" and row[4] != "admin":
+        if _mode == "sso_only" and ROLE_RANK.get(row[4], 0) < ROLE_RANK["admin"]:
             return JSONResponse(
                 status_code=403,
                 content={
@@ -2799,8 +2821,10 @@ async def admin_create_user(request: Request):
             return {"success": False, "error": "Invalid email format"}
         if password and len(password) < 10:
             return {"success": False, "error": "Password must be at least 10 characters"}
-        if role not in ("user", "editor", "admin"):
-            return {"success": False, "error": "Role must be user, editor, or admin"}
+        if role not in ROLE_RANK:
+            return {"success": False, "error": f"Role must be one of: {', '.join(ROLE_RANK)}"}
+        if not _may_grant(admin, role):
+            return {"success": False, "error": f"You cannot create an account with the {role} role."}
 
         conn = get_db_conn()
         cur = conn.cursor()
@@ -2854,8 +2878,16 @@ async def admin_update_user(user_id: int, request: Request):
             updates.append("full_name = %s")
             params.append(body["name"])
         if "role" in body:
+            # Same rule as creation: you cannot promote anybody above your own
+            # rank. Without this the grant check on creation is decorative —
+            # make a plain user, then edit them into a super_admin.
+            new_role = body["role"]
+            if new_role not in ROLE_RANK:
+                return {"success": False, "error": f"Role must be one of: {', '.join(ROLE_RANK)}"}
+            if not _may_grant(admin, new_role):
+                return {"success": False, "error": f"You cannot grant the {new_role} role."}
             updates.append("role = %s")
-            params.append(body["role"])
+            params.append(new_role)
         if "is_active" in body:
             updates.append("is_active = %s")
             params.append(body["is_active"])

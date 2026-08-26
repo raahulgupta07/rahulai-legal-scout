@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react"
 
 /** Role precedence, mirroring the sidebar and AuthGuard. */
-export const RANK: Record<string, number> = { user: 0, editor: 1, admin: 2 }
+export const RANK: Record<string, number> = { user: 0, editor: 1, admin: 2, super_admin: 3 }
 
 /** Synchronous read of the stored role. Client-only (touches localStorage). */
 export function getRole(): string {

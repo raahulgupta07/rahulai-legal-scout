@@ -60,7 +60,7 @@ const NAV: NavItem[] = [
   { name: 'Settings', href: '/admin/settings', Icon: Settings, minRole: 'admin' }
 ]
 
-const RANK: Record<string, number> = { user: 0, editor: 1, admin: 2 }
+const RANK: Record<string, number> = { user: 0, editor: 1, admin: 2, super_admin: 3 }
 
 interface AppRailProps {
   /** Called after any navigation — used to close the mobile drawer. */
