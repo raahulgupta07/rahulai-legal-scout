@@ -27,6 +27,7 @@ app's own sidebar and can be read back by a human afterwards.
 Run:  ADMIN_PASSWORD=... python3 tests/tracker_layer3.py
 """
 
+import io
 import json
 import os
 import re
@@ -34,7 +35,6 @@ import sys
 import time
 import urllib.request
 import zipfile
-import io
 
 BASE = os.environ.get("SCOUT_BASE", "http://localhost:8080")
 EMAIL = os.environ.get("ADMIN_EMAIL", "admin@legalscout.com")
@@ -48,9 +48,7 @@ BOUNDARY = "----scoutTracker"
 def _encode(fields):
     parts = []
     for k, v in fields.items():
-        parts.append(
-            f"--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"{k}\"\r\n\r\n{v}\r\n"
-        )
+        parts.append(f'--{BOUNDARY}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n')
     parts.append(f"--{BOUNDARY}--\r\n")
     return "".join(parts).encode()
 
@@ -112,8 +110,7 @@ def _consume(resp):
 def start(token, message, session_id, user_id):
     req = urllib.request.Request(
         f"{BASE}/agents/scout/runs",
-        data=_encode({"message": message, "stream": "true",
-                      "session_id": session_id, "user_id": str(user_id)}),
+        data=_encode({"message": message, "stream": "true", "session_id": session_id, "user_id": str(user_id)}),
         method="POST",
     )
     req.add_header("Content-Type", f"multipart/form-data; boundary={BOUNDARY}")
@@ -147,8 +144,9 @@ def answer_pause(token, paused, answers, session_id, user_id):
 
     req = urllib.request.Request(
         f"{BASE}/agents/{agent_id}/runs/{run_id}/continue",
-        data=_encode({"tools": json.dumps(payload), "stream": "true",
-                      "session_id": session_id, "user_id": str(user_id)}),
+        data=_encode(
+            {"tools": json.dumps(payload), "stream": "true", "session_id": session_id, "user_id": str(user_id)}
+        ),
         method="POST",
     )
     req.add_header("Content-Type", f"multipart/form-data; boundary={BOUNDARY}")
@@ -226,9 +224,7 @@ def decide(paused, plan):
                     )
             if chosen is not None:
                 answers["selected"] = json.dumps(chosen)
-                described.append(
-                    f"{purpose or 'choose person'} → {chosen.get('name') or chosen.get('label')}"
-                )
+                described.append(f"{purpose or 'choose person'} → {chosen.get('name') or chosen.get('label')}")
     return answers, described
 
 
@@ -248,8 +244,13 @@ CASES = [
         "id": "E1",
         "prompt": "Prepare a shareholders meeting minutes for director appointment only for City Holdings",
         "person": "SOE MOE THU",
-        "answers": {"meeting date": "2026-09-15", "pronoun": "he",
-                    "date": "2026-09-15", "auditor": "", "financial year": ""},
+        "answers": {
+            "meeting date": "2026-09-15",
+            "pronoun": "he",
+            "date": "2026-09-15",
+            "auditor": "",
+            "financial year": "",
+        },
         "default_answer": "",
         # What must physically appear in the exported .docx.
         "expect_in_doc": ["SOE MOE THU", "CITY HOLDINGS LIMITED"],
@@ -296,13 +297,13 @@ CASES = [
         # old bug. On a FAIL here, read the document and find WHICH slot the name
         # landed in before calling it a regression.
         "id": "E3",
-        "prompt": ("Prepare a shareholders resolution in writing for director "
-                   "appointment for City Mart Holding Company Limited"),
+        "prompt": (
+            "Prepare a shareholders resolution in writing for director "
+            "appointment for City Mart Holding Company Limited"
+        ),
         "person": "PHYOE MIN KYAW",
-        "person_for": {"authoriz": "PHYOE MIN KYAW", "represent": "PHYOE MIN KYAW",
-                       "signator": "PHYOE MIN KYAW"},
-        "answers": {"date": "2026-10-01", "new director": "AUNG KYAW MOE",
-                    "identification": "NRC", "pronoun": "he"},
+        "person_for": {"authoriz": "PHYOE MIN KYAW", "represent": "PHYOE MIN KYAW", "signator": "PHYOE MIN KYAW"},
+        "answers": {"date": "2026-10-01", "new director": "AUNG KYAW MOE", "identification": "NRC", "pronoun": "he"},
         "default_answer": "",
         "expect_ask": ["authoriz|represent|signator"],
         "expect_in_doc": ["PHYOE MIN KYAW", "CITY HOLDINGS LIMITED"],
@@ -315,8 +316,7 @@ CASES = [
         # CHOSEN. PHYOE MIN KYAW is also the appointed director here, so he is in
         # the document either way — which is exactly how two runs passed with
         # KYAW THU SOE (directors[0]) signing for the member.
-        "expect_after": [{"marker": "represented by its authorized director",
-                          "value": "PHYOE MIN KYAW"}],
+        "expect_after": [{"marker": "represented by its authorized director", "value": "PHYOE MIN KYAW"}],
     },
     {
         # HARDEST. A corporate member TWO levels up, where the two boards are
@@ -334,12 +334,17 @@ CASES = [
         # director. A guard that simply preferred "someone from this document's
         # company" would reject him wrongly, so the case asserts he IS accepted.
         "id": "E4",
-        "prompt": ("Prepare a shareholders resolution in writing for director "
-                   "appointment for CM Foods Company Limited"),
+        "prompt": (
+            "Prepare a shareholders resolution in writing for director appointment for CM Foods Company Limited"
+        ),
         "person": "KYAW THU SOE",
-        "person_for": {"authoriz": "KYAW THU SOE", "represent": "KYAW THU SOE",
-                       "signator": "KYAW THU SOE",
-                       "new director": "MYO MIN KYAW", "appoint": "MYO MIN KYAW"},
+        "person_for": {
+            "authoriz": "KYAW THU SOE",
+            "represent": "KYAW THU SOE",
+            "signator": "KYAW THU SOE",
+            "new director": "MYO MIN KYAW",
+            "appoint": "MYO MIN KYAW",
+        },
         "answers": {"date": "2026-11-05", "identification": "NRC", "pronoun": "he"},
         "default_answer": "",
         "expect_ask": ["authoriz|represent|signator"],
@@ -349,8 +354,7 @@ CASES = [
         # the wrong register was consulted.
         "forbid_in_doc": ["SOE MOE THU"],
         "expect_count": {"CITY MART HOLDING COMPANY LIMITED": 1},
-        "expect_after": [{"marker": "represented by its authorized director",
-                          "value": "KYAW THU SOE"}],
+        "expect_after": [{"marker": "represented by its authorized director", "value": "KYAW THU SOE"}],
     },
     {
         # The contrast that makes E3/E4 mean something. Two members, both
@@ -358,8 +362,9 @@ CASES = [
         # representative line at all. Without this, a bug that collapsed every
         # member list to a single corporate block would still pass E3 and E4.
         "id": "E5",
-        "prompt": ("Prepare a shareholders resolution in writing for director "
-                   "appointment for Commerce Ace Company Limited"),
+        "prompt": (
+            "Prepare a shareholders resolution in writing for director appointment for Commerce Ace Company Limited"
+        ),
         "person": "WIN WIN TINT",
         "person_for": {"new director": "MYO MIN KYAW", "appoint": "MYO MIN KYAW"},
         "answers": {"date": "2026-11-12", "identification": "NRC", "pronoun": "she"},
@@ -391,50 +396,55 @@ CASES = [
         # 2027" is nowhere in the data, so finding it in the .docx proves the
         # supplied value was used, and finding any OTHER date proves it was not.
         "id": "N5a",
-        "prompt": ("Prepare a director consent form (non group member) for Win Win "
-                   "Tint to appoint in a new company. Use information of Win Win "
-                   "Tint from people database"),
+        "prompt": (
+            "Prepare a director consent form (non group member) for Win Win "
+            "Tint to appoint in a new company. Use information of Win Win "
+            "Tint from people database"
+        ),
         "person": "WIN WIN TINT",
-        "answers": {"company": "ZENITH ORCHID VENTURES LIMITED",
-                    "date": "07 July 2027",
-                    "nationality": "Myanmar",
-                    "country": "Myanmar",
-                    "registration": "TBC on incorporation"},
+        "answers": {
+            "company": "ZENITH ORCHID VENTURES LIMITED",
+            "date": "07 July 2027",
+            "nationality": "Myanmar",
+            "country": "Myanmar",
+            "registration": "TBC on incorporation",
+        },
         "default_answer": "",
         "expect_ask": ["compan", "date"],
-        "expect_in_doc": ["WIN WIN TINT", "ZENITH ORCHID VENTURES LIMITED",
-                          "07 July 2027"],
+        "expect_in_doc": ["WIN WIN TINT", "ZENITH ORCHID VENTURES LIMITED", "07 July 2027"],
     },
     {
         "id": "N5b",
-        "prompt": ("Prepare an individual shareholder consent form for Win Win Tint "
-                   "using information from people database"),
+        "prompt": (
+            "Prepare an individual shareholder consent form for Win Win Tint using information from people database"
+        ),
         "person": "WIN WIN TINT",
-        "answers": {"company": "ZENITH ORCHID VENTURES LIMITED",
-                    "number of shares": "7,700",
-                    "share": "7,700",
-                    "capital": "77,000,000 MMK",
-                    "amount": "77,000,000 MMK",
-                    "date": "07 July 2027",
-                    "birth": "1 January 1970",
-                    "nationality": "Myanmar"},
+        "answers": {
+            "company": "ZENITH ORCHID VENTURES LIMITED",
+            "number of shares": "7,700",
+            "share": "7,700",
+            "capital": "77,000,000 MMK",
+            "amount": "77,000,000 MMK",
+            "date": "07 July 2027",
+            "birth": "1 January 1970",
+            "nationality": "Myanmar",
+        },
         "default_answer": "",
         "expect_ask": ["compan", "share", "capital|amount"],
-        "expect_in_doc": ["WIN WIN TINT", "ZENITH ORCHID VENTURES LIMITED",
-                          "7,700", "77,000,000"],
+        "expect_in_doc": ["WIN WIN TINT", "ZENITH ORCHID VENTURES LIMITED", "7,700", "77,000,000"],
     },
 ]
 
 
 def run_case(token, user_id, case):
     session = f"E2E {case['id']} — {int(time.time())}"
-    print(f"\n{'='*76}\n[{case['id']}] {case['prompt']}\n  session: {session}", flush=True)
+    print(f"\n{'=' * 76}\n[{case['id']}] {case['prompt']}\n  session: {session}", flush=True)
 
     result = start(token, case["prompt"], session, user_id)
     transcript = []
     nudges = 0
 
-    for turn in range(MAX_TURNS):
+    for _turn in range(MAX_TURNS):
         if result["error"]:
             return {"status": "ERROR", "detail": result["error"], "session": session}
 
@@ -482,15 +492,17 @@ def run_case(token, user_id, case):
     # alternative in case such a route is ever added.
     m = re.search(r"(/api/documents/download/[^\s)\"']+?\.docx|/documents/[^\s)\"']+?\.docx)", body)
     if not m:
-        return {"status": "NO-DOC",
-                "detail": f"no download link; reply={body[:120]!r}",
-                "session": session, "answered": transcript}
+        return {
+            "status": "NO-DOC",
+            "detail": f"no download link; reply={body[:120]!r}",
+            "session": session,
+            "answered": transcript,
+        }
 
     try:
         text = docx_text(token, m.group(1))
     except Exception as e:
-        return {"status": "ERROR", "detail": f"could not read docx: {e}",
-                "session": session, "answered": transcript}
+        return {"status": "ERROR", "detail": f"could not read docx: {e}", "session": session, "answered": transcript}
 
     missing = [v for v in case["expect_in_doc"] if v.lower() not in text.lower()]
 
@@ -518,15 +530,15 @@ def run_case(token, user_id, case):
     # the person it names is also the appointed director and so appears anyway.
     # `expect_after` pins a value to the text that follows a marker.
     misplaced = []
-    for spec in (case.get("expect_after") or []):
+    for spec in case.get("expect_after") or []:
         marker, value = spec["marker"].lower(), spec["value"].lower()
         window = spec.get("within", 160)
         low = text.lower()
         at = low.find(marker)
         if at < 0:
             misplaced.append(f"marker {spec['marker']!r} not in document")
-        elif value not in low[at + len(marker): at + len(marker) + window]:
-            near = text[at + len(marker): at + len(marker) + window]
+        elif value not in low[at + len(marker) : at + len(marker) + window]:
+            near = text[at + len(marker) : at + len(marker) + window]
             near = " ".join(near.split())[:60]
             misplaced.append(f"{spec['value']!r} not after {spec['marker']!r} (found: {near!r})")
 
@@ -537,8 +549,7 @@ def run_case(token, user_id, case):
     # question being asked is the same one, and pinning one spelling fails the
     # case for a reason that has nothing to do with the product.
     joined = " | ".join(transcript).lower()
-    unasked = [v for v in case.get("expect_ask", [])
-               if not any(alt in joined for alt in v.lower().split("|"))]
+    unasked = [v for v in case.get("expect_ask", []) if not any(alt in joined for alt in v.lower().split("|"))]
 
     # The harness announcing its own fallback means the person the case named was
     # never offered — the run proves nothing about who gets chosen.
@@ -560,9 +571,8 @@ def run_case(token, user_id, case):
 
     return {
         "status": "PASS" if not problems else "FAIL",
-        "detail": ("all answers present in the .docx" if not problems
-                   else " · ".join(problems))
-                  + f" · {nudges} silent stop(s) had to be nudged",
+        "detail": ("all answers present in the .docx" if not problems else " · ".join(problems))
+        + f" · {nudges} silent stop(s) had to be nudged",
         "session": session,
         "answered": transcript,
         "file": m.group(1),

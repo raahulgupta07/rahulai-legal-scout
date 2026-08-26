@@ -106,7 +106,7 @@ def _import_module():
         import importlib
 
         return importlib.import_module("scout.tools.repeat_regions"), None
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return None, f"{type(exc).__name__}: {exc}"
 
 
@@ -195,7 +195,7 @@ def _reached_parties(rr, placeholder, family):
         counter = iter(range(1, 100))
         try:
             rr._rewrite_paragraph_block(block, family, {}, COMPANY, {}, counter)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raised = f"{type(exc).__name__} after the guard"
     finally:
         rr._parties_for_family = original
@@ -211,15 +211,23 @@ def _reached_parties(rr, placeholder, family):
 def check_numbered_true(rr):
     """R1 — an explicit position IS a repeating region."""
     bad = [p for p in NUMBERED if not rr._is_numbered(p)]
-    return ("R1", not bad, "_is_numbered True for explicit positions",
-            f"not recognised: {bad}" if bad else f"{len(NUMBERED)}/{len(NUMBERED)}")
+    return (
+        "R1",
+        not bad,
+        "_is_numbered True for explicit positions",
+        f"not recognised: {bad}" if bad else f"{len(NUMBERED)}/{len(NUMBERED)}",
+    )
 
 
 def check_unnumbered_false(rr):
     """R2 — ★ THE GUARD. A lone role placeholder is one party, not a list."""
     bad = [p for p in UNNUMBERED if rr._is_numbered(p)]
-    return ("R2", not bad, "_is_numbered False for un-numbered placeholders",
-            f"WOULD EXPAND: {bad}" if bad else f"{len(UNNUMBERED)}/{len(UNNUMBERED)}")
+    return (
+        "R2",
+        not bad,
+        "_is_numbered False for un-numbered placeholders",
+        f"WOULD EXPAND: {bad}" if bad else f"{len(UNNUMBERED)}/{len(UNNUMBERED)}",
+    )
 
 
 def check_unnumbered_blocks_lookup(rr):
@@ -230,8 +238,7 @@ def check_unnumbered_blocks_lookup(rr):
     lookup is what dragged a company's board into a consent form.
     """
     reached, note = _reached_parties(rr, "resigning_director_name", "signing_director")
-    return ("R3", not reached, "un-numbered placeholder never reaches _parties_for_family",
-            note)
+    return ("R3", not reached, "un-numbered placeholder never reaches _parties_for_family", note)
 
 
 def check_numbered_reaches_lookup(rr):
@@ -263,8 +270,12 @@ def check_families(rr):
         "individual shareholder_2_name": "member",
     }
     wrong = {k: v for k, v in got.items() if v != want[k]}
-    return ("R5", not wrong, "family classifier recognises the three families",
-            f"wrong: {wrong}" if wrong else "signing_director / appointed_director / member")
+    return (
+        "R5",
+        not wrong,
+        "family classifier recognises the three families",
+        f"wrong: {wrong}" if wrong else "signing_director / appointed_director / member",
+    )
 
 
 def check_non_party_is_none(rr):
@@ -351,9 +362,11 @@ def main(argv):
     rr, reason = _import_module()
     if rr is None:
         print(f"SKIP: scout.tools.repeat_regions could not be imported — {reason}")
-        print("  This suite drives the module in-process; with no module there is "
-              "nothing to assert, and reporting a pass here would hide the guard "
-              "being gone.")
+        print(
+            "  This suite drives the module in-process; with no module there is "
+            "nothing to assert, and reporting a pass here would hide the guard "
+            "being gone."
+        )
         print("SUMMARY: 0 checks · 0 failed")
         return 0
 
@@ -366,8 +379,7 @@ def main(argv):
 
     if "--controls" in argv:
         baseline = len(failed)
-        print(f"\ncontrols (fault injected at a seam, restored after) — "
-              f"baseline failures: {baseline}")
+        print(f"\ncontrols (fault injected at a seam, restored after) — baseline failures: {baseline}")
         moved = 0
         for name, apply, must_redden in CONTROLS:
             restore = apply(rr)
@@ -377,26 +389,27 @@ def main(argv):
                 restore()
             mfailed = [r[0] for r in mrows if not r[1]]
             did_move = len(mfailed) != baseline
-            expected = [i for i in must_redden if i in mfailed]
+            [i for i in must_redden if i in mfailed]
             missing = [i for i in must_redden if i not in mfailed]
             ok = did_move and not missing
             moved += 1 if ok else 0
-            print(f"  {'OK ' if ok else 'BAD'} {name:<18} failures {baseline} -> "
-                  f"{len(mfailed)}  red={mfailed}  expected={must_redden}")
+            print(
+                f"  {'OK ' if ok else 'BAD'} {name:<18} failures {baseline} -> "
+                f"{len(mfailed)}  red={mfailed}  expected={must_redden}"
+            )
             if not did_move:
-                print(f"      <<< BROKEN GATE: '{name}' changed nothing. The checks "
-                      f"are not measuring the guard.")
+                print(f"      <<< BROKEN GATE: '{name}' changed nothing. The checks are not measuring the guard.")
             elif missing:
-                print(f"      <<< BROKEN GATE: '{name}' left {missing} green; those "
-                      f"checks do not depend on the seam they claim to.")
-            rows.append((f"C:{name}", ok, f"control {name} moves the number",
-                         f"red={mfailed}"))
+                print(
+                    f"      <<< BROKEN GATE: '{name}' left {missing} green; those "
+                    f"checks do not depend on the seam they claim to."
+                )
+            rows.append((f"C:{name}", ok, f"control {name} moves the number", f"red={mfailed}"))
         print(f"PASS: {moved}/{len(CONTROLS)} controls moved the number.")
 
         # The seams really are restored — a control that leaked would make every
         # later run of this file lie in whichever direction it leaked.
-        rows.extend([(f"{cid}!", ok, f"{name} (after controls)", detail)
-                     for cid, ok, name, detail in run_checks(rr)])
+        rows.extend([(f"{cid}!", ok, f"{name} (after controls)", detail) for cid, ok, name, detail in run_checks(rr)])
         failed = [r for r in rows if not r[1]]
     else:
         print("\n(controls not run — pass --controls to prove the checks can go red)")

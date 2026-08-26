@@ -9,7 +9,6 @@ Usage:
     from app.s3_storage import s3_upload, s3_download, s3_delete, s3_test, is_s3_enabled
 """
 
-import os
 import json
 import logging
 import threading
@@ -26,6 +25,7 @@ def _get_s3_config() -> dict:
     conn = None
     try:
         from db.connection import get_db_conn
+
         conn = get_db_conn()
         cur = conn.cursor()
         cur.execute("SELECT value FROM app_settings WHERE key = %s", (S3_CONFIG_KEY,))
@@ -46,13 +46,15 @@ def save_s3_config(config: dict):
     conn = None
     try:
         from db.connection import get_db_conn
+
         conn = get_db_conn()
         cur = conn.cursor()
         value = json.dumps(config)
         cur.execute(
             "INSERT INTO app_settings (key, value) VALUES (%s, %s) "
             "ON CONFLICT (key) DO UPDATE SET value = %s, updated_at = CURRENT_TIMESTAMP",
-            (S3_CONFIG_KEY, value, value))
+            (S3_CONFIG_KEY, value, value),
+        )
         conn.commit()
         cur.close()
     except Exception as e:
@@ -72,6 +74,7 @@ def is_s3_enabled() -> bool:
 def _get_client():
     """Create boto3 S3 client from stored config."""
     import boto3
+
     config = _get_s3_config()
     if not config.get("enabled"):
         return None, None
@@ -100,7 +103,7 @@ def _local_to_s3_key(local_path: str) -> str:
     return Path(path).name
 
 
-def s3_upload(local_path: str, s3_key: str = None):
+def s3_upload(local_path: str, s3_key: str | None = None):
     """Upload a file to S3. Returns True on success."""
     try:
         client, bucket = _get_client()
@@ -118,7 +121,7 @@ def s3_upload(local_path: str, s3_key: str = None):
         return False
 
 
-def s3_upload_async(local_path: str, s3_key: str = None):
+def s3_upload_async(local_path: str, s3_key: str | None = None):
     """Upload to S3 in background thread (non-blocking)."""
     if not is_s3_enabled():
         return
@@ -175,11 +178,13 @@ def s3_list(prefix: str = "") -> list[dict]:
         response = client.list_objects_v2(Bucket=bucket, Prefix=prefix, MaxKeys=500)
         files = []
         for obj in response.get("Contents", []):
-            files.append({
-                "key": obj["Key"],
-                "size": obj["Size"],
-                "modified": obj["LastModified"].isoformat() if obj.get("LastModified") else None,
-            })
+            files.append(
+                {
+                    "key": obj["Key"],
+                    "size": obj["Size"],
+                    "modified": obj["LastModified"].isoformat() if obj.get("LastModified") else None,
+                }
+            )
         return files
     except Exception as e:
         logger.warning(f"S3 list failed: {e}")
@@ -195,7 +200,7 @@ def s3_test() -> dict:
 
         # Try listing bucket
         response = client.list_objects_v2(Bucket=bucket, MaxKeys=1)
-        total = response.get("KeyCount", 0)
+        response.get("KeyCount", 0)
 
         # Get full count
         total_files = 0

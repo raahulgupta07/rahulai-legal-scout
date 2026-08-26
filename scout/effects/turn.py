@@ -27,8 +27,9 @@ from __future__ import annotations
 import contextlib
 import threading
 import uuid
+from collections.abc import Iterator
 from contextvars import ContextVar
-from typing import Any, Dict, Iterator, Optional
+from typing import Any
 
 from scout.effects.flag import ledger_enabled
 
@@ -41,14 +42,14 @@ class TurnContext:
     two effects sharing a seq would make the undo order ambiguous.
     """
 
-    __slots__ = ("turn_id", "session_id", "actor_email", "_seq", "_lock", "meta")
+    __slots__ = ("_lock", "_seq", "actor_email", "meta", "session_id", "turn_id")
 
     def __init__(
         self,
         turn_id: str,
-        session_id: Optional[str] = None,
-        actor_email: Optional[str] = None,
-        meta: Optional[Dict[str, Any]] = None,
+        session_id: str | None = None,
+        actor_email: str | None = None,
+        meta: dict[str, Any] | None = None,
     ) -> None:
         self.turn_id = turn_id
         self.session_id = session_id
@@ -67,39 +68,33 @@ class TurnContext:
         return self._seq
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
-        return (
-            "TurnContext(turn_id={!r}, session_id={!r}, effects={})".format(
-                self.turn_id, self.session_id, self._seq
-            )
-        )
+        return f"TurnContext(turn_id={self.turn_id!r}, session_id={self.session_id!r}, effects={self._seq})"
 
 
-_current: ContextVar[Optional[TurnContext]] = ContextVar(
-    "scout_effects_turn", default=None
-)
+_current: ContextVar[TurnContext | None] = ContextVar("scout_effects_turn", default=None)
 
 
 def new_turn_id() -> str:
     return uuid.uuid4().hex
 
 
-def current_turn() -> Optional[TurnContext]:
+def current_turn() -> TurnContext | None:
     """The turn in scope, or None outside a turn / when the flag is off."""
     return _current.get()
 
 
-def current_turn_id() -> Optional[str]:
+def current_turn_id() -> str | None:
     turn = _current.get()
     return turn.turn_id if turn else None
 
 
 @contextlib.contextmanager
 def turn_scope(
-    session_id: Optional[str] = None,
-    actor_email: Optional[str] = None,
-    turn_id: Optional[str] = None,
-    meta: Optional[Dict[str, Any]] = None,
-) -> Iterator[Optional[TurnContext]]:
+    session_id: str | None = None,
+    actor_email: str | None = None,
+    turn_id: str | None = None,
+    meta: dict[str, Any] | None = None,
+) -> Iterator[TurnContext | None]:
     """Enter a turn scope. Yields the TurnContext, or None when the flag is off.
 
     Flag off is a true no-op: no uuid is minted, no ContextVar is set, no turn
@@ -143,7 +138,7 @@ def turn_scope(
         _current.reset(token)
 
 
-def bind_session(session_id: Optional[str]) -> None:
+def bind_session(session_id: str | None) -> None:
     """Attach a conversation id to the turn already in scope.
 
     The turn boundary is HTTP middleware, which cannot cheaply learn the agno
@@ -158,7 +153,7 @@ def bind_session(session_id: Optional[str]) -> None:
         turn.session_id = str(session_id).strip() or None
 
 
-def ambient_session() -> Optional[str]:
+def ambient_session() -> str | None:
     """The conversation id the tools layer already tracks, if any.
 
     ``scout.tools.slot_resolver`` sets a ContextVar at every tool entry point
@@ -202,8 +197,6 @@ def _log_swallowed(where: str) -> None:
     try:
         import logging
 
-        logging.getLogger("legalscout").warning(
-            "effects ledger: %s failed and was ignored", where, exc_info=True
-        )
+        logging.getLogger("legalscout").warning("effects ledger: %s failed and was ignored", where, exc_info=True)
     except Exception:
         pass

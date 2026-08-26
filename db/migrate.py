@@ -9,11 +9,10 @@ Usage:
     python -m db.migrate --status  # Show migration status
 """
 
+import glob
 import os
 import sys
-import glob
 from pathlib import Path
-from urllib.parse import quote
 
 import psycopg
 
@@ -55,10 +54,7 @@ def get_pending_migrations(conn):
     db_dir = Path(__file__).parent
     all_migrations = sorted(glob.glob(str(db_dir / "migration_*.sql")))
     applied = get_applied_migrations(conn)
-    return [
-        m for m in all_migrations
-        if Path(m).name not in applied
-    ]
+    return [m for m in all_migrations if Path(m).name not in applied]
 
 
 def apply_migration(conn, filepath):
@@ -66,16 +62,13 @@ def apply_migration(conn, filepath):
     filename = Path(filepath).name
     print(f"  Applying: {filename} ...", end=" ", flush=True)
 
-    with open(filepath, "r") as f:
+    with open(filepath) as f:
         sql = f.read()
 
     try:
         with conn.cursor() as cur:
             cur.execute(sql)
-            cur.execute(
-                "INSERT INTO schema_migrations (filename) VALUES (%s)",
-                (filename,)
-            )
+            cur.execute("INSERT INTO schema_migrations (filename) VALUES (%s)", (filename,))
         conn.commit()
         print("OK")
     except Exception as e:

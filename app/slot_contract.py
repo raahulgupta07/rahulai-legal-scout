@@ -24,25 +24,28 @@ resolved against ``company_people`` / ``people`` / ``document_signatories``
 # this chain — see the systemic note in CLAUDE.md; 9 more still carry it.
 from __future__ import annotations
 
-
 import re
 
-SLOT_KINDS = frozenset({
-    "signatory",
-    "attendee",
-    "chairperson",
-    "resigning_director",
-    "new_director",
-    "representative",
-    "shareholder_list",
-    "auditor",
-})
+SLOT_KINDS = frozenset(
+    {
+        "signatory",
+        "attendee",
+        "chairperson",
+        "resigning_director",
+        "new_director",
+        "representative",
+        "shareholder_list",
+        "auditor",
+    }
+)
 
-SLOT_OF = frozenset({
-    "document_company",
-    "corporate_shareholder",
-    "people_register",
-})
+SLOT_OF = frozenset(
+    {
+        "document_company",
+        "corporate_shareholder",
+        "people_register",
+    }
+)
 
 MAPPING_SOURCES = frozenset({"db", "user_input", "slot"})
 
@@ -50,36 +53,38 @@ FORBIDDEN_DEFAULTS = frozenset({"today", "now", "current_date", "today's date"})
 
 PERSON_COLUMNS = frozenset({"directors", "members", "shareholder_links"})
 
-COMPANY_COLUMNS = frozenset({
-    "company_name_english",
-    "company_name_myanmar",
-    "company_registration_number",
-    "registration_date",
-    "status",
-    "company_type",
-    "foreign_company",
-    "small_company",
-    "principal_activity",
-    "date_of_last_annual_return",
-    "previous_registration_number",
-    "registered_office_address",
-    "principal_place_of_business",
-    "ultimate_holding_company_name",
-    "ultimate_holding_company_jurisdiction",
-    "ultimate_holding_company_registration_number",
-    "total_shares_issued",
-    "currency_of_share_capital",
-    "filing_history",
-    "under_corpsec_management",
-    "group_company",
-    "total_capital",
-    "consideration_amount_paid",
-    "financial_year_end_date",
-    "next_financial_year_end_date",
-    "auditor_name",
-    "auditor_fee",
-    "custom_fields",
-})
+COMPANY_COLUMNS = frozenset(
+    {
+        "company_name_english",
+        "company_name_myanmar",
+        "company_registration_number",
+        "registration_date",
+        "status",
+        "company_type",
+        "foreign_company",
+        "small_company",
+        "principal_activity",
+        "date_of_last_annual_return",
+        "previous_registration_number",
+        "registered_office_address",
+        "principal_place_of_business",
+        "ultimate_holding_company_name",
+        "ultimate_holding_company_jurisdiction",
+        "ultimate_holding_company_registration_number",
+        "total_shares_issued",
+        "currency_of_share_capital",
+        "filing_history",
+        "under_corpsec_management",
+        "group_company",
+        "total_capital",
+        "consideration_amount_paid",
+        "financial_year_end_date",
+        "next_financial_year_end_date",
+        "auditor_name",
+        "auditor_fee",
+        "custom_fields",
+    }
+)
 
 _INDEX_RE = re.compile(r"\[[^\]]*\]")
 _NUMERIC_INDEX_RE = re.compile(r"\[\s*\d+\s*\]")
@@ -182,10 +187,7 @@ def normalise_legacy_entry(entry) -> dict:
     slot = entry.get("slot")
     default = entry.get("default")
 
-    if not isinstance(db_column, str) or not db_column.strip():
-        db_column = None
-    else:
-        db_column = db_column.strip()
+    db_column = None if not isinstance(db_column, str) or not db_column.strip() else db_column.strip()
 
     if isinstance(default, str):
         default = default.strip() or None

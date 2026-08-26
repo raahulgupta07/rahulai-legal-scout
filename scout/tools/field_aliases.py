@@ -13,31 +13,69 @@ import re
 
 ALIAS_GROUPS: dict[str, list[str]] = {
     "nrc_no": [
-        "nric", "nrc", "nrc_no", "nrc_number", "nrc_passport",
-        "passport_no", "passport_number", "id_number", "identification_number",
-        "identity_number", "nrc_or_passport", "nrc_passport_no",
+        "nric",
+        "nrc",
+        "nrc_no",
+        "nrc_number",
+        "nrc_passport",
+        "passport_no",
+        "passport_number",
+        "id_number",
+        "identification_number",
+        "identity_number",
+        "nrc_or_passport",
+        "nrc_passport_no",
     ],
     "date_of_birth": ["dob", "date_of_birth", "birth_date", "birthdate"],
     "phone_number": [
-        "phone", "phone_number", "telephone", "telephone_number",
-        "contact_number", "contact_no", "mobile", "mobile_number",
+        "phone",
+        "phone_number",
+        "telephone",
+        "telephone_number",
+        "contact_number",
+        "contact_no",
+        "mobile",
+        "mobile_number",
     ],
     "address": [
-        "address", "residential_address", "addr", "home_address",
+        "address",
+        "residential_address",
+        "addr",
+        "home_address",
     ],
     "number_of_shares": [
-        "shares", "number_of_shares", "share_quantity", "no_of_shares",
-        "shares_held", "shareholding",
+        "shares",
+        "number_of_shares",
+        "share_quantity",
+        "no_of_shares",
+        "shares_held",
+        "shareholding",
     ],
     "capital_amount": [
-        "capital", "capital_amount", "amount", "share_capital_amount",
+        "capital",
+        "capital_amount",
+        "amount",
+        "share_capital_amount",
     ],
 }
 
-GENERIC_TOKENS: frozenset[str] = frozenset({
-    "date", "name", "number", "no", "id", "type", "amount", "value",
-    "of", "the", "and", "address", "time",
-})
+GENERIC_TOKENS: frozenset[str] = frozenset(
+    {
+        "date",
+        "name",
+        "number",
+        "no",
+        "id",
+        "type",
+        "amount",
+        "value",
+        "of",
+        "the",
+        "and",
+        "address",
+        "time",
+    }
+)
 
 
 def _build_alias_map() -> dict[str, str]:

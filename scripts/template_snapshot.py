@@ -27,8 +27,6 @@ Usage (inside the app container, where the product packages are importable):
 # importing app.main first primes the module so the cycle resolves. Without this
 # line every subsequent import dies with an ImportError about a partially
 # initialized module.
-import app.main  # noqa: F401  (import for side effect: primes the circular import)
-
 import glob
 import json
 import os
@@ -66,7 +64,7 @@ def probe(template_name, company_name):
     try:
         result = prepare_document_data(template_name, company_name) or {}
     except Exception as exc:  # defensive on purpose -- see docstring
-        return {"error": "%s: %s" % (type(exc).__name__, exc)}
+        return {"error": f"{type(exc).__name__}: {exc}"}
 
     normalized = result.get("normalized_data") or {}
     validation = result.get("validation") or {}
@@ -86,9 +84,7 @@ def probe(template_name, company_name):
     # The regression-critical axis: a placeholder is "auto-filled" when
     # normalized_data already carries a non-empty value for it, and "asked"
     # when it does not and the user will be prompted instead.
-    auto_filled = sorted(
-        p for p in set(placeholders) if _has_value(normalized.get(p))
-    )
+    auto_filled = sorted(p for p in set(placeholders) if _has_value(normalized.get(p)))
     asked = sorted(p for p in set(placeholders) if not _has_value(normalized.get(p)))
 
     return {
@@ -145,8 +141,7 @@ def cmd_snapshot(out_path):
         json.dump(data, fh, indent=2, sort_keys=True)
         fh.write("\n")
 
-    print("snapshot: %d templates x %d companies -> %s"
-          % (len(names), len(company_list), out_path))
+    print(f"snapshot: {len(names)} templates x {len(company_list)} companies -> {out_path}")
     return 0
 
 
@@ -185,17 +180,16 @@ def cmd_diff(before_path, after_path):
             a_err = a.get("error")
 
             if b_err and not a_err:
-                lines.append("  [%s] errored BEFORE, works now: %s" % (company, b_err))
+                lines.append(f"  [{company}] errored BEFORE, works now: {b_err}")
                 improvements += 1
                 continue
             if a_err and not b_err:
-                lines.append("  [%s] REGRESSION RISK: errors now, worked before: %s"
-                             % (company, a_err))
+                lines.append(f"  [{company}] REGRESSION RISK: errors now, worked before: {a_err}")
                 regressions += 1
                 continue
             if a_err and b_err:
                 if a_err != b_err:
-                    lines.append("  [%s] error changed: %s -> %s" % (company, b_err, a_err))
+                    lines.append(f"  [{company}] error changed: {b_err} -> {a_err}")
                 continue
 
             b_asked = set(b.get("asked") or [])
@@ -209,13 +203,11 @@ def cmd_diff(before_path, after_path):
             now_offered = sorted(b_auto & a_asked)
 
             for ph in now_guessed:
-                lines.append("  [%s] REGRESSION RISK: now guessed, previously asked -- %s"
-                             % (company, ph))
+                lines.append(f"  [{company}] REGRESSION RISK: now guessed, previously asked -- {ph}")
             regressions += len(now_guessed)
 
             for ph in now_offered:
-                lines.append("  [%s] improved: now offered, previously guessed -- %s"
-                             % (company, ph))
+                lines.append(f"  [{company}] improved: now offered, previously guessed -- {ph}")
             improvements += len(now_offered)
 
             b_ph = set(b.get("placeholders") or [])
@@ -223,44 +215,38 @@ def cmd_diff(before_path, after_path):
             added = sorted(a_ph - b_ph)
             removed = sorted(b_ph - a_ph)
             if added:
-                lines.append("  [%s] slot requests added (%d): %s"
-                             % (company, len(added), ", ".join(added)))
+                lines.append(f"  [{company}] slot requests added ({len(added)}): {', '.join(added)}")
             if removed:
-                lines.append("  [%s] slot requests removed (%d): %s"
-                             % (company, len(removed), ", ".join(removed)))
+                lines.append(f"  [{company}] slot requests removed ({len(removed)}): {', '.join(removed)}")
 
-            for label, key in (("available_fields", "available_fields"),
-                               ("missing_fields", "missing_fields")):
+            for label, key in (("available_fields", "available_fields"), ("missing_fields", "missing_fields")):
                 b_set = set(b.get(key) or [])
                 a_set = set(a.get(key) or [])
                 gained = sorted(a_set - b_set)
                 lost = sorted(b_set - a_set)
                 if gained:
-                    lines.append("  [%s] %s +%d: %s"
-                                 % (company, label, len(gained), ", ".join(gained)))
+                    lines.append(f"  [{company}] {label} +{len(gained)}: {', '.join(gained)}")
                 if lost:
-                    lines.append("  [%s] %s -%d: %s"
-                                 % (company, label, len(lost), ", ".join(lost)))
+                    lines.append(f"  [{company}] {label} -{len(lost)}: {', '.join(lost)}")
 
             if bool(b.get("success")) != bool(a.get("success")):
-                lines.append("  [%s] success %s -> %s"
-                             % (company, b.get("success"), a.get("success")))
+                lines.append("  [{}] success {} -> {}".format(company, b.get("success"), a.get("success")))
 
         if lines:
             changed += 1
-            print("=== %s" % name)
+            print(f"=== {name}")
             for line in lines:
                 print(line)
-            print("")
+            print()
 
     total = len(set(b_templates) | set(a_templates))
     print("--- summary ---")
-    print("templates compared : %d" % total)
-    print("templates changed  : %d" % changed)
-    print("improvements       : %d" % improvements)
-    print("regression risks   : %d" % regressions)
+    print(f"templates compared : {total}")
+    print(f"templates changed  : {changed}")
+    print(f"improvements       : {improvements}")
+    print(f"regression risks   : {regressions}")
     if regressions:
-        print("")
+        print()
         print("Review every REGRESSION RISK line by hand. A placeholder that moved")
         print("from asked to guessed means a learned mapping is now filling a value")
         print("nobody confirmed -- verify it against the template before shipping.")
@@ -283,7 +269,7 @@ def main(argv):
     except Exception as exc:
         # Exit 0 always: this is a measurement aid, never a gate that can wedge
         # the training run it is meant to observe.
-        print("template_snapshot failed: %s: %s" % (type(exc).__name__, exc))
+        print(f"template_snapshot failed: {type(exc).__name__}: {exc}")
         return 0
 
     print("usage: template_snapshot.py snapshot <out.json>")

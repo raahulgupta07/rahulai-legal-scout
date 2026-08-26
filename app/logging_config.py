@@ -12,11 +12,12 @@ Usage:
     logger.info("something happened", extra={"user_id": 1, "action": "login"})
 """
 
-import logging
 import json
+import logging
 import sys
+from datetime import UTC, datetime
 from os import getenv
-from datetime import datetime, timezone
+from typing import ClassVar
 
 
 class JSONFormatter(logging.Formatter):
@@ -24,15 +25,26 @@ class JSONFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         log_entry = {
-            "timestamp": datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(),
+            "timestamp": datetime.fromtimestamp(record.created, tz=UTC).isoformat(),
             "level": record.levelname,
             "logger": record.name,
             "message": record.getMessage(),
         }
 
         # Add extra fields (anything passed via extra={})
-        for key in ("request_id", "method", "path", "status_code", "duration_ms",
-                     "user_id", "user_email", "ip", "action", "error", "detail"):
+        for key in (
+            "request_id",
+            "method",
+            "path",
+            "status_code",
+            "duration_ms",
+            "user_id",
+            "user_email",
+            "ip",
+            "action",
+            "error",
+            "detail",
+        ):
             value = getattr(record, key, None)
             if value is not None:
                 log_entry[key] = value
@@ -50,11 +62,11 @@ class JSONFormatter(logging.Formatter):
 class HumanFormatter(logging.Formatter):
     """Colored human-readable formatter for development."""
 
-    COLORS = {
-        "DEBUG": "\033[36m",     # Cyan
-        "INFO": "\033[32m",      # Green
-        "WARNING": "\033[33m",   # Yellow
-        "ERROR": "\033[31m",     # Red
+    COLORS: ClassVar[dict[str, str]] = {
+        "DEBUG": "\033[36m",  # Cyan
+        "INFO": "\033[32m",  # Green
+        "WARNING": "\033[33m",  # Yellow
+        "ERROR": "\033[31m",  # Red
         "CRITICAL": "\033[41m",  # Red background
     }
     RESET = "\033[0m"
@@ -65,17 +77,13 @@ class HumanFormatter(logging.Formatter):
 
         # Build extra fields string
         extras = []
-        for key in ("request_id", "method", "path", "status_code", "duration_ms",
-                     "user_id", "ip", "action"):
+        for key in ("request_id", "method", "path", "status_code", "duration_ms", "user_id", "ip", "action"):
             value = getattr(record, key, None)
             if value is not None:
                 extras.append(f"{key}={value}")
         extra_str = f" [{', '.join(extras)}]" if extras else ""
 
-        return (
-            f"{timestamp} {color}{record.levelname:8s}{self.RESET} "
-            f"{record.name}: {record.getMessage()}{extra_str}"
-        )
+        return f"{timestamp} {color}{record.levelname:8s}{self.RESET} {record.name}: {record.getMessage()}{extra_str}"
 
 
 def setup_logging():
@@ -84,10 +92,7 @@ def setup_logging():
     log_level = getenv("LOG_LEVEL", "INFO").upper()
 
     # Choose formatter
-    if runtime_env == "prd":
-        formatter = JSONFormatter()
-    else:
-        formatter = HumanFormatter()
+    formatter = JSONFormatter() if runtime_env == "prd" else HumanFormatter()
 
     # Configure root handler
     handler = logging.StreamHandler(sys.stdout)
@@ -110,6 +115,7 @@ def setup_logging():
         def filter(self, record: logging.LogRecord) -> bool:
             msg = record.getMessage()
             return "Session with ID" not in msg and "404 Session" not in msg
+
     for n in ("agno", "uvicorn.error", "fastapi"):
         logging.getLogger(n).addFilter(_SessionNotFoundFilter())
 

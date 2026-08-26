@@ -16,8 +16,6 @@ already splices: template knowledge (marker .. "\n═══") and legal skills
 
 from __future__ import annotations
 
-from typing import List, Optional
-
 from scout.routines.engine import routines_enabled
 from scout.routines.model import Routine
 
@@ -25,7 +23,7 @@ START_MARKER = "## Routines (numbered sequences)"
 END_MARKER = "\n▣▣▣"
 
 
-def build_routines_block(routines: Optional[List[Routine]] = None) -> str:
+def build_routines_block(routines: list[Routine] | None = None) -> str:
     """Render the L1 routines block: one line per ENABLED routine.
 
     Deliberately the same shape as `_build_legal_skills_block()` — name plus a
@@ -58,9 +56,7 @@ def build_routines_block(routines: Optional[List[Routine]] = None) -> str:
     return "\n".join(lines) + END_MARKER
 
 
-def apply_routines_block(
-    instructions: str, routines: Optional[List[Routine]] = None
-) -> str:
+def apply_routines_block(instructions: str, routines: list[Routine] | None = None) -> str:
     """Splice the routines block into `instructions`, or return it untouched.
 
     Flag off  -> returns the SAME object, by identity. No copy, no rebuild, no

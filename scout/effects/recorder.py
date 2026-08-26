@@ -27,8 +27,10 @@ app unkillable during a write, which is a worse failure than a lost effect row.
 
 from __future__ import annotations
 
+import contextlib
 import logging
-from typing import Any, Mapping, Optional
+from collections.abc import Mapping
+from typing import Any
 
 from scout.effects.flag import ledger_enabled
 from scout.effects.turn import ambient_session, current_turn
@@ -36,7 +38,7 @@ from scout.effects.turn import ambient_session, current_turn
 logger = logging.getLogger("legalscout")
 
 
-def _session_for(turn: Any) -> Optional[str]:
+def _session_for(turn: Any) -> str | None:
     """Resolve and memoise the turn's session id from the tools layer."""
     sid = ambient_session()
     if sid:
@@ -47,15 +49,15 @@ def _session_for(turn: Any) -> Optional[str]:
 def record(
     kind: str,
     op: str,
-    target_table: Optional[str] = None,
-    target_id: Optional[Any] = None,
-    target_label: Optional[str] = None,
-    before: Optional[Mapping[str, Any]] = None,
-    after: Optional[Mapping[str, Any]] = None,
-    tool_name: Optional[str] = None,
+    target_table: str | None = None,
+    target_id: Any | None = None,
+    target_label: str | None = None,
+    before: Mapping[str, Any] | None = None,
+    after: Mapping[str, Any] | None = None,
+    tool_name: str | None = None,
     diff: bool = True,
-    meta: Optional[Mapping[str, Any]] = None,
-) -> Optional[int]:
+    meta: Mapping[str, Any] | None = None,
+) -> int | None:
     """Record one side effect of the current turn. Returns the row id or None.
 
     Returns None — never raises — when the flag is off, when no turn is in
@@ -105,10 +107,6 @@ def record(
         # Deliberately broad, deliberately silent to the caller. WARNING, not
         # ERROR: a lost effect row is a degraded audit trail, not a degraded
         # product, and paging on it would train people to ignore the page.
-        try:
-            logger.warning(
-                "effects ledger: recording %r failed and was ignored", kind, exc_info=True
-            )
-        except Exception:
-            pass
+        with contextlib.suppress(Exception):
+            logger.warning("effects ledger: recording %r failed and was ignored", kind, exc_info=True)
         return None

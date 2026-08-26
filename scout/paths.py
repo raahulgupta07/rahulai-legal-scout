@@ -7,10 +7,7 @@ from pathlib import Path
 #   1. DOCUMENTS_DIR environment variable
 #   2. ./documents fallback (local development)
 _env_dir = getenv("DOCUMENTS_DIR")
-if _env_dir:
-    DOCUMENTS_DIR = Path(_env_dir)
-else:
-    DOCUMENTS_DIR = Path(__file__).resolve().parent.parent / "documents"
+DOCUMENTS_DIR = Path(_env_dir) if _env_dir else Path(__file__).resolve().parent.parent / "documents"
 
 # Scout package paths
 SCOUT_DIR = Path(__file__).parent

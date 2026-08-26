@@ -28,23 +28,23 @@ from typing import Any
 
 from docx import Document
 
-from scout.tools.placeholders import PLACEHOLDER_PATTERN, placeholder_name, new_empty_counter, is_empty_placeholder
+from scout.tools.placeholders import PLACEHOLDER_PATTERN, is_empty_placeholder, new_empty_counter, placeholder_name
 
 _log = logging.getLogger("legalscout")
 
 _PERSON_RE = re.compile(
     r"director|shareholder|member|signator|signer|appointed|representative|chairperson|chairman|attendee|person|name",
-    re.I,
+    re.IGNORECASE,
 )
-_DATE_RE = re.compile(r"date", re.I)
-_PRONOUN_RE = re.compile(r"pronoun", re.I)
-_LOCATION_RE = re.compile(r"location|venue|place", re.I)
-_AUDITOR_RE = re.compile(r"auditor", re.I)
+_DATE_RE = re.compile(r"date", re.IGNORECASE)
+_PRONOUN_RE = re.compile(r"pronoun", re.IGNORECASE)
+_LOCATION_RE = re.compile(r"location|venue|place", re.IGNORECASE)
+_AUDITOR_RE = re.compile(r"auditor", re.IGNORECASE)
 
 
 # A value that is only a placeholder MASK (DD/MM/YYYY, __/__/____, XX-XX) is not
 # a real value — it must still count as an outstanding blank (finding F6).
-_MASK_RE = re.compile(r"^[dmyx_\-/.\s]+$", re.I)
+_MASK_RE = re.compile(r"^[dmyx_\-/.\s]+$", re.IGNORECASE)
 _CORP_WORDS = ("company", "limited", "ltd", "holdings", "group", "co.,", "pcl", "plc", "corporation", "corp")
 
 
@@ -71,7 +71,7 @@ def _slot_party_type(placeholder: str) -> str | None:
 # A company's name is not a person's name. `_PERSON_RE` matches on the bare word
 # "name", so "new_company_name" and "company_name" were classified as people and
 # offered a picker full of directors — for a company that does not exist yet.
-_COMPANY_NAME_RE = re.compile(r"company[_ ]?name|name[_ ]?of[_ ]?(the[_ ]?)?company|business[_ ]?name", re.I)
+_COMPANY_NAME_RE = re.compile(r"company[_ ]?name|name[_ ]?of[_ ]?(the[_ ]?)?company|business[_ ]?name", re.IGNORECASE)
 
 
 def _kind(placeholder: str) -> str:
@@ -97,6 +97,7 @@ def _people_register_names() -> list[dict]:
     conn = None
     try:
         from db.connection import get_db_conn
+
         conn = get_db_conn()
         cur = conn.cursor()
         cur.execute("SELECT full_name, nrc_passport_no FROM people ORDER BY full_name ASC LIMIT 500")
@@ -104,7 +105,7 @@ def _people_register_names() -> list[dict]:
             if name:
                 out.append({"label": name, "value": name, "source": "People register", "nrc": nrc or ""})
         cur.close()
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         _log.warning(f"fill_view: people register read failed: {e}")
     finally:
         if conn is not None:
@@ -175,7 +176,8 @@ def _candidates(kind: str, placeholder: str, company_row: dict) -> list[dict]:
 
 def _resolve_value(placeholder: str, normalized_data: dict, template_name: str, company_name: str) -> str | None:
     try:
-        from scout.tools.smart_doc import find_replacement, LEFT_BLANK
+        from scout.tools.smart_doc import LEFT_BLANK, find_replacement
+
         v = find_replacement(placeholder, normalized_data, template_name=template_name, company_name=company_name)
         if v is None or v == LEFT_BLANK:
             return None
@@ -183,7 +185,7 @@ def _resolve_value(placeholder: str, normalized_data: dict, template_name: str, 
         if not v or v.upper() == "TBD":
             return None
         return v
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         _log.warning(f"fill_view: resolve failed for {placeholder!r}: {e}")
         return None
 
@@ -207,7 +209,7 @@ _PERSON_ATTRS = (
     ("address", "residential_address"),
 )
 
-_ID_TYPE_RE = re.compile(r"identification[_ ]?type|id[_ ]?type", re.I)
+_ID_TYPE_RE = re.compile(r"identification[_ ]?type|id[_ ]?type", re.IGNORECASE)
 
 
 def _person_attribute(placeholder: str) -> tuple[str, str] | None:
@@ -220,7 +222,7 @@ def _person_attribute(placeholder: str) -> tuple[str, str] | None:
     """
     p = placeholder.lower().strip()
     for tail, column in _PERSON_ATTRS:
-        if p.endswith("_" + tail) or p.endswith(" " + tail):
+        if p.endswith(("_" + tail, " " + tail)):
             role = p[: -(len(tail) + 1)].strip(" _")
             return (role, column) if role else None
     return None
@@ -233,6 +235,7 @@ def _lookup_person(name: str) -> dict:
     conn = None
     try:
         from db.connection import get_db_conn
+
         conn = get_db_conn()
         cur = conn.cursor()
         cur.execute(
@@ -254,7 +257,7 @@ def _lookup_person(name: str) -> dict:
             "business_occupation": row[4],
             "residential_address": row[5],
         }
-    except Exception as e:  # noqa: BLE001 — never block rendering on a lookup
+    except Exception as e:
         _log.warning(f"fill_view: person lookup failed for {name!r}: {e}")
         return {}
     finally:
@@ -280,11 +283,21 @@ def _blank_label(key: str) -> str:
     return key.replace("_", " ").strip().title()
 
 
-def _emit_paragraph_text(text: str, blocks: list, blanks: dict, normalized_data, template_name, company_name, company_row, counter, people_by_role=None):
+def _emit_paragraph_text(
+    text: str,
+    blocks: list,
+    blanks: dict,
+    normalized_data,
+    template_name,
+    company_name,
+    company_row,
+    counter,
+    people_by_role=None,
+):
     last = 0
     for m in PLACEHOLDER_PATTERN.finditer(text):
         if m.start() > last:
-            blocks.append({"type": "text", "text": text[last:m.start()]})
+            blocks.append({"type": "text", "text": text[last : m.start()]})
         name = placeholder_name((m.group(1), m.group(2), m.group(3)), counter)
         if not name or is_empty_placeholder(name):
             blocks.append({"type": "text", "text": m.group(0)})
@@ -301,9 +314,9 @@ def _emit_paragraph_text(text: str, blocks: list, blanks: dict, normalized_data,
             value = None
         if value is not None and kind == "person":
             ptype = _slot_party_type(key)
-            if ptype == "individual" and _looks_corporate(value):
-                value = None
-            elif ptype == "corporate" and not _looks_corporate(value):
+            if (ptype == "individual" and _looks_corporate(value)) or (
+                ptype == "corporate" and not _looks_corporate(value)
+            ):
                 value = None
         # Remember who filled a person slot, so this person's NRC / father's
         # name / address can follow them into the companion placeholders.
@@ -376,14 +389,14 @@ def _paragraph_style(para) -> dict:
     style_name = ""
     try:
         style_name = (para.style.name or "") if para.style is not None else ""
-    except Exception:  # noqa: BLE001 — a malformed style must not stop rendering
+    except Exception:
         style_name = ""
 
     align = None
     try:
         if para.alignment is not None:
             align = _ALIGN_NAMES.get(int(para.alignment))
-    except Exception:  # noqa: BLE001
+    except Exception:
         align = None
 
     runs = [r for r in para.runs if (r.text or "").strip()]
@@ -405,7 +418,7 @@ def _paragraph_style(para) -> dict:
         if left is not None:
             # Word stores EMUs; ~457200 EMU is the usual half-inch tab stop.
             indent = max(0, min(4, int(left / 457200)))
-    except Exception:  # noqa: BLE001
+    except Exception:
         indent = 0
 
     return {
@@ -435,19 +448,21 @@ def build_fill_view(template_name: str, company_name: str, documents_dir: str = 
     company_row: dict = {}
     try:
         from scout.tools.smart_doc import prepare_document_data
+
         prep = prepare_document_data(template_name, company_name, documents_dir)
         normalized_data = prep.get("normalized_data", {}) or {}
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         _log.warning(f"fill_view: prepare failed: {e}")
     try:
         from scout.tools.companies_db import get_all_companies
+
         tgt = (company_name or "").strip().lower()
         for c in get_all_companies(limit=300):
             nm = (c.get("name") or "").strip().lower()
             if nm == tgt or (tgt and tgt in nm):
                 company_row = c
                 break
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         _log.warning(f"fill_view: company lookup failed: {e}")
 
     doc = Document(str(template_path))
@@ -460,13 +475,14 @@ def build_fill_view(template_name: str, company_name: str, documents_dir: str = 
     # disagrees with the document that is finally generated.
     try:
         from scout.tools.repeat_regions import expand_repeat_regions
+
         synth = expand_repeat_regions(doc, normalized_data, template_name=template_name, company_name=company_name)
         if synth:
             # The expander leaves synthetic [__rr_N__] tokens behind; merged
             # into the data they resolve through find_replacement like any
             # other slot, so the expanded lines read as real names.
             normalized_data = {**normalized_data, **synth}
-    except Exception as e:  # noqa: BLE001 — a preview must never 500
+    except Exception as e:
         _log.warning(f"fill_view: repeat-region expansion skipped: {e}")
 
     counter = new_empty_counter()
@@ -484,7 +500,17 @@ def build_fill_view(template_name: str, company_name: str, documents_dir: str = 
     for para in doc.paragraphs:
         style = _paragraph_style(para)
         blocks.append({"type": "para_start", **style})
-        _emit_paragraph_text(para.text, blocks, blanks, normalized_data, template_name, company_name, company_row, counter, people_by_role)
+        _emit_paragraph_text(
+            para.text,
+            blocks,
+            blanks,
+            normalized_data,
+            template_name,
+            company_name,
+            company_row,
+            counter,
+            people_by_role,
+        )
         blocks.append({"type": "para_end"})
 
     for table in doc.tables:
@@ -499,8 +525,14 @@ def build_fill_view(template_name: str, company_name: str, documents_dir: str = 
                     style = _paragraph_style(cpara)
                     blocks.append({"type": "para_start", **style})
                     _emit_paragraph_text(
-                        cpara.text, blocks, blanks, normalized_data,
-                        template_name, company_name, company_row, counter,
+                        cpara.text,
+                        blocks,
+                        blanks,
+                        normalized_data,
+                        template_name,
+                        company_name,
+                        company_row,
+                        counter,
                         people_by_role,
                     )
                     blocks.append({"type": "para_end"})

@@ -37,11 +37,39 @@ _COMPANY_RESOLVED = (
 # because "and" is a substring of "Resignation and Appointment". Structural
 # words carry no information about which document is wanted, so they are not
 # evidence.
-_STOPWORDS = frozenset({
-    "and", "for", "the", "of", "to", "in", "on", "at", "by", "with", "from",
-    "new", "non", "its", "use", "using", "only", "please", "prepare", "create",
-    "make", "need", "want", "a", "an", "is", "are", "this", "that",
-})
+_STOPWORDS = frozenset(
+    {
+        "and",
+        "for",
+        "the",
+        "of",
+        "to",
+        "in",
+        "on",
+        "at",
+        "by",
+        "with",
+        "from",
+        "new",
+        "non",
+        "its",
+        "use",
+        "using",
+        "only",
+        "please",
+        "prepare",
+        "create",
+        "make",
+        "need",
+        "want",
+        "a",
+        "an",
+        "is",
+        "are",
+        "this",
+        "that",
+    }
+)
 
 
 def _significant_words(search: str) -> list[str]:
@@ -79,6 +107,7 @@ _FLAG_TRUE = frozenset({"1", "true", "yes", "on"})
 
 def skill_routing_enabled() -> bool:
     import os
+
     return str(os.getenv(SKILL_ROUTING_ENV, "")).strip().lower() in _FLAG_TRUE
 
 
@@ -116,6 +145,7 @@ def _load_skill_body(skill_name: str) -> str:
     """
     try:
         from db.connection import get_db_conn
+
         conn = get_db_conn()
         try:
             cur = conn.cursor()
@@ -130,6 +160,7 @@ def _load_skill_body(skill_name: str) -> str:
             conn.close()
     except Exception as e:
         import logging
+
         logging.getLogger("legalscout").warning(f"skill routing lookup failed: {e}")
         return ""
 
@@ -177,7 +208,6 @@ def _coverage(search: str, template_name: str) -> float:
     return sum(1 for w in words if w in name) / len(words)
 
 
-
 def list_available_templates(documents_dir: str = "/documents") -> dict[str, Any]:
     """
     List all available document templates.
@@ -223,7 +253,9 @@ def list_available_templates(documents_dir: str = "/documents") -> dict[str, Any
     }
 
 
-def find_matching_templates(search_term: str, documents_dir: str = "/documents", setup_only: bool = False) -> dict[str, Any]:
+def find_matching_templates(
+    search_term: str, documents_dir: str = "/documents", setup_only: bool = False
+) -> dict[str, Any]:
     """
     Find templates matching a search term (fuzzy match).
     Returns multiple matches if found, or exact/near match if only one.
@@ -245,7 +277,8 @@ def find_matching_templates(search_term: str, documents_dir: str = "/documents",
     """
     # Read templates from DB (single source of truth)
     try:
-        from scout.tools.template_analyzer import get_all_templates_from_db, NEW_COMPANY_SETUP_GROUP
+        from scout.tools.template_analyzer import NEW_COMPANY_SETUP_GROUP, get_all_templates_from_db
+
         db_templates = get_all_templates_from_db()
         if setup_only:
             db_templates = [t for t in db_templates if (t.get("template_group") or "") == NEW_COMPANY_SETUP_GROUP]
@@ -253,6 +286,7 @@ def find_matching_templates(search_term: str, documents_dir: str = "/documents",
         group_of = {t["name"]: (t.get("template_group") or "") for t in db_templates}
     except Exception as e:
         import logging
+
         logging.getLogger("legalscout").warning(f"Template DB read failed: {e}")
         all_template_names = []
         group_of = {}
@@ -355,9 +389,9 @@ def find_matching_templates(search_term: str, documents_dir: str = "/documents",
                 f"'{matches[0]['display_name']}' is the closest name in the register, but it "
                 "does not cover the whole request"
                 + (
-                    " — nothing on the shelf accounts for "
-                    + ", ".join(f'"{w}"' for w in unmatched_words)
-                    if unmatched_words else ""
+                    " — nothing on the shelf accounts for " + ", ".join(f'"{w}"' for w in unmatched_words)
+                    if unmatched_words
+                    else ""
                 )
                 + ". Say plainly that the exact document asked for is not available, then ask "
                 "with ask_questions whether they want that nearest template instead. Do NOT call "
@@ -365,20 +399,24 @@ def find_matching_templates(search_term: str, documents_dir: str = "/documents",
             ),
         }
     elif len(matches) == 1:
-        return attach_playbook({
-            "found": True,
-            "matches": _slim(matches),
-            "clarification_needed": False,
-            "selected_template": matches[0]["name"],
-            "agent_instruction": (
-                f"ACT NOW, IN THIS SAME TURN — ending your turn with no text is forbidden. "
-                f"Exactly one template matched: '{matches[0]['display_name']}'. Do not ask which "
-                "template. Say in one sentence which template you are using and why it fits the "
-                "request, then call prepare_document(template_name, company_name) immediately with "
-                f"template_name=\"{matches[0]['name']}\" (call check_company first if you do not "
-                "have the company yet)."
-            ),
-        }, matches[0]["name"], group_of.get(matches[0]["name"]))
+        return attach_playbook(
+            {
+                "found": True,
+                "matches": _slim(matches),
+                "clarification_needed": False,
+                "selected_template": matches[0]["name"],
+                "agent_instruction": (
+                    f"ACT NOW, IN THIS SAME TURN — ending your turn with no text is forbidden. "
+                    f"Exactly one template matched: '{matches[0]['display_name']}'. Do not ask which "
+                    "template. Say in one sentence which template you are using and why it fits the "
+                    "request, then call prepare_document(template_name, company_name) immediately with "
+                    f'template_name="{matches[0]["name"]}" (call check_company first if you do not '
+                    "have the company yet)."
+                ),
+            },
+            matches[0]["name"],
+            group_of.get(matches[0]["name"]),
+        )
     else:
         # A dominant match is not a choice.
         #
@@ -396,32 +434,37 @@ def find_matching_templates(search_term: str, documents_dir: str = "/documents",
         # Form" matching the Group and Non-Group variants, which score alike —
         # does not clear the ratio and still goes to the user.
         top, runner_up = matches[0], matches[1]
-        DOMINANT_FLOOR = 50          # at least a prefix or full-substring hit
+        DOMINANT_FLOOR = 50  # at least a prefix or full-substring hit
         DOMINANT_RATIO = 2.0
         # A partial match is never dominant. Scoring highest among near
         # neighbours says nothing when none of them is the requested document.
-        if not partial_only and top["match_score"] >= DOMINANT_FLOOR and (
-            runner_up["match_score"] <= 0
-            or top["match_score"] >= runner_up["match_score"] * DOMINANT_RATIO
+        if (
+            not partial_only
+            and top["match_score"] >= DOMINANT_FLOOR
+            and (runner_up["match_score"] <= 0 or top["match_score"] >= runner_up["match_score"] * DOMINANT_RATIO)
         ):
-            return attach_playbook({
-                "found": True,
-                "matches": _slim(matches),
-                "clarification_needed": False,
-                "selected_template": top["name"],
-                "dominant_match": {
-                    "score": top["match_score"],
-                    "runner_up_score": runner_up["match_score"],
+            return attach_playbook(
+                {
+                    "found": True,
+                    "matches": _slim(matches),
+                    "clarification_needed": False,
+                    "selected_template": top["name"],
+                    "dominant_match": {
+                        "score": top["match_score"],
+                        "runner_up_score": runner_up["match_score"],
+                    },
+                    "agent_instruction": (
+                        f"ACT NOW, IN THIS SAME TURN — ending your turn with no text is forbidden. "
+                        f"'{top['display_name']}' matches the request far better than anything else "
+                        f"(score {top['match_score']} against {runner_up['match_score']}). Do NOT ask "
+                        "which template and do NOT choose a different one. Say in one sentence which "
+                        "template you are using, then call prepare_document immediately with "
+                        f'template_name="{top["name"]}".'
+                    ),
                 },
-                "agent_instruction": (
-                    f"ACT NOW, IN THIS SAME TURN — ending your turn with no text is forbidden. "
-                    f"'{top['display_name']}' matches the request far better than anything else "
-                    f"(score {top['match_score']} against {runner_up['match_score']}). Do NOT ask "
-                    "which template and do NOT choose a different one. Say in one sentence which "
-                    "template you are using, then call prepare_document immediately with "
-                    f"template_name=\"{top['name']}\"."
-                ),
-            }, top["name"], group_of.get(top["name"]))
+                top["name"],
+                group_of.get(top["name"]),
+            )
 
         top_names = [m["display_name"] for m in matches[:5]]
 
@@ -450,9 +493,7 @@ def find_matching_templates(search_term: str, documents_dir: str = "/documents",
             if len(_top_skills) == 1:
                 _shared_skill = _top_skills[0]
             else:
-                _shared_skill = skill_for_template(
-                    matches[0]["name"], group_of.get(matches[0]["name"])
-                )
+                _shared_skill = skill_for_template(matches[0]["name"], group_of.get(matches[0]["name"]))
         _lead = matches[0]["name"] if _shared_skill else None
         # The leader may be governed by a different skill than the majority; the
         # attach call reads the name, so hand it a template the majority governs.
@@ -473,7 +514,7 @@ def find_matching_templates(search_term: str, documents_dir: str = "/documents",
                 "requested document, and do NOT quietly proceed with one: the user takes the "
                 "option you offer for the thing they named, and the wrong document gets written. "
                 "After saying it, call ask_questions with ONE question — \"We don't have that "
-                "exact template. Would you like one of these instead?\" — and these options: "
+                'exact template. Would you like one of these instead?" — and these options: '
                 + "; ".join(top_names)
                 + ". If the user needs the exact document, tell them an admin can upload it under "
                 "Admin → Registers → Templates. Never write a lettered a)/b)/c) menu in prose."
@@ -505,11 +546,11 @@ def find_matching_templates(search_term: str, documents_dir: str = "/documents",
                 "The card is NOT your text. Write one sentence of reply BEFORE you call "
                 "ask_questions, and check the options below against the document the user "
                 "actually named first: if none of them IS that document, that sentence must say "
-                "so plainly — \"we don't have a combined X and Y form\" — and add that an admin "
+                'so plainly — "we don\'t have a combined X and Y form" — and add that an admin '
                 "can upload it under Admin → Registers → Templates. A picker that silently offers "
                 "near neighbours is how the user takes one for the thing they asked for. "
                 f"{len(matches)} templates matched. Then call ask_questions with ONE question — "
-                "\"Which template do you need?\" — and these options: "
+                '"Which template do you need?" — and these options: '
                 + "; ".join(top_names)
                 + ". Ignore the `message` and `options` fields in this result: they are a legacy "
                 "lettered a)/b)/c) menu and must never be written into your reply. After the user "
@@ -566,16 +607,19 @@ def list_available_companies(documents_dir: str = "/documents") -> dict[str, Any
     """
     try:
         from scout.tools.companies_db import get_all_companies
+
         db_companies = get_all_companies(limit=200)
         if db_companies:
             companies = []
             for c in db_companies:
-                companies.append({
-                    "company_name": c.get("name", ""),
-                    "company_registration_number": c.get("registration_number", ""),
-                    "registered_office": c.get("address", ""),
-                    "directors": c.get("directors", ""),
-                })
+                companies.append(
+                    {
+                        "company_name": c.get("name", ""),
+                        "company_registration_number": c.get("registration_number", ""),
+                        "registered_office": c.get("address", ""),
+                        "directors": c.get("directors", ""),
+                    }
+                )
             return {
                 "available": True,
                 "companies": companies,
@@ -627,7 +671,7 @@ def find_company_suggestions(partial_name: str, documents_dir: str = "/documents
 
     # Format with buttons if 2-5 matches
     if 2 <= len(matches) <= 5:
-        letters = ['a', 'b', 'c', 'd', 'e']
+        letters = ["a", "b", "c", "d", "e"]
         options_text = []
         message_lines = [f"Found {len(matches)} companies matching '{partial_name}'. Which one?", ""]
 
@@ -760,7 +804,7 @@ def create_clarification_tool(documents_dir: str = "/documents"):
         else:
             # Format with buttons if 2-5 matches
             if 2 <= suggestions["count"] <= 5:
-                letters = ['a', 'b', 'c', 'd', 'e']
+                letters = ["a", "b", "c", "d", "e"]
                 options_text = []
                 message_lines = [f"Found {suggestions['count']} companies matching '{company_name}'. Which one?", ""]
 
@@ -784,11 +828,8 @@ def create_clarification_tool(documents_dir: str = "/documents"):
                     "agent_instruction": (
                         f"ASK NOW, IN THIS SAME TURN — ending your turn with no text is forbidden. "
                         f"{suggestions['count']} companies matched. Call ask_questions with ONE "
-                        "question — \"Which company do you mean?\" — and these options: "
-                        + "; ".join(
-                            str(c.get("company_name", "Unknown"))
-                            for c in suggestions["matches"][:5]
-                        )
+                        'question — "Which company do you mean?" — and these options: '
+                        + "; ".join(str(c.get("company_name", "Unknown")) for c in suggestions["matches"][:5])
                         + ". Ignore the `message` and `options` fields here: they are a legacy "
                         "lettered a)/b)/c) menu and must never appear in your reply."
                     ),
@@ -817,10 +858,12 @@ def create_clarification_tool(documents_dir: str = "/documents"):
         instead of every template in the system.
         """
         try:
-            from scout.tools.template_analyzer import get_templates_by_group, NEW_COMPANY_SETUP_GROUP
+            from scout.tools.template_analyzer import NEW_COMPANY_SETUP_GROUP, get_templates_by_group
+
             group = get_templates_by_group(NEW_COMPANY_SETUP_GROUP)
         except Exception as e:
             import logging
+
             logging.getLogger("legalscout").warning(f"Setup-template read failed: {e}")
             group = []
         templates = [
@@ -846,7 +889,7 @@ def create_clarification_tool(documents_dir: str = "/documents"):
                     "If the user asked WHICH documents are needed (an informational question, no "
                     "single document requested yet), answer in prose listing every template below, "
                     "then offer to prepare one. Otherwise call ask_questions with ONE question — "
-                    "\"Which setup document do you need?\" — and these options: "
+                    '"Which setup document do you need?" — and these options: '
                     + "; ".join(t["display_name"] for t in templates[:5])
                     + ". Never write a lettered a)/b)/c) menu in prose. After the user picks, call "
                     "prepare_document with the chosen template. "

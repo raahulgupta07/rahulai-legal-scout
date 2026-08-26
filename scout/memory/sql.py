@@ -62,7 +62,7 @@ def _owner_params(scope):
 
 def select_active(scope, key=None, category=None, limit=50):
     """Live memories visible in this scope."""
-    sql = "SELECT %s FROM %s WHERE %s AND active" % (_COLS, TABLE, _SCOPE_WHERE)
+    sql = f"SELECT {_COLS} FROM {TABLE} WHERE {_SCOPE_WHERE} AND active"
     params = _scope_params(scope)
     if key is not None:
         sql += " AND memory_key = %s"
@@ -77,10 +77,7 @@ def select_active(scope, key=None, category=None, limit=50):
 
 def select_history(scope, key):
     """Every revision of one key, oldest first, superseded rows included."""
-    sql = (
-        "SELECT %s FROM %s WHERE %s AND memory_key = %%s "
-        "ORDER BY revision ASC, id ASC" % (_COLS, TABLE, _SCOPE_WHERE)
-    )
+    sql = f"SELECT {_COLS} FROM {TABLE} WHERE {_SCOPE_WHERE} AND memory_key = %s ORDER BY revision ASC, id ASC"
     params = _scope_params(scope)
     params.append(key)
     return sql, params
@@ -88,10 +85,7 @@ def select_history(scope, key):
 
 def select_owned_active(scope, key):
     """The one live row a write is about to supersede, if it exists."""
-    sql = "SELECT id, revision FROM %s WHERE %s AND memory_key = %%s AND active" % (
-        TABLE,
-        _OWNER_WHERE,
-    )
+    sql = f"SELECT id, revision FROM {TABLE} WHERE {_OWNER_WHERE} AND memory_key = %s AND active"
     params = _owner_params(scope)
     params.append(key)
     return sql, params
@@ -100,9 +94,9 @@ def select_owned_active(scope, key):
 def supersede(scope, key, actor_email):
     """Retire the live row for this key. Scope-bound like every other write."""
     sql = (
-        "UPDATE %s SET active = FALSE, superseded_at = CURRENT_TIMESTAMP, "
-        "superseded_by_email = %%s, updated_at = CURRENT_TIMESTAMP "
-        "WHERE %s AND memory_key = %%s AND active" % (TABLE, _OWNER_WHERE)
+        f"UPDATE {TABLE} SET active = FALSE, superseded_at = CURRENT_TIMESTAMP, "
+        "superseded_by_email = %s, updated_at = CURRENT_TIMESTAMP "
+        f"WHERE {_OWNER_WHERE} AND memory_key = %s AND active"
     )
     params = [actor_email]
     params.extend(_owner_params(scope))
@@ -110,18 +104,17 @@ def supersede(scope, key, actor_email):
     return sql, params
 
 
-def insert(scope, key, value, category, confidence, revision, source,
-           session_id, run_id, author_email):
+def insert(scope, key, value, category, confidence, revision, source, session_id, run_id, author_email):
     """Insert a new live revision.
 
     company_id is a positional column, never defaulted — the INSERT does
     not compile without it.
     """
     sql = (
-        "INSERT INTO %s ("
+        f"INSERT INTO {TABLE} ("
         "company_id, user_email, memory_key, memory_value, category, confidence, "
         "revision, active, source, source_session_id, source_run_id, created_by_email"
-        ") VALUES (%%s, %%s, %%s, %%s, %%s, %%s, %%s, TRUE, %%s, %%s, %%s, %%s)" % TABLE
+        ") VALUES (%s, %s, %s, %s, %s, %s, %s, TRUE, %s, %s, %s, %s)"
     )
     params = [
         scope.company_id,
@@ -141,7 +134,7 @@ def insert(scope, key, value, category, confidence, revision, source,
 
 def count_active(scope):
     """Row count visible in this scope — what the scope tests assert on."""
-    sql = "SELECT COUNT(*) FROM %s WHERE %s AND active" % (TABLE, _SCOPE_WHERE)
+    sql = f"SELECT COUNT(*) FROM {TABLE} WHERE {_SCOPE_WHERE} AND active"
     return sql, _scope_params(scope)
 
 
@@ -196,10 +189,7 @@ _COMPANY_COLS = "id, company_name_english, company_registration_number"
 
 def select_by_registration_number(registration_number):
     """Registration number is UNIQUE on companies — the only unambiguous key."""
-    sql = (
-        "SELECT %s FROM companies "
-        "WHERE lower(trim(company_registration_number)) = %%s" % _COMPANY_COLS
-    )
+    sql = f"SELECT {_COMPANY_COLS} FROM companies WHERE lower(trim(company_registration_number)) = %s"
     return sql, [str(registration_number or "").strip().lower()]
 
 
@@ -210,11 +200,7 @@ def select_by_exact_name(name):
     here is exactly how the existing resolvers turn an ambiguity into a
     silent pick.
     """
-    sql = (
-        "SELECT %s FROM companies "
-        "WHERE lower(trim(company_name_english)) = %%s "
-        "ORDER BY id ASC" % _COMPANY_COLS
-    )
+    sql = f"SELECT {_COMPANY_COLS} FROM companies WHERE lower(trim(company_name_english)) = %s ORDER BY id ASC"
     return sql, [str(name or "").strip().lower()]
 
 
@@ -225,9 +211,9 @@ def select_name_candidates(name, limit=MAX_CANDIDATES):
     companies it has nothing to do with.
     """
     sql = (
-        "SELECT %s FROM companies "
-        "WHERE company_name_english ILIKE %%s ESCAPE '%s' "
-        "ORDER BY company_name_english ASC LIMIT %%s" % (_COMPANY_COLS, _LIKE_ESCAPE)
+        f"SELECT {_COMPANY_COLS} FROM companies "
+        f"WHERE company_name_english ILIKE %s ESCAPE '{_LIKE_ESCAPE}' "
+        "ORDER BY company_name_english ASC LIMIT %s"
     )
     pattern = "%" + like_escape(str(name or "").strip()) + "%"
     return sql, [pattern, int(limit)]
@@ -237,8 +223,8 @@ def select_session_binding(session_id):
     """The company this conversation is already bound to, if any."""
     sql = (
         "SELECT sc.company_id, c.company_name_english, c.company_registration_number "
-        "FROM %s sc JOIN companies c ON c.id = sc.company_id "
-        "WHERE sc.session_id = %%s" % SESSION_TABLE
+        f"FROM {SESSION_TABLE} sc JOIN companies c ON c.id = sc.company_id "
+        "WHERE sc.session_id = %s"
     )
     return sql, [str(session_id or "").strip()]
 
@@ -246,16 +232,16 @@ def select_session_binding(session_id):
 def upsert_session_binding(session_id, company_id, bound_by):
     """Bind, or re-bind when the conversation changes subject."""
     sql = (
-        "INSERT INTO %s (session_id, company_id, bound_by) VALUES (%%s, %%s, %%s) "
+        f"INSERT INTO {SESSION_TABLE} (session_id, company_id, bound_by) VALUES (%s, %s, %s) "
         "ON CONFLICT (session_id) DO UPDATE SET "
         "company_id = EXCLUDED.company_id, bound_by = EXCLUDED.bound_by, "
-        "bound_at = CURRENT_TIMESTAMP" % SESSION_TABLE
+        "bound_at = CURRENT_TIMESTAMP"
     )
     return sql, [str(session_id or "").strip(), int(company_id), bound_by]
 
 
 def delete_session_binding(session_id):
-    sql = "DELETE FROM %s WHERE session_id = %%s" % SESSION_TABLE
+    sql = f"DELETE FROM {SESSION_TABLE} WHERE session_id = %s"
     return sql, [str(session_id or "").strip()]
 
 

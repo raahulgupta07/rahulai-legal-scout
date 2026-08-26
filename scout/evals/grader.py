@@ -5,9 +5,10 @@ Uses a small, fast model to evaluate if the agent's response correctly
 answers the user's question given the expected results.
 """
 
+import contextlib
+import os
 from dataclasses import dataclass
 
-import os
 from openai import OpenAI
 
 
@@ -71,6 +72,7 @@ def grade_response(
         GradeResult with pass/fail, score, and reasoning
     """
     from app.model_config import OPENROUTER_BASE_URL
+
     client = OpenAI(
         api_key=os.getenv("OPENROUTER_API_KEY"),
         base_url=OPENROUTER_BASE_URL,
@@ -117,10 +119,8 @@ def _parse_grade_response(response: str) -> GradeResult:
     for line in lines:
         line = line.strip()
         if line.startswith("SCORE:"):
-            try:
+            with contextlib.suppress(ValueError):
                 score = float(line.split(":", 1)[1].strip())
-            except ValueError:
-                pass
         elif line.startswith("PASSED:"):
             passed_str = line.split(":", 1)[1].strip().lower()
             passed = passed_str == "true"

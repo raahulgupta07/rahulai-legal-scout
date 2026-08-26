@@ -15,13 +15,13 @@ from scout.context.source_registry import (
 )
 
 __all__ = [
-    "load_source_metadata",
-    "build_source_registry",
-    "format_source_registry",
-    "SOURCE_REGISTRY",
-    "SOURCE_REGISTRY_STR",
-    "load_intent_rules",
-    "build_intent_routing",
     "INTENT_ROUTING",
     "INTENT_ROUTING_CONTEXT",
+    "SOURCE_REGISTRY",
+    "SOURCE_REGISTRY_STR",
+    "build_intent_routing",
+    "build_source_registry",
+    "format_source_registry",
+    "load_intent_rules",
+    "load_source_metadata",
 ]

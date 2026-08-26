@@ -31,7 +31,6 @@ error is logged, not raised.
 
 import json
 import logging
-from typing import Any, Optional
 
 _logger = logging.getLogger("legalscout")
 
@@ -43,13 +42,22 @@ _TASK_TTL_MINUTES = 60
 # Never carried in `collected`. Company identity comes from the record, and
 # letting it round-trip through here would let a stale value outlive a
 # correction (the PROTECTED_FIELDS reasoning in smart_doc, applied to storage).
-_NEVER_COLLECT = frozenset({
-    "company_name", "company_name_english", "company_registration_number",
-    "registered_office", "registered_office_address", "status", "company_type",
-    # Party slots belong to party_selections, which is keyed by slot_kind and
-    # already solves the right-person-right-role problem this table does not.
-    "directors", "members", "shareholders",
-})
+_NEVER_COLLECT = frozenset(
+    {
+        "company_name",
+        "company_name_english",
+        "company_registration_number",
+        "registered_office",
+        "registered_office_address",
+        "status",
+        "company_type",
+        # Party slots belong to party_selections, which is keyed by slot_kind and
+        # already solves the right-person-right-role problem this table does not.
+        "directors",
+        "members",
+        "shareholders",
+    }
+)
 
 
 def _conn():
@@ -62,7 +70,7 @@ def remember_task(
     session_id: str,
     template_name: str,
     company_name: str,
-    values: Optional[dict] = None,
+    values: dict | None = None,
 ) -> None:
     """Record (or refresh) what this conversation is producing.
 
@@ -104,7 +112,7 @@ def remember_task(
         )
         conn.commit()
         cur.close()
-    except Exception as e:  # noqa: BLE001 — task memory must never fail a run
+    except Exception as e:
         _logger.warning(f"[TASK] remember failed for session {session_id}: {e}")
     finally:
         if conn is not None:
@@ -126,9 +134,7 @@ def merge_collected(session_id: str, values: dict) -> int:
     clean = {
         str(k): v
         for k, v in values.items()
-        if str(k).lower() not in _NEVER_COLLECT
-        and not isinstance(v, (list, dict))
-        and str(v or "").strip()
+        if str(k).lower() not in _NEVER_COLLECT and not isinstance(v, (list, dict)) and str(v or "").strip()
     }
     if not clean:
         return 0
@@ -150,7 +156,7 @@ def merge_collected(session_id: str, values: dict) -> int:
         conn.commit()
         cur.close()
         return n
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         _logger.warning(f"[TASK] merge_collected failed for {session_id}: {e}")
         return 0
     finally:
@@ -158,7 +164,7 @@ def merge_collected(session_id: str, values: dict) -> int:
             conn.close()
 
 
-def recall_task(session_id: str) -> Optional[dict]:
+def recall_task(session_id: str) -> dict | None:
     """The pending task for this conversation, or None."""
     session_id = str(session_id or "").strip()
     if not session_id:
@@ -179,7 +185,7 @@ def recall_task(session_id: str) -> Optional[dict]:
         )
         row = cur.fetchone()
         cur.close()
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         _logger.warning(f"[TASK] recall failed for session {session_id}: {e}")
         return None
     finally:
@@ -213,7 +219,7 @@ def clear_task(session_id: str) -> None:
         cur.execute("DELETE FROM active_task WHERE session_id = %s", (session_id,))
         conn.commit()
         cur.close()
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         _logger.warning(f"[TASK] clear failed for session {session_id}: {e}")
     finally:
         if conn is not None:
@@ -232,11 +238,11 @@ def pending_task_instruction(session_id: str) -> str:
         return ""
     return (
         " STILL PENDING IN THIS CONVERSATION: produce "
-        f"\"{task['template_name']}\" for {task['company_name']}. That is what "
+        f'"{task["template_name"]}" for {task["company_name"]}. That is what '
         "the user asked for and it is NOT done. Do not call list_templates, "
         "find_matching_templates or any other search tool — the template is "
         "already chosen. Your next call is generate_document(template_name="
-        f"\"{task['template_name']}\", company_name=\"{task['company_name']}\") "
+        f'"{task["template_name"]}", company_name="{task["company_name"]}") '
         "with the selection you just made. Values already collected are "
         "remembered on the server; you do not need to re-send them."
     )

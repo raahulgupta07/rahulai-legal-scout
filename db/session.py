@@ -13,7 +13,6 @@ from agno.knowledge.embedder.openai import OpenAIEmbedder
 from agno.vectordb.pgvector import PgVector, SearchType
 
 from db.url import db_url
-from app.model_config import OPENROUTER_BASE_URL as _OPENROUTER_BASE_URL
 
 DB_ID = "scout-db"
 
@@ -42,6 +41,14 @@ def create_knowledge(name: str, table_name: str) -> Knowledge:
     Returns:
         Configured Knowledge instance.
     """
+    # Imported here, not at module scope: db.session -> app.model_config pulls in
+    # app/__init__ -> app.main -> `from db import ...`, which re-enters this
+    # module while it is still executing. Whether that cycle actually breaks
+    # depended on which module got imported first, so it survived for months and
+    # then surfaced the moment an import sorter reordered these two lines
+    # alphabetically. Deferring it to call time removes the cycle outright.
+    from app.model_config import OPENROUTER_BASE_URL as _OPENROUTER_BASE_URL
+
     return Knowledge(
         name=name,
         vector_db=PgVector(

@@ -2,9 +2,8 @@
 Upload Tools for Agent - Direct functions for API use
 """
 
-from pathlib import Path
 import base64
-
+from pathlib import Path
 
 templates_dir = Path("/documents/legal/templates")
 knowledge_dir = Path("/documents/legal/knowledge")
@@ -48,7 +47,7 @@ def upload_template(file_content: str, filename: str) -> dict:
     except Exception as e:
         return {
             "success": False,
-            "message": f"Failed to upload template: {str(e)}",
+            "message": f"Failed to upload template: {e!s}",
             "template_name": filename,
         }
 
@@ -83,7 +82,7 @@ def upload_knowledge(file_content: str, filename: str) -> dict:
     except Exception as e:
         return {
             "success": False,
-            "message": f"Failed to upload knowledge file: {str(e)}",
+            "message": f"Failed to upload knowledge file: {e!s}",
             "filename": filename,
         }
 

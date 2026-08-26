@@ -12,7 +12,7 @@ slot. Bare slots carry no name, so they are given a positional identity
 
 import itertools
 import re
-from typing import Iterator
+from collections.abc import Iterator
 
 PLACEHOLDER_PATTERN = re.compile(r"\{\{([^}]+)\}\}|\{([^}]+)\}|\[([^\]]*)\]")
 
@@ -40,7 +40,7 @@ def placeholder_name(groups, empty_counter=None) -> str:
         # out blank. Fold it to a normal space at the single point every caller
         # goes through, so the rest of the system only ever sees one spelling.
         # ​ (zero-width space) gets the same treatment for the same reason.
-        name = name.replace(" ", " ").replace("​", "")
+        name = name.replace(" ", " ").replace("\u200b", "")
         return name
     if empty_counter is None:
         return ""

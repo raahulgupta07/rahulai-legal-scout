@@ -48,6 +48,7 @@ if str(REPO) not in sys.path:
 
 # ── bootstrap: import scout.effects without executing scout/__init__.py ──────
 
+
 def _bootstrap_scout_package() -> None:
     """Register a bare ``scout`` package so ``scout.effects`` is importable.
 
@@ -58,7 +59,6 @@ def _bootstrap_scout_package() -> None:
     if "scout" in sys.modules and hasattr(sys.modules["scout"], "__path__"):
         return
     try:
-        import scout  # noqa: F401
         return
     except Exception:
         pass
@@ -69,20 +69,19 @@ def _bootstrap_scout_package() -> None:
 
 _bootstrap_scout_package()
 
-import scout.effects as fx  # noqa: E402
-from scout.effects import flag as fx_flag  # noqa: E402
-from scout.effects import model as fx_model  # noqa: E402
-from scout.effects import recorder as fx_recorder  # noqa: E402
-from scout.effects import sink as fx_sink  # noqa: E402
-from scout.effects import turn as fx_turn  # noqa: E402
-
-
 # ── harness ─────────────────────────────────────────────────────────────────
-
 # The ledger logs a warning-with-traceback every time it swallows a failure,
 # and E05/E06 make it swallow a dozen. Silenced so the result table is
 # readable; the tests assert on return values, never on log output.
-import logging as _logging  # noqa: E402
+import contextlib
+import logging as _logging
+
+import scout.effects as fx
+from scout.effects import flag as fx_flag
+from scout.effects import model as fx_model
+from scout.effects import recorder as fx_recorder
+from scout.effects import sink as fx_sink
+from scout.effects import turn as fx_turn
 
 _logging.getLogger("legalscout").setLevel(_logging.CRITICAL)
 _logging.getLogger("legalscout").addHandler(_logging.NullHandler())
@@ -184,16 +183,17 @@ SESSION = "sess-fixture-0001"
 # ── tests ───────────────────────────────────────────────────────────────────
 # Each returns (passed, detail).
 
+
 def t01_flag_default_off():
     """The flag is off unless explicitly set to a true value."""
     with flag_off():
         _assert(fx.ledger_enabled() is False, "unset should be off")
     for v in ("0", "false", "no", "off", "", "  ", "maybe"):
         with flag_on(v):
-            _assert(fx.ledger_enabled() is False, "{!r} should be off".format(v))
+            _assert(fx.ledger_enabled() is False, f"{v!r} should be off")
     for v in ("1", "true", "TRUE", "Yes", " on "):
         with flag_on(v):
-            _assert(fx.ledger_enabled() is True, "{!r} should be on".format(v))
+            _assert(fx.ledger_enabled() is True, f"{v!r} should be on")
     return True, "off for 7 falsey values, on for 5 truthy"
 
 
@@ -206,13 +206,15 @@ def t02_flag_off_is_a_no_op():
             _assert(turn is None, "turn_scope must yield None when off")
             _assert(fx.current_turn() is None, "no turn may be in scope when off")
             out = fx.record(
-                "document.generated", "insert",
-                target_table="documents", target_id=7,
+                "document.generated",
+                "insert",
+                target_table="documents",
+                target_id=7,
                 after={"file_name": "AGM.docx"},
             )
             _assert(out is None, "record must return None when off")
         fx_sink.set_sink(None)
-    _assert(spy.calls == 0, "sink was called {} time(s) with the flag off".format(spy.calls))
+    _assert(spy.calls == 0, f"sink was called {spy.calls} time(s) with the flag off")
     _assert(spy.effects == [], "effects were written with the flag off")
     return True, "sink calls=0, effects=0, record()=None, turn=None"
 
@@ -233,7 +235,6 @@ def t03_no_infrastructure_imports():
             root = name.split(".")[0]
             if root in {"psycopg", "agno", "mcp"} or name in blocked:
                 raise ImportError("blocked by test: " + name)
-            return None
 
     purged = [m for m in list(sys.modules) if m == "scout.effects" or m.startswith("scout.effects.")]
     saved = {m: sys.modules.pop(m) for m in purged}
@@ -248,10 +249,11 @@ def t03_no_infrastructure_imports():
         mod = importlib.import_module("scout.effects")
         _assert(hasattr(mod, "record"), "reimported package has no record()")
         leaked = sorted(
-            m for m in set(sys.modules) - before
+            m
+            for m in set(sys.modules) - before
             if m.split(".")[0] in {"psycopg", "agno", "mcp"} or m == "db.connection"
         )
-        _assert(not leaked, "imported at module scope: {}".format(leaked))
+        _assert(not leaked, f"imported at module scope: {leaked}")
     finally:
         sys.meta_path.remove(blocker)
         sys.modules.update(saved)
@@ -278,20 +280,27 @@ def t04_turn_groups_and_orders_effects():
         fx_sink.set_sink(spy)
         with fx.turn_scope(session_id=SESSION, actor_email=ACTOR) as turn:
             _assert(turn is not None, "turn_scope must yield a context when on")
-            fx.record("document.generated", "insert", target_table="documents",
-                      target_id=1, after={"file_name": "a.docx"})
-            fx.record("person.updated", "update", target_table="people", target_id=42,
-                      before={"nrc_passport_no": None}, after={"nrc_passport_no": "12/AAA(N)000001"})
+            fx.record(
+                "document.generated", "insert", target_table="documents", target_id=1, after={"file_name": "a.docx"}
+            )
+            fx.record(
+                "person.updated",
+                "update",
+                target_table="people",
+                target_id=42,
+                before={"nrc_passport_no": None},
+                after={"nrc_passport_no": "12/AAA(N)000001"},
+            )
             fx.record("email.queued", "external", target_label="to secretary")
         fx_sink.set_sink(None)
     ids = {e.turn_id for e in spy.effects}
     seqs = [e.seq for e in spy.effects]
-    _assert(len(spy.effects) == 3, "expected 3 effects, got {}".format(len(spy.effects)))
-    _assert(len(ids) == 1, "effects spread over {} turn ids".format(len(ids)))
-    _assert(seqs == [1, 2, 3], "seq was {}".format(seqs))
+    _assert(len(spy.effects) == 3, f"expected 3 effects, got {len(spy.effects)}")
+    _assert(len(ids) == 1, f"effects spread over {len(ids)} turn ids")
+    _assert(seqs == [1, 2, 3], f"seq was {seqs}")
     _assert(all(e.session_id == SESSION for e in spy.effects), "session_id not propagated")
     _assert(all(e.actor_email == ACTOR for e in spy.effects), "actor_email not propagated")
-    return True, "3 effects, 1 turn id, seq={}".format(seqs)
+    return True, f"3 effects, 1 turn id, seq={seqs}"
 
 
 def t05_ledger_failure_cannot_break_the_caller():
@@ -309,9 +318,11 @@ def t05_ledger_failure_cannot_break_the_caller():
         generated.append(name)
         doc_id = len(generated)
         fx.record(
-            "document.generated", "insert",
-            target_table="documents", target_id=doc_id,
-            target_label="Resignation Letter — {}".format(COMPANY),
+            "document.generated",
+            "insert",
+            target_table="documents",
+            target_id=doc_id,
+            target_label=f"Resignation Letter — {COMPANY}",
             after={"file_name": name, "company_name": COMPANY},
             tool_name="generate_document",
         )
@@ -328,27 +339,32 @@ def t05_ledger_failure_cannot_break_the_caller():
         fx_sink.set_sink(None)
 
     _assert(ran, "turn_scope body did not run when open_turn raised")
-    _assert(result == {"ok": True, "file_name": "Resignation_Letter.docx", "id": 1},
-            "primary operation returned {!r}".format(result))
+    _assert(
+        result == {"ok": True, "file_name": "Resignation_Letter.docx", "id": 1},
+        f"primary operation returned {result!r}",
+    )
     _assert(generated == ["Resignation_Letter.docx"], "primary side effect lost")
-    _assert(boom.attempts >= 3, "sink was not actually exercised (attempts={})".format(boom.attempts))
-    return True, "{} sink failures absorbed, result intact".format(boom.attempts)
+    _assert(boom.attempts >= 3, f"sink was not actually exercised (attempts={boom.attempts})")
+    return True, f"{boom.attempts} sink failures absorbed, result intact"
 
 
 def t06_ledger_failure_variants():
     """Rule 6 across failure shapes: DB error, bad data, sink returning junk."""
     cases = []
-    for exc in (RuntimeError("connection refused"),
-                ValueError("relation \"effect_log\" does not exist"),
-                TypeError("can't adapt type 'set'"),
-                MemoryError("out of memory")):
+    for exc in (
+        RuntimeError("connection refused"),
+        ValueError('relation "effect_log" does not exist'),
+        TypeError("can't adapt type 'set'"),
+        MemoryError("out of memory"),
+    ):
         with flag_on():
             fx_sink.set_sink(ExplodingSink(exc))
             with fx.turn_scope(session_id=SESSION):
-                out = fx.record("person.updated", "update", target_table="people",
-                                target_id=42, before={"a": 1}, after={"a": 2})
+                out = fx.record(
+                    "person.updated", "update", target_table="people", target_id=42, before={"a": 1}, after={"a": 2}
+                )
             fx_sink.set_sink(None)
-        _assert(out is None, "record returned {!r} on {}".format(out, type(exc).__name__))
+        _assert(out is None, f"record returned {out!r} on {type(exc).__name__}")
         cases.append(type(exc).__name__)
     # A malformed effect (bad op) must also be swallowed, not raised.
     with flag_on():
@@ -356,30 +372,39 @@ def t06_ledger_failure_variants():
         with fx.turn_scope(session_id=SESSION):
             out = fx.record("weird", "frobnicate", target_table="people", target_id=1)
         fx_sink.set_sink(None)
-    _assert(out is None, "malformed op raised or returned {!r}".format(out))
+    _assert(out is None, f"malformed op raised or returned {out!r}")
     return True, "swallowed: {} + malformed op".format(", ".join(cases))
 
 
 def t07_before_image_is_field_scoped():
     """An update stores only the columns that actually moved."""
     before_row = {
-        "id": 42, "full_name": PERSON, "nrc_passport_no": None,
-        "father_name": None, "business_occupation": "Director",
-        "country_of_residence": "Myanmar", "address": "No. 12, Yangon",
+        "id": 42,
+        "full_name": PERSON,
+        "nrc_passport_no": None,
+        "father_name": None,
+        "business_occupation": "Director",
+        "country_of_residence": "Myanmar",
+        "address": "No. 12, Yangon",
     }
     after_row = dict(before_row, nrc_passport_no="12/AAA(N)000001")
     spy = SpySink()
     with flag_on():
         fx_sink.set_sink(spy)
         with fx.turn_scope(session_id=SESSION):
-            fx.record("person.updated", "update", target_table="people", target_id=42,
-                      target_label=PERSON, before=before_row, after=after_row)
+            fx.record(
+                "person.updated",
+                "update",
+                target_table="people",
+                target_id=42,
+                target_label=PERSON,
+                before=before_row,
+                after=after_row,
+            )
         fx_sink.set_sink(None)
     e = spy.effects[0]
-    _assert(set(e.before_image) == {"nrc_passport_no"},
-            "before_image keys were {}".format(sorted(e.before_image)))
-    _assert(set(e.after_image) == {"nrc_passport_no"},
-            "after_image keys were {}".format(sorted(e.after_image)))
+    _assert(set(e.before_image) == {"nrc_passport_no"}, f"before_image keys were {sorted(e.before_image)}")
+    _assert(set(e.after_image) == {"nrc_passport_no"}, f"after_image keys were {sorted(e.after_image)}")
     _assert(e.before_image["nrc_passport_no"] is None, "before value wrong")
     _assert(e.after_image["nrc_passport_no"] == "12/AAA(N)000001", "after value wrong")
     _assert(e.reversible is True, "a field-scoped update must be reversible")
@@ -389,39 +414,45 @@ def t07_before_image_is_field_scoped():
 def t08_diff_marks_absent_keys_explicitly():
     """A key on one side only is emitted on both, the missing side as None."""
     b, a = fx.diff_images({"x": 1}, {"x": 1, "y": 2})
-    _assert(set(b) == {"y"} and set(a) == {"y"}, "keys were {} / {}".format(sorted(b), sorted(a)))
+    _assert(set(b) == {"y"} and set(a) == {"y"}, f"keys were {sorted(b)} / {sorted(a)}")
     _assert(b["y"] is None, "absent-before must be explicit None, got {!r}".format(b["y"]))
     _assert(a["y"] == 2, "after value wrong")
     # No change at all: both sides existed, nothing moved.
     b2, a2 = fx.diff_images({"x": 1}, {"x": 1})
-    _assert(b2 == {} and a2 == {}, "unchanged pair gave {} / {}".format(b2, a2))
+    _assert(b2 == {} and a2 == {}, f"unchanged pair gave {b2} / {a2}")
     # One side genuinely absent stays None, which is not the same as {}.
     b3, a3 = fx.diff_images(None, {"x": 1})
-    _assert(b3 is None and a3 == {"x": 1}, "insert-shaped diff gave {} / {}".format(b3, a3))
+    _assert(b3 is None and a3 == {"x": 1}, f"insert-shaped diff gave {b3} / {a3}")
     return True, "absent→None, unchanged→{}, insert→None"
 
 
 def t09_oversized_image_flips_reversibility():
     """Over the cap: truncated AND reversible turned off, with a reason."""
-    huge = {"directors": ["Director {}".format(i) for i in range(20000)], "id": 9}
+    huge = {"directors": [f"Director {i}" for i in range(20000)], "id": 9}
     size = len(__import__("json").dumps(huge))
-    _assert(size > fx.MAX_IMAGE_BYTES, "fixture is not actually oversized ({}B)".format(size))
+    _assert(size > fx.MAX_IMAGE_BYTES, f"fixture is not actually oversized ({size}B)")
     spy = SpySink()
     with flag_on():
         fx_sink.set_sink(spy)
         with fx.turn_scope(session_id=SESSION):
-            fx.record("company.updated", "update", target_table="companies", target_id=9,
-                      target_label=COMPANY, before=huge, after={"directors": [], "id": 9})
+            fx.record(
+                "company.updated",
+                "update",
+                target_table="companies",
+                target_id=9,
+                target_label=COMPANY,
+                before=huge,
+                after={"directors": [], "id": 9},
+            )
         fx_sink.set_sink(None)
     e = spy.effects[0]
     _assert(fx.is_truncated(e.before_image), "oversized before_image was not truncated")
     _assert("directors" in e.before_image["_keys"], "truncation marker lost the key names")
     _assert(e.reversible is False, "truncated effect still claims reversible=True")
-    _assert(e.irreversible_reason and "truncated" in e.irreversible_reason,
-            "reason was {!r}".format(e.irreversible_reason))
+    _assert(e.irreversible_reason and "truncated" in e.irreversible_reason, f"reason was {e.irreversible_reason!r}")
     stored = len(__import__("json").dumps(e.before_image))
-    _assert(stored < fx.MAX_IMAGE_BYTES, "stored image is still {}B".format(stored))
-    return True, "{}B in → {}B stored, reversible False".format(size, stored)
+    _assert(stored < fx.MAX_IMAGE_BYTES, f"stored image is still {stored}B")
+    return True, f"{size}B in → {stored}B stored, reversible False"
 
 
 def t10_reversibility_rules():
@@ -441,12 +472,13 @@ def t10_reversibility_rules():
     ]
     for op, tbl, tid, before, trunc, expected in cases:
         got, reason = fx.decide_reversibility(op, tbl, tid, before, trunc)
-        _assert(got is expected,
-                "{} {}/{} before={} trunc={} → {} (want {})".format(
-                    op, tbl, tid, before, trunc, got, expected))
+        _assert(
+            got is expected,
+            f"{op} {tbl}/{tid} before={before} trunc={trunc} → {got} (want {expected})",
+        )
         if not got:
-            _assert(reason, "irreversible case gave no reason: {} {}".format(op, tbl))
-    return True, "{} cases, every irreversible one carries a reason".format(len(cases))
+            _assert(reason, f"irreversible case gave no reason: {op} {tbl}")
+    return True, f"{len(cases)} cases, every irreversible one carries a reason"
 
 
 def t11_delete_keeps_the_whole_row():
@@ -461,37 +493,63 @@ def t11_delete_keeps_the_whole_row():
     would store one column as the before image of a row removal, and the
     re-insert would rebuild a person with nothing but a resignation date.
     """
-    row = {"id": 42, "full_name": PERSON, "nrc_passport_no": "12/AAA(N)000001",
-           "father_name": "U Tin Maung", "country_of_residence": "Myanmar"}
+    row = {
+        "id": 42,
+        "full_name": PERSON,
+        "nrc_passport_no": "12/AAA(N)000001",
+        "father_name": "U Tin Maung",
+        "country_of_residence": "Myanmar",
+    }
     spy = SpySink()
     with flag_on():
         fx_sink.set_sink(spy)
         with fx.turn_scope(session_id=SESSION):
             # diff=True is passed on purpose: build_effect must override it.
-            fx.record("person.deleted", "delete", target_table="people", target_id=42,
-                      target_label=PERSON, before=row, after=None, diff=True)
+            fx.record(
+                "person.deleted",
+                "delete",
+                target_table="people",
+                target_id=42,
+                target_label=PERSON,
+                before=row,
+                after=None,
+                diff=True,
+            )
             # Soft delete: only one column moves, but the whole row must be kept.
-            fx.record("person.ceased", "delete", target_table="people", target_id=42,
-                      target_label=PERSON, before=row,
-                      after=dict(row, resigned_date="2026-08-24"), diff=True)
+            fx.record(
+                "person.ceased",
+                "delete",
+                target_table="people",
+                target_id=42,
+                target_label=PERSON,
+                before=row,
+                after=dict(row, resigned_date="2026-08-24"),
+                diff=True,
+            )
         fx_sink.set_sink(None)
 
     hard, soft = spy.effects[0], spy.effects[1]
-    _assert(set(hard.before_image) == set(row),
-            "hard delete stored {} of {} columns".format(len(hard.before_image), len(row)))
+    _assert(
+        set(hard.before_image) == set(row),
+        f"hard delete stored {len(hard.before_image)} of {len(row)} columns",
+    )
     _assert(hard.after_image is None, "hard delete should have no after image")
     _assert(hard.reversible is True, "a full-row delete must be reversible")
 
-    _assert(set(soft.before_image) == set(row),
-            "soft delete field-scoped the before image to {} — the whole row is "
-            "needed to re-insert".format(sorted(soft.before_image)))
-    _assert(soft.before_image["full_name"] == PERSON,
-            "soft delete lost full_name from the before image")
-    _assert(set(soft.after_image) == set(row) | {"resigned_date"},
-            "soft delete after image was {}".format(sorted(soft.after_image)))
+    _assert(
+        set(soft.before_image) == set(row),
+        f"soft delete field-scoped the before image to {sorted(soft.before_image)} — the whole row is needed to re-insert",
+    )
+    _assert(soft.before_image["full_name"] == PERSON, "soft delete lost full_name from the before image")
+    _assert(
+        set(soft.after_image) == set(row) | {"resigned_date"},
+        f"soft delete after image was {sorted(soft.after_image)}",
+    )
     _assert(soft.reversible is True, "a full-row soft delete must be reversible")
-    return True, "hard: {}/{} cols; soft: {}/{} cols despite 1 changed".format(
-        len(hard.before_image), len(row), len(soft.before_image), len(row))
+    return (
+        True,
+        f"hard: {len(hard.before_image)}/{len(row)} cols; soft: {len(soft.before_image)}/{len(row)} cols despite 1 changed",
+    )
 
 
 def t12_effect_outside_a_turn_is_dropped():
@@ -501,8 +559,8 @@ def t12_effect_outside_a_turn_is_dropped():
         fx_sink.set_sink(spy)
         out = fx.record("document.generated", "insert", target_table="documents", target_id=1)
         fx_sink.set_sink(None)
-    _assert(out is None, "record outside a turn returned {!r}".format(out))
-    _assert(spy.effects == [], "{} effect(s) written with no turn".format(len(spy.effects)))
+    _assert(out is None, f"record outside a turn returned {out!r}")
+    _assert(spy.effects == [], f"{len(spy.effects)} effect(s) written with no turn")
     return True, "dropped, no synthesised turn id"
 
 
@@ -518,7 +576,7 @@ def t13_turn_scope_is_reset_on_exception():
             pass
         leaked = fx.current_turn_id()
         fx_sink.set_sink(None)
-    _assert(leaked is None, "turn id {!r} leaked past a failed turn".format(leaked))
+    _assert(leaked is None, f"turn id {leaked!r} leaked past a failed turn")
     return True, "turn id cleared after an exception"
 
 
@@ -545,7 +603,7 @@ def t13b_turn_scope_resets_when_open_turn_raises():
             fx_sink.set_sink(None)
     finally:
         fx_turn._safe_open = orig_open
-    _assert(leaked is None, "turn id {!r} leaked after open_turn raised".format(leaked))
+    _assert(leaked is None, f"turn id {leaked!r} leaked after open_turn raised")
     return True, "scope cleared even when open_turn throws"
 
 
@@ -585,11 +643,10 @@ def t15_seq_is_unique_under_concurrency():
         for t in threads:
             t.join()
         fx_sink.set_sink(None)
-    _assert(len(seen) == 4 * n, "expected {} seqs, got {}".format(4 * n, len(seen)))
-    _assert(len(set(seen)) == 4 * n,
-            "{} duplicate seq value(s)".format(4 * n - len(set(seen))))
-    _assert(min(seen) == 1 and max(seen) == 4 * n, "seq range {}..{}".format(min(seen), max(seen)))
-    return True, "{} seqs across 4 threads, 0 duplicates".format(len(seen))
+    _assert(len(seen) == 4 * n, f"expected {4 * n} seqs, got {len(seen)}")
+    _assert(len(set(seen)) == 4 * n, f"{4 * n - len(set(seen))} duplicate seq value(s)")
+    _assert(min(seen) == 1 and max(seen) == 4 * n, f"seq range {min(seen)}..{max(seen)}")
+    return True, f"{len(seen)} seqs across 4 threads, 0 duplicates"
 
 
 def t16_sink_never_borrows_a_connection():
@@ -605,10 +662,9 @@ def t16_sink_never_borrows_a_connection():
         fn = getattr(fx_sink.PostgresSink, name)
         params = set(inspect.signature(fn).parameters) - {"self"}
         bad = {p for p in params if "conn" in p.lower() or "cur" in p.lower()}
-        _assert(not bad, "PostgresSink.{} accepts {}".format(name, sorted(bad)))
+        _assert(not bad, f"PostgresSink.{name} accepts {sorted(bad)}")
     src = inspect.getsource(fx_sink.PostgresSink)
-    _assert("get_db_conn(autocommit=True)" in src,
-            "PostgresSink does not open its own autocommit connection")
+    _assert("get_db_conn(autocommit=True)" in src, "PostgresSink does not open its own autocommit connection")
     _assert(src.count("conn.close()") >= 3, "not every method closes its connection")
     return True, "4 methods, 0 connection parameters, autocommit, closed"
 
@@ -619,44 +675,43 @@ def t17_migration_follows_the_runner_rules():
     _assert(path.exists(), "migration file missing")
     sql = path.read_text()
 
-    body = "\n".join(
-        line for line in sql.splitlines() if not line.strip().startswith("--")
-    )
+    body = "\n".join(line for line in sql.splitlines() if not line.strip().startswith("--"))
     _assert("%s" not in body, "migration contains a %s placeholder (cur.execute would bind it)")
-    _assert("schema_migrations" not in body,
-            "migration writes schema_migrations itself — the runner already does")
-    _assert(body.count("CREATE TABLE IF NOT EXISTS") == 2,
-            "expected 2 idempotent CREATE TABLEs, got {}".format(
-                body.count("CREATE TABLE IF NOT EXISTS")))
-    _assert("CREATE TABLE " not in body.replace("CREATE TABLE IF NOT EXISTS", ""),
-            "a CREATE TABLE without IF NOT EXISTS")
+    _assert("schema_migrations" not in body, "migration writes schema_migrations itself — the runner already does")
+    _assert(
+        body.count("CREATE TABLE IF NOT EXISTS") == 2,
+        "expected 2 idempotent CREATE TABLEs, got {}".format(body.count("CREATE TABLE IF NOT EXISTS")),
+    )
+    _assert(
+        "CREATE TABLE " not in body.replace("CREATE TABLE IF NOT EXISTS", ""), "a CREATE TABLE without IF NOT EXISTS"
+    )
     idx = body.count("CREATE INDEX IF NOT EXISTS")
-    _assert(idx >= 6, "expected the six indexes, found {}".format(idx))
-    _assert("CREATE INDEX " not in body.replace("CREATE INDEX IF NOT EXISTS", ""),
-            "a CREATE INDEX without IF NOT EXISTS")
+    _assert(idx >= 6, f"expected the six indexes, found {idx}")
+    _assert(
+        "CREATE INDEX " not in body.replace("CREATE INDEX IF NOT EXISTS", ""), "a CREATE INDEX without IF NOT EXISTS"
+    )
     _assert("REFERENCES" not in body.upper(), "migration declares a foreign key")
     _assert("DROP TABLE IF EXISTS effect_log;" in sql, "no reversing DROP for effect_log")
     _assert("DROP TABLE IF EXISTS effect_turns;" in sql, "no reversing DROP for effect_turns")
     for stmt in ("DROP TABLE IF EXISTS effect_log;", "DROP TABLE IF EXISTS effect_turns;"):
         for line in sql.splitlines():
             if stmt in line:
-                _assert(line.strip().startswith("--"),
-                        "reversing DROP is live SQL, not commented: {}".format(line.strip()))
-    return True, "2 tables, {} indexes, no %s, no FK, no schema_migrations, DROPs commented".format(idx)
+                _assert(line.strip().startswith("--"), f"reversing DROP is live SQL, not commented: {line.strip()}")
+    return True, f"2 tables, {idx} indexes, no %s, no FK, no schema_migrations, DROPs commented"
 
 
 def t18_future_annotations_everywhere():
     """Local python is 3.9.6; every new module needs the __future__ import."""
     pkg = REPO / "scout" / "effects"
-    files = sorted(pkg.glob("*.py")) + [Path(__file__)]
+    files = [*sorted(pkg.glob("*.py")), Path(__file__)]
     missing = []
     for f in files:
         head = f.read_text()
         if "from __future__ import annotations" not in head:
             missing.append(f.name)
-    _assert(not missing, "missing __future__ annotations in: {}".format(missing))
-    _assert(len(files) >= 6, "expected the package's modules, found {}".format(len(files)))
-    return True, "{} files, all carry it".format(len(files))
+    _assert(not missing, f"missing __future__ annotations in: {missing}")
+    _assert(len(files) >= 6, f"expected the package's modules, found {len(files)}")
+    return True, f"{len(files)} files, all carry it"
 
 
 def t19_columns_match_the_migration():
@@ -673,23 +728,22 @@ def t19_columns_match_the_migration():
         m = re.match(r"([a-z_]+)\s+[A-Z]", line)
         if m:
             cols.add(m.group(1))
-    _assert("id" in cols and "created_at" in cols, "parsed columns look wrong: {}".format(sorted(cols)))
+    _assert("id" in cols and "created_at" in cols, f"parsed columns look wrong: {sorted(cols)}")
 
-    written = set(
-        fx_model.Effect(kind="k", op="insert").as_row().keys()
-    )
+    written = set(fx_model.Effect(kind="k", op="insert").as_row().keys())
     missing = written - cols
-    _assert(not missing, "sink writes columns absent from the migration: {}".format(sorted(missing)))
+    _assert(not missing, f"sink writes columns absent from the migration: {sorted(missing)}")
 
     # The insert statement's column list must match as_row() exactly — a
     # mismatch binds values to the wrong columns silently.
     ins = fx_sink._INSERT_SQL.split("(", 1)[1].split(")", 1)[0]
     ins_cols = [c.strip() for c in ins.split(",")]
-    _assert(set(ins_cols) == written,
-            "INSERT columns {} != as_row() {}".format(sorted(ins_cols), sorted(written)))
-    _assert(fx_sink._INSERT_SQL.count("%s") == len(ins_cols),
-            "{} columns but {} placeholders".format(len(ins_cols), fx_sink._INSERT_SQL.count("%s")))
-    return True, "{} written columns, all present, {} placeholders".format(len(written), len(ins_cols))
+    _assert(set(ins_cols) == written, f"INSERT columns {sorted(ins_cols)} != as_row() {sorted(written)}")
+    _assert(
+        fx_sink._INSERT_SQL.count("%s") == len(ins_cols),
+        "{} columns but {} placeholders".format(len(ins_cols), fx_sink._INSERT_SQL.count("%s")),
+    )
+    return True, f"{len(written)} written columns, all present, {len(ins_cols)} placeholders"
 
 
 def t20_ops_closed_set_matches_the_check_constraint():
@@ -697,9 +751,8 @@ def t20_ops_closed_set_matches_the_check_constraint():
     sql = (REPO / "db" / "migration_024_effects.sql").read_text()
     chunk = sql.split("CHECK (op IN (", 1)[1].split("))", 1)[0]
     sql_ops = {p.strip().strip("'") for p in chunk.split(",")}
-    _assert(sql_ops == set(fx.OPS),
-            "SQL {} vs model {}".format(sorted(sql_ops), sorted(fx.OPS)))
-    return True, "both = {}".format(sorted(sql_ops))
+    _assert(sql_ops == set(fx.OPS), f"SQL {sorted(sql_ops)} vs model {sorted(fx.OPS)}")
+    return True, f"both = {sorted(sql_ops)}"
 
 
 def t24_product_record_calls_use_a_valid_op():
@@ -736,11 +789,10 @@ def t24_product_record_calls_use_a_valid_op():
                     continue
                 checked += 1
                 if isinstance(kw.value, _ast.Constant) and kw.value.value not in fx.OPS:
-                    offenders.append("{}:{} op={!r}".format(
-                        path.relative_to(REPO), node.lineno, kw.value.value))
-    _assert(not offenders, "invalid op(s): {}".format(offenders))
+                    offenders.append(f"{path.relative_to(REPO)}:{node.lineno} op={kw.value.value!r}")
+    _assert(not offenders, f"invalid op(s): {offenders}")
     _assert(checked > 0, "no record(op=...) call sites found — the scan is inert")
-    return True, "{} call site(s), all ops valid".format(checked)
+    return True, f"{checked} call site(s), all ops valid"
 
 
 def t21_session_falls_back_to_the_tools_context_var():
@@ -770,11 +822,13 @@ def t21_session_falls_back_to_the_tools_context_var():
             fx_sink.set_sink(spy)
             with fx.turn_scope(actor_email=ACTOR) as turn:  # no session_id given
                 _assert(turn.session_id is None, "turn started with a session id")
-                fx.record("document.generated", "insert", target_table="documents",
-                          target_id=1, after={"file_name": "a.docx"})
+                fx.record(
+                    "document.generated", "insert", target_table="documents", target_id=1, after={"file_name": "a.docx"}
+                )
                 bound = turn.session_id
-                fx.record("person.updated", "update", target_table="people", target_id=42,
-                          before={"a": None}, after={"a": 1})
+                fx.record(
+                    "person.updated", "update", target_table="people", target_id=42, before={"a": None}, after={"a": 1}
+                )
             fx_sink.set_sink(None)
     finally:
         if prev is not None:
@@ -784,8 +838,10 @@ def t21_session_falls_back_to_the_tools_context_var():
         if made_pkg:
             sys.modules.pop("scout.tools", None)
 
-    _assert(all(e.session_id == "sess-from-run-context" for e in spy.effects),
-            "session ids were {}".format([e.session_id for e in spy.effects]))
+    _assert(
+        all(e.session_id == "sess-from-run-context" for e in spy.effects),
+        f"session ids were {[e.session_id for e in spy.effects]}",
+    )
     _assert(bound == "sess-from-run-context", "session was not memoised onto the turn")
 
     # And an unavailable slot_resolver must cost nothing but the session id.
@@ -843,7 +899,7 @@ def t23_turn_survives_a_streaming_response():
         from starlette.routing import Route
         from starlette.testclient import TestClient
     except Exception as e:
-        return None, "SKIPPED — starlette/httpx unavailable ({})".format(type(e).__name__)
+        return None, f"SKIPPED — starlette/httpx unavailable ({type(e).__name__})"
 
     class SnapSink(fx_sink.MemorySink):
         """Snapshots effect_count AT close time.
@@ -865,15 +921,26 @@ def t23_turn_survives_a_streaming_response():
     state = {}
 
     async def endpoint(request):
-        fx.record("document.generated", "insert", target_table="documents",
-                  target_id=1, after={"file_name": "in_endpoint.docx"})
+        fx.record(
+            "document.generated",
+            "insert",
+            target_table="documents",
+            target_id=1,
+            after={"file_name": "in_endpoint.docx"},
+        )
 
         async def event_stream():
             # Runs after the middleware's `with` block has already exited.
             for i in range(3):
-                fx.record("person.updated", "update", target_table="people",
-                          target_id=100 + i, before={"x": None}, after={"x": i})
-                yield "data: {}\n\n".format(i).encode()
+                fx.record(
+                    "person.updated",
+                    "update",
+                    target_table="people",
+                    target_id=100 + i,
+                    before={"x": None},
+                    after={"x": i},
+                )
+                yield f"data: {i}\n\n".encode()
 
         return StreamingResponse(event_stream(), media_type="text/event-stream")
 
@@ -893,21 +960,21 @@ def t23_turn_survives_a_streaming_response():
 
     tid = state.get("turn_id")
     _assert(tid, "middleware never opened a turn")
-    _assert(len(spy.effects) == 4,
-            "expected 4 effects (1 endpoint + 3 streamed), got {}".format(len(spy.effects)))
+    _assert(len(spy.effects) == 4, f"expected 4 effects (1 endpoint + 3 streamed), got {len(spy.effects)}")
     carried = sum(1 for e in spy.effects if e.turn_id == tid)
-    _assert(carried == 4,
-            "only {}/4 effects carried the turn id — tail effects are being "
-            "dropped".format(carried))
+    _assert(carried == 4, f"only {carried}/4 effects carried the turn id — tail effects are being dropped")
     _assert(len({e.turn_id for e in spy.effects}) == 1, "effects split across turns")
 
     _assert(spy.count_at_close is not None, "close_turn never ran")
-    _assert(spy.count_at_close < len(spy.effects),
-            "effect_count at close ({}) did not under-report against {} — if this "
-            "ever stops being true the 'hint' caveat can be dropped".format(
-                spy.count_at_close, len(spy.effects)))
-    return True, "4/4 effects carry the turn id; effect_count at close {} vs {} final".format(
-        spy.count_at_close, len(spy.effects))
+    _assert(
+        spy.count_at_close < len(spy.effects),
+        f"effect_count at close ({spy.count_at_close}) did not under-report against {len(spy.effects)} — if this "
+        "ever stops being true the 'hint' caveat can be dropped",
+    )
+    return (
+        True,
+        f"4/4 effects carry the turn id; effect_count at close {spy.count_at_close} vs {len(spy.effects)} final",
+    )
 
 
 TESTS = [
@@ -947,10 +1014,8 @@ def _clear_turn_scope():
     the mutation broke the test it was aimed at. That is precisely how the M03
     leak was mistaken for twelve unrelated ones on the first run.
     """
-    try:
+    with contextlib.suppress(Exception):
         fx_turn._current.set(None)
-    except Exception:
-        pass
 
 
 def run_suite(quiet=False):
@@ -966,7 +1031,7 @@ def run_suite(quiet=False):
         except AssertionError as e:
             rows.append((tid, desc, "FAIL", str(e)[:110]))
         except Exception as e:
-            rows.append((tid, desc, "ERROR", "{}: {}".format(type(e).__name__, e)[:110]))
+            rows.append((tid, desc, "ERROR", f"{type(e).__name__}: {e}"[:110]))
         finally:
             fx_sink.reset_sink()
             _clear_turn_scope()
@@ -981,7 +1046,7 @@ def run_suite(quiet=False):
         counts = {}
         for _, _, r, _ in rows:
             counts[r] = counts.get(r, 0) + 1
-        print("\nSUMMARY: " + " · ".join("{}={}".format(k, v) for k, v in sorted(counts.items())))
+        print("\nSUMMARY: " + " · ".join(f"{k}={v}" for k, v in sorted(counts.items())))
     return failures, rows
 
 
@@ -990,15 +1055,18 @@ def run_suite(quiet=False):
 # failure count is printed before/after. A mutation that moves nothing means
 # the test guarding it is not a test.
 
+
 def _mut_flag_always_on():
     orig = fx_flag.ledger_enabled
     fx_flag.ledger_enabled = lambda: True
     fx_recorder.ledger_enabled = lambda: True
     fx_turn.ledger_enabled = lambda: True
+
     def undo():
         fx_flag.ledger_enabled = orig
         fx_recorder.ledger_enabled = orig
         fx_turn.ledger_enabled = orig
+
     return undo
 
 
@@ -1011,22 +1079,31 @@ def _mut_recorder_reraises():
         if turn is None:
             return None
         from scout.effects.model import build_effect
-        effect = build_effect(kind=kind, op=op, turn_id=turn.turn_id,
-                              seq=turn.next_seq(), session_id=turn.session_id,
-                              actor_email=turn.actor_email,
-                              tool_name=kw.get("tool_name"),
-                              target_table=kw.get("target_table"),
-                              target_id=kw.get("target_id"),
-                              target_label=kw.get("target_label"),
-                              before=kw.get("before"), after=kw.get("after"),
-                              diff=kw.get("diff", True))
+
+        effect = build_effect(
+            kind=kind,
+            op=op,
+            turn_id=turn.turn_id,
+            seq=turn.next_seq(),
+            session_id=turn.session_id,
+            actor_email=turn.actor_email,
+            tool_name=kw.get("tool_name"),
+            target_table=kw.get("target_table"),
+            target_id=kw.get("target_id"),
+            target_label=kw.get("target_label"),
+            before=kw.get("before"),
+            after=kw.get("after"),
+            diff=kw.get("diff", True),
+        )
         return fx_sink.get_sink().write(effect)
 
     fx_recorder.record = raising
     fx.record = raising
+
     def undo():
         fx_recorder.record = orig
         fx.record = orig
+
     return undo
 
 
@@ -1035,18 +1112,21 @@ def _mut_turn_scope_reraises():
     orig_open, orig_close = fx_turn._safe_open, fx_turn._safe_close
     fx_turn._safe_open = lambda ctx: fx_sink.get_sink().open_turn(ctx)
     fx_turn._safe_close = lambda ctx: fx_sink.get_sink().close_turn(ctx)
+
     def undo():
         fx_turn._safe_open, fx_turn._safe_close = orig_open, orig_close
+
     return undo
 
 
 def _mut_no_diff():
     """Store whole rows instead of field-scoping them."""
     orig = fx_model.diff_images
-    fx_model.diff_images = lambda b, a: (dict(b) if b is not None else None,
-                                         dict(a) if a is not None else None)
+    fx_model.diff_images = lambda b, a: (dict(b) if b is not None else None, dict(a) if a is not None else None)
+
     def undo():
         fx_model.diff_images = orig
+
     return undo
 
 
@@ -1058,17 +1138,21 @@ def _mut_cap_does_not_flip_reversible():
         return orig(op, table, tid, before, False)
 
     fx_model.decide_reversibility = lax
+
     def undo():
         fx_model.decide_reversibility = orig
+
     return undo
 
 
 def _mut_no_cap():
     """Raise the cap so nothing is ever truncated."""
     orig = fx_model.MAX_IMAGE_BYTES
-    fx_model.MAX_IMAGE_BYTES = 10 ** 9
+    fx_model.MAX_IMAGE_BYTES = 10**9
+
     def undo():
         fx_model.MAX_IMAGE_BYTES = orig
+
     return undo
 
 
@@ -1089,8 +1173,10 @@ def _mut_seq_unlocked():
         return v
 
     fx_turn.TurnContext.next_seq = racy
+
     def undo():
         fx_turn.TurnContext.next_seq = orig
+
     return undo
 
 
@@ -1111,31 +1197,35 @@ def _mut_turn_not_reset():
 
     fx_turn.turn_scope = leaky
     fx.turn_scope = leaky
+
     def undo():
         fx_turn.turn_scope = orig
         fx.turn_scope = orig
+
     return undo
 
 
 def _mut_record_invents_a_turn():
     """Synthesise a turn id when none is in scope."""
     orig = fx_turn.current_turn
-    fx_recorder.current_turn = lambda: fx_turn.current_turn() or fx_turn.TurnContext(
-        fx_turn.new_turn_id(), "synthetic"
-    )
+    fx_recorder.current_turn = lambda: fx_turn.current_turn() or fx_turn.TurnContext(fx_turn.new_turn_id(), "synthetic")
+
     def undo():
         fx_recorder.current_turn = orig
+
     return undo
 
 
 def _mut_ops_drift():
     """Add an op the SQL CHECK does not know about."""
     orig = fx_model.OPS
-    fx_model.OPS = orig + ("archive",)
+    fx_model.OPS = (*orig, "archive")
     fx.OPS = fx_model.OPS
+
     def undo():
         fx_model.OPS = orig
         fx.OPS = orig
+
     return undo
 
 
@@ -1143,8 +1233,10 @@ def _mut_insert_columns_drift():
     """Drop a column from the INSERT statement."""
     orig = fx_sink._INSERT_SQL
     fx_sink._INSERT_SQL = orig.replace("before_image, after_image,", "after_image,")
+
     def undo():
         fx_sink._INSERT_SQL = orig
+
     return undo
 
 
@@ -1160,14 +1252,23 @@ def _mut_delete_gets_diffed():
             b, bt = fx_model.cap_image(b)
             a, at = fx_model.cap_image(a)
             tid = None if kw.get("target_id") is None else str(kw["target_id"])
-            rev, reason = fx_model.decide_reversibility(
-                "delete", kw.get("target_table"), tid, b, bt or at)
+            rev, reason = fx_model.decide_reversibility("delete", kw.get("target_table"), tid, b, bt or at)
             return fx_model.Effect(
-                kind=kw["kind"], op="delete", turn_id=kw["turn_id"], seq=kw["seq"],
-                session_id=kw.get("session_id"), actor_email=kw.get("actor_email"),
-                tool_name=kw.get("tool_name"), target_table=kw.get("target_table"),
-                target_id=tid, target_label=kw.get("target_label"),
-                before_image=b, after_image=a, reversible=rev, irreversible_reason=reason)
+                kind=kw["kind"],
+                op="delete",
+                turn_id=kw["turn_id"],
+                seq=kw["seq"],
+                session_id=kw.get("session_id"),
+                actor_email=kw.get("actor_email"),
+                tool_name=kw.get("tool_name"),
+                target_table=kw.get("target_table"),
+                target_id=tid,
+                target_label=kw.get("target_label"),
+                before_image=b,
+                after_image=a,
+                reversible=rev,
+                irreversible_reason=reason,
+            )
         return orig(**kw)
 
     # Patch through the reference bound at import time AND the sys.modules
@@ -1188,9 +1289,11 @@ def _mut_session_fallback_removed():
     orig = fx_turn.ambient_session
     fx_turn.ambient_session = lambda: None
     fx_recorder.ambient_session = lambda: None
+
     def undo():
         fx_turn.ambient_session = orig
         fx_recorder.ambient_session = orig
+
     return undo
 
 
@@ -1205,9 +1308,11 @@ def _mut_bind_session_clears_on_empty():
 
     fx_turn.bind_session = clobber
     fx.bind_session = clobber
+
     def undo():
         fx_turn.bind_session = orig
         fx.bind_session = orig
+
     return undo
 
 
@@ -1272,31 +1377,32 @@ MUTATIONS = [
 def run_controls():
     base_failures, base_rows = run_suite(quiet=True)
     base_failed_ids = {t for t, _, r, _ in base_rows if r != "PASS"}
-    print("\nNEGATIVE CONTROLS — baseline failures: {}/{}".format(base_failures, len(TESTS)))
+    print(f"\nNEGATIVE CONTROLS — baseline failures: {base_failures}/{len(TESTS)}")
     print("-" * 108)
     print("{:<5} {:<44} {:<8} {:<8} {}".format("ID", "MUTATION", "BEFORE", "AFTER", "TESTS THAT FLIPPED"))
     print("-" * 108)
     bad = []
-    for mid, desc, apply_mut, expected in MUTATIONS:
+    for mid, desc, apply_mut, _expected in MUTATIONS:
         undo = apply_mut()
         try:
             failures, rows = run_suite(quiet=True)
-            flipped = sorted(
-                t for t, _, r, _ in rows if r != "PASS" and t not in base_failed_ids
-            )
+            flipped = sorted(t for t, _, r, _ in rows if r != "PASS" and t not in base_failed_ids)
         finally:
             undo()
             fx_sink.reset_sink()
         moved = failures > base_failures
         if not moved:
             bad.append(mid)
-        print("{:<5} {:<44} {:<8} {:<8} {}".format(
-            mid, desc, base_failures, failures, ", ".join(flipped) or "NONE — test is inert"))
+        print(
+            "{:<5} {:<44} {:<8} {:<8} {}".format(
+                mid, desc, base_failures, failures, ", ".join(flipped) or "NONE — test is inert"
+            )
+        )
     print("-" * 108)
     if bad:
         print("INERT MUTATIONS: {} — the tests guarding these do not work.".format(", ".join(bad)))
     else:
-        print("All {} mutations moved the number. No inert tests.".format(len(MUTATIONS)))
+        print(f"All {len(MUTATIONS)} mutations moved the number. No inert tests.")
     return 1 if bad else 0
 
 

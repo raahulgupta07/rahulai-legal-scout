@@ -115,7 +115,7 @@ class ScriptedRunError(Exception):
 # system python3.9 the tracker scripts already use, with no dependencies.
 
 
-class _Turn(object):
+class _Turn:
     ends_stream = False
 
 
@@ -180,8 +180,7 @@ class Document(_Turn):
     by regex over the reply rather than by a structured field.
     """
 
-    def __init__(self, template, filename="scripted.docx", tool_name="generate_document",
-                 trailing="\n"):
+    def __init__(self, template, filename="scripted.docx", tool_name="generate_document", trailing="\n"):
         self.template = template
         self.filename = filename
         self.tool_name = tool_name
@@ -216,8 +215,9 @@ class Error(_Turn):
 # ---------------------------------------------------------------------------
 
 
-def candidate(person_id, name, identifier="", subtitle="", party_type="individual",
-              source="company_people", representatives=None):
+def candidate(
+    person_id, name, identifier="", subtitle="", party_type="individual", source="company_people", representatives=None
+):
     """The candidate shape the chat UI (and therefore `decide()`) expects.
 
     Kept field-for-field with `people_picker._candidate()`. If that shape drifts,
@@ -225,7 +225,7 @@ def candidate(person_id, name, identifier="", subtitle="", party_type="individua
     resembling the payload it stands in for is worse than no fixture.
     """
     return {
-        "id": str(person_id) if person_id is not None else "name:%s" % name,
+        "id": str(person_id) if person_id is not None else f"name:{name}",
         "name": name or "",
         "identifier": identifier or "",
         "subtitle": subtitle or "",
@@ -264,7 +264,7 @@ def fill_template(template, state, resolve_mode="chosen"):
     field, which is the same failure mode as the U+00A0 placeholder bug.
     """
     if resolve_mode not in ("chosen", "first_candidate"):
-        raise ScriptedRunError("unknown resolve_mode %r" % (resolve_mode,))
+        raise ScriptedRunError(f"unknown resolve_mode {resolve_mode!r}")
 
     def resolve(match):
         slot, arg = match.group(1), (match.group(2) or "")
@@ -280,13 +280,13 @@ def fill_template(template, state, resolve_mode="chosen"):
                         if offered:
                             return str(offered[0].get("name", ""))
                     return str((sel.get("chosen") or {}).get("name", ""))
-            return "[unfilled:picked:%s]" % arg
+            return f"[unfilled:picked:{arg}]"
         if slot == "answer":
             for ans in state.get("answers", []):
                 if arg.lower() in str(ans.get("text", "")).lower():
                     return str(ans.get("value", ""))
-            return "[unfilled:answer:%s]" % arg
-        return "[unfilled:%s]" % slot
+            return f"[unfilled:answer:{arg}]"
+        return f"[unfilled:{slot}]"
 
     return _TOKEN.sub(resolve, template)
 
@@ -302,12 +302,12 @@ def _docx_bytes(text):
     """
     paragraphs = []
     for line in text.splitlines():
-        safe = (line.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
-        paragraphs.append("<w:p><w:r><w:t>%s</w:t></w:r></w:p>" % safe)
+        safe = line.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        paragraphs.append(f"<w:p><w:r><w:t>{safe}</w:t></w:r></w:p>")
     xml = (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
-        "<w:body>%s</w:body></w:document>" % "".join(paragraphs)
+        "<w:body>{}</w:body></w:document>".format("".join(paragraphs))
     )
     buf = io.BytesIO()
     # Fixed date_time on every entry: zipfile defaults to time.localtime(), and
@@ -324,7 +324,7 @@ def _docx_bytes(text):
 # ---------------------------------------------------------------------------
 
 
-class _SSEStream(object):
+class _SSEStream:
     """Iterates like the `urllib` response the suites already consume.
 
     Deliberately includes a blank line and one non-`data:` line per stream. The
@@ -339,7 +339,7 @@ class _SSEStream(object):
     def __iter__(self):
         yield b": scripted stream\n"
         for ev in self._events:
-            yield ("data: %s\n" % json.dumps(ev, sort_keys=True)).encode("utf-8")
+            yield (f"data: {json.dumps(ev, sort_keys=True)}\n").encode()
             yield b"\n"
 
     # Context-manager parity with `urllib.request.urlopen`, so a caller can be
@@ -356,7 +356,7 @@ class _SSEStream(object):
 # ---------------------------------------------------------------------------
 
 
-class ScriptedAgentRuntime(object):
+class ScriptedAgentRuntime:
     """Drive the tracker suites off a script instead of a model.
 
     Usage mirrors the HTTP calls one for one::
@@ -373,27 +373,27 @@ class ScriptedAgentRuntime(object):
         self.agent_id = agent_id
         self.resolve_mode = resolve_mode
 
-        self._index = 0          # next turn to play
-        self._run_seq = 0        # how many streams have been opened
-        self._pending = None     # the turn we are paused on, if any
+        self._index = 0  # next turn to play
+        self._run_seq = 0  # how many streams have been opened
+        self._pending = None  # the turn we are paused on, if any
         self._pending_run = None
 
         # What the conversation actually recorded. `fill_template` reads this,
         # and the suites can inspect it to assert plumbing rather than prose.
         self.state = {"company": company, "answers": [], "selections": []}
-        self.documents = {}      # download url -> bytes
-        self.messages = []       # every message posted, in order
-        self.continues = []      # every resume payload, as received
+        self.documents = {}  # download url -> bytes
+        self.messages = []  # every message posted, in order
+        self.continues = []  # every resume payload, as received
 
     # -- ids ---------------------------------------------------------------
     # Derived from the stream index, never from a clock or a counter that could
     # be reordered by test selection.
 
     def _run_id(self, seq):
-        return "run-%03d" % seq
+        return f"run-{seq:03d}"
 
     def _tool_call_id(self, seq, n):
-        return "call-%03d-%d" % (seq, n)
+        return f"call-{seq:03d}-{n}"
 
     # -- the two POSTs -----------------------------------------------------
 
@@ -407,11 +407,10 @@ class ScriptedAgentRuntime(object):
         """
         if self._pending is not None:
             raise ScriptedRunError(
-                "start() while the run is paused on %s — the suite must resume "
-                "via continue_run() first" % type(self._pending).__name__
+                f"start() while the run is paused on {type(self._pending).__name__} — the suite must resume "
+                "via continue_run() first"
             )
-        self.messages.append({"message": message, "session_id": session_id,
-                              "user_id": user_id})
+        self.messages.append({"message": message, "session_id": session_id, "user_id": user_id})
         return self._play()
 
     def continue_run(self, run_id, agent_id, tools_json, session_id="scripted", user_id=1):
@@ -429,17 +428,14 @@ class ScriptedAgentRuntime(object):
         if self._pending is None:
             raise ScriptedRunError("continue_run() with no paused run")
         if run_id != self._pending_run:
-            raise ScriptedRunError(
-                "continue_run() posted to %r but the paused run is %r"
-                % (run_id, self._pending_run)
-            )
+            raise ScriptedRunError(f"continue_run() posted to {run_id!r} but the paused run is {self._pending_run!r}")
         if agent_id != self.agent_id:
-            raise ScriptedRunError("continue_run() posted to agent %r" % (agent_id,))
+            raise ScriptedRunError(f"continue_run() posted to agent {agent_id!r}")
 
         try:
             tools = json.loads(tools_json)
         except (ValueError, TypeError) as exc:
-            raise ScriptedRunError("resume payload is not JSON: %s" % exc)
+            raise ScriptedRunError(f"resume payload is not JSON: {exc}") from exc
         self.continues.append(tools)
 
         turn = self._pending
@@ -456,7 +452,7 @@ class ScriptedAgentRuntime(object):
         """`GET /api/documents/download/...` — the generated file's bytes."""
         key = url.split("?")[0]
         if key not in self.documents:
-            raise ScriptedRunError("no scripted document at %r" % (url,))
+            raise ScriptedRunError(f"no scripted document at {url!r}")
         return self.documents[key]
 
     # -- resume payload ----------------------------------------------------
@@ -481,52 +477,48 @@ class ScriptedAgentRuntime(object):
         """Write the user's answer into run state. Returns an error string or None."""
         if isinstance(turn, Ask):
             if not fields.get("questions_json"):
-                return ("dangling tool call: questions_json was dropped from the "
-                        "resume payload")
+                return "dangling tool call: questions_json was dropped from the resume payload"
             raw = fields.get("answers")
             try:
                 picked = json.loads(raw) if raw else {}
             except (ValueError, TypeError):
-                return "answers was not JSON: %r" % (raw,)
+                return f"answers was not JSON: {raw!r}"
             if not isinstance(picked, dict):
                 return "answers must be a JSON object of {question_id: value}"
-            by_id = dict((q.get("id"), q.get("text") or "") for q in turn.questions)
+            by_id = {q.get("id"): q.get("text") or "" for q in turn.questions}
             for qid, value in picked.items():
                 if qid not in by_id:
-                    return "answer for unknown question id %r" % (qid,)
-                self.state["answers"].append(
-                    {"id": qid, "text": by_id[qid], "value": value}
-                )
+                    return f"answer for unknown question id {qid!r}"
+                self.state["answers"].append({"id": qid, "text": by_id[qid], "value": value})
             return None
 
         if isinstance(turn, Pick):
             if not fields.get("candidates_json"):
-                return ("dangling tool call: candidates_json was dropped from the "
-                        "resume payload")
+                return "dangling tool call: candidates_json was dropped from the resume payload"
             raw = fields.get("selected")
             try:
                 chosen = json.loads(raw) if raw else None
             except (ValueError, TypeError):
-                return "selected was not JSON: %r" % (raw,)
+                return f"selected was not JSON: {raw!r}"
             if not chosen:
                 return "picker resumed with no selection"
             # `offered` is kept alongside the choice so `first_candidate` mode
             # can reproduce the old bug without the script having to describe it.
             self.state["selections"].append(
-                {"tool": turn.tool, "purpose": turn.purpose,
-                 "chosen": chosen, "offered": list(turn.candidates)}
+                {"tool": turn.tool, "purpose": turn.purpose, "chosen": chosen, "offered": list(turn.candidates)}
             )
             return None
 
-        return "resumed a turn that does not pause: %s" % type(turn).__name__
+        return f"resumed a turn that does not pause: {type(turn).__name__}"
 
     # -- playback ----------------------------------------------------------
 
     def _error_stream(self, message):
         seq = self._run_seq
         self._run_seq += 1
-        return _SSEStream([{"event": "RunError", "run_id": self._run_id(seq),
-                            "agent_id": self.agent_id, "content": message}])
+        return _SSEStream(
+            [{"event": "RunError", "run_id": self._run_id(seq), "agent_id": self.agent_id, "content": message}]
+        )
 
     def _play(self):
         """Emit events until a turn ends the stream, or the script runs out."""
@@ -552,28 +544,56 @@ class ScriptedAgentRuntime(object):
             if isinstance(turn, ToolCall):
                 cid = self._tool_call_id(seq, calls)
                 calls += 1
-                events.append({"event": "ToolCallStarted", "run_id": run_id,
-                               "tool": {"tool_call_id": cid, "tool_name": turn.name,
-                                        "tool_args": turn.args}})
-                events.append({"event": "ToolCallCompleted", "run_id": run_id,
-                               "tool": {"tool_call_id": cid, "tool_name": turn.name,
-                                        "tool_args": turn.args,
-                                        "result": turn.result}})
+                events.append(
+                    {
+                        "event": "ToolCallStarted",
+                        "run_id": run_id,
+                        "tool": {"tool_call_id": cid, "tool_name": turn.name, "tool_args": turn.args},
+                    }
+                )
+                events.append(
+                    {
+                        "event": "ToolCallCompleted",
+                        "run_id": run_id,
+                        "tool": {
+                            "tool_call_id": cid,
+                            "tool_name": turn.name,
+                            "tool_args": turn.args,
+                            "result": turn.result,
+                        },
+                    }
+                )
                 continue
 
             if isinstance(turn, Document):
                 cid = self._tool_call_id(seq, calls)
                 calls += 1
                 text = fill_template(turn.template, self.state, self.resolve_mode)
-                url = "/api/documents/download/%s-%s" % (self._run_id(seq), turn.filename)
+                url = f"/api/documents/download/{self._run_id(seq)}-{turn.filename}"
                 self.documents[url] = _docx_bytes(text)
-                events.append({"event": "ToolCallStarted", "run_id": run_id,
-                               "tool": {"tool_call_id": cid, "tool_name": turn.tool_name,
-                                        "tool_args": {"filename": turn.filename}}})
-                events.append({"event": "ToolCallCompleted", "run_id": run_id,
-                               "tool": {"tool_call_id": cid, "tool_name": turn.tool_name,
-                                        "tool_args": {"filename": turn.filename},
-                                        "result": json.dumps({"download_url": url})}})
+                events.append(
+                    {
+                        "event": "ToolCallStarted",
+                        "run_id": run_id,
+                        "tool": {
+                            "tool_call_id": cid,
+                            "tool_name": turn.tool_name,
+                            "tool_args": {"filename": turn.filename},
+                        },
+                    }
+                )
+                events.append(
+                    {
+                        "event": "ToolCallCompleted",
+                        "run_id": run_id,
+                        "tool": {
+                            "tool_call_id": cid,
+                            "tool_name": turn.tool_name,
+                            "tool_args": {"filename": turn.filename},
+                            "result": json.dumps({"download_url": url}),
+                        },
+                    }
+                )
                 # `turn.trailing` is what separates the link from the next
                 # chunk. `content` is the concatenation of every RunContent
                 # chunk, so with trailing="" the following word lands flush
@@ -584,39 +604,46 @@ class ScriptedAgentRuntime(object):
                 # extraction regex is the thing under test. Case E6 sets
                 # trailing="" deliberately so the anchored pattern is pinned by
                 # a test instead of by this comment.
-                events.append({"event": "RunContent", "run_id": run_id,
-                               "content": "The document is ready: %s%s"
-                                          % (url, turn.trailing)})
+                events.append(
+                    {
+                        "event": "RunContent",
+                        "run_id": run_id,
+                        "content": f"The document is ready: {url}{turn.trailing}",
+                    }
+                )
                 continue
 
             if isinstance(turn, (Ask, Pick)):
                 self._pending = turn
                 self._pending_run = run_id
-                events.append({"event": "RunPaused", "run_id": run_id,
-                               "agent_id": self.agent_id,
-                               "tools": [self._paused_tool(turn, seq, calls)]})
+                events.append(
+                    {
+                        "event": "RunPaused",
+                        "run_id": run_id,
+                        "agent_id": self.agent_id,
+                        "tools": [self._paused_tool(turn, seq, calls)],
+                    }
+                )
                 return _SSEStream(events)
 
             if isinstance(turn, Complete):
                 if turn.content:
-                    events.append({"event": "RunContent", "run_id": run_id,
-                                   "content": turn.content})
-                events.append({"event": "RunCompleted", "run_id": run_id,
-                               "agent_id": self.agent_id})
+                    events.append({"event": "RunContent", "run_id": run_id, "content": turn.content})
+                events.append({"event": "RunCompleted", "run_id": run_id, "agent_id": self.agent_id})
                 return _SSEStream(events)
 
             if isinstance(turn, Error):
-                events.append({"event": "RunError", "run_id": run_id,
-                               "agent_id": self.agent_id, "content": turn.message})
+                events.append(
+                    {"event": "RunError", "run_id": run_id, "agent_id": self.agent_id, "content": turn.message}
+                )
                 return _SSEStream(events)
 
-            raise ScriptedRunError("unknown turn %r" % (turn,))
+            raise ScriptedRunError(f"unknown turn {turn!r}")
 
         # Script exhausted without an explicit end. Close the run rather than
         # returning a stream that never terminates — a suite waiting on a stream
         # that will not end is the hang this whole module exists to remove.
-        events.append({"event": "RunCompleted", "run_id": run_id,
-                       "agent_id": self.agent_id})
+        events.append({"event": "RunCompleted", "run_id": run_id, "agent_id": self.agent_id})
         return _SSEStream(events)
 
     def _paused_tool(self, turn, seq, calls):
@@ -629,17 +656,23 @@ class ScriptedAgentRuntime(object):
         """
         cid = self._tool_call_id(seq, calls)
         if isinstance(turn, Ask):
-            args = {"questions_json": json.dumps(turn.questions, sort_keys=True),
-                    "answers": ""}
+            args = {"questions_json": json.dumps(turn.questions, sort_keys=True), "answers": ""}
             schema = [
-                {"name": "questions_json", "field_type": "str",
-                 "description": "The questions to ask", "value": args["questions_json"]},
-                {"name": "answers", "field_type": "str",
-                 "description": "Filled in by the user", "value": None},
+                {
+                    "name": "questions_json",
+                    "field_type": "str",
+                    "description": "The questions to ask",
+                    "value": args["questions_json"],
+                },
+                {"name": "answers", "field_type": "str", "description": "Filled in by the user", "value": None},
             ]
-            return {"tool_call_id": cid, "tool_name": "ask_questions",
-                    "tool_args": args, "requires_user_input": True,
-                    "user_input_schema": schema}
+            return {
+                "tool_call_id": cid,
+                "tool_name": "ask_questions",
+                "tool_args": args,
+                "requires_user_input": True,
+                "user_input_schema": schema,
+            }
 
         payload = {
             "picker": turn.tool,
@@ -652,15 +685,18 @@ class ScriptedAgentRuntime(object):
             "new_person_fields": [],
             "note": "",
         }
-        args = {"purpose": turn.purpose,
-                "candidates_json": json.dumps(payload, sort_keys=True),
-                "selected": ""}
+        args = {"purpose": turn.purpose, "candidates_json": json.dumps(payload, sort_keys=True), "selected": ""}
         if turn.company_name:
             args["company_name"] = turn.company_name
         args.update(turn.extra_args)
-        schema = [{"name": name, "field_type": "str", "description": "",
-                   "value": (None if name == "selected" else value)}
-                  for name, value in sorted(args.items())]
-        return {"tool_call_id": cid, "tool_name": turn.tool,
-                "tool_args": args, "requires_user_input": True,
-                "user_input_schema": schema}
+        schema = [
+            {"name": name, "field_type": "str", "description": "", "value": (None if name == "selected" else value)}
+            for name, value in sorted(args.items())
+        ]
+        return {
+            "tool_call_id": cid,
+            "tool_name": turn.tool,
+            "tool_args": args,
+            "requires_user_input": True,
+            "user_input_schema": schema,
+        }

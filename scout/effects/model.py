@@ -32,8 +32,9 @@ Nothing in this module touches the database.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Dict, Mapping, Optional, Tuple
+from typing import Any
 
 # 64 KB of serialized JSON per image. Chosen against the real shapes: a
 # people row diff is a few hundred bytes; a whole companies row with a long
@@ -58,19 +59,19 @@ class Effect:
     op: str
     turn_id: str = ""
     seq: int = 0
-    session_id: Optional[str] = None
-    actor_email: Optional[str] = None
-    tool_name: Optional[str] = None
-    target_table: Optional[str] = None
-    target_id: Optional[str] = None
-    target_label: Optional[str] = None
-    before_image: Optional[Dict[str, Any]] = None
-    after_image: Optional[Dict[str, Any]] = None
+    session_id: str | None = None
+    actor_email: str | None = None
+    tool_name: str | None = None
+    target_table: str | None = None
+    target_id: str | None = None
+    target_label: str | None = None
+    before_image: dict[str, Any] | None = None
+    after_image: dict[str, Any] | None = None
     reversible: bool = False
-    irreversible_reason: Optional[str] = None
-    meta: Dict[str, Any] = field(default_factory=dict)
+    irreversible_reason: str | None = None
+    meta: dict[str, Any] = field(default_factory=dict)
 
-    def as_row(self) -> Dict[str, Any]:
+    def as_row(self) -> dict[str, Any]:
         """The column mapping the sink writes. JSONB values stay as dicts."""
         return {
             "turn_id": self.turn_id,
@@ -94,7 +95,7 @@ def _json_bytes(value: Any) -> int:
     return len(json.dumps(value, default=str).encode("utf-8"))
 
 
-def _truncation_marker(value: Mapping[str, Any], size: int) -> Dict[str, Any]:
+def _truncation_marker(value: Mapping[str, Any], size: int) -> dict[str, Any]:
     """Stand-in for an image too large to keep.
 
     Keeps the key names — which are what an auditor reads to know WHAT changed —
@@ -104,35 +105,35 @@ def _truncation_marker(value: Mapping[str, Any], size: int) -> Dict[str, Any]:
         _TRUNCATED_KEY: True,
         "_bytes": size,
         "_limit": MAX_IMAGE_BYTES,
-        "_keys": sorted(str(k) for k in value.keys()),
+        "_keys": sorted(str(k) for k in value),
     }
 
 
-def is_truncated(image: Optional[Mapping[str, Any]]) -> bool:
+def is_truncated(image: Mapping[str, Any] | None) -> bool:
     return bool(image) and bool(image.get(_TRUNCATED_KEY))
 
 
 def cap_image(
-    value: Optional[Mapping[str, Any]],
-) -> Tuple[Optional[Dict[str, Any]], bool]:
+    value: Mapping[str, Any] | None,
+) -> tuple[dict[str, Any] | None, bool]:
     """Return (image, was_truncated). None passes through untouched."""
     if value is None:
         return None, False
     if not isinstance(value, Mapping):
-        raise EffectError("image must be a mapping, got {}".format(type(value).__name__))
+        raise EffectError(f"image must be a mapping, got {type(value).__name__}")
     try:
         size = _json_bytes(value)
     except Exception as exc:  # not JSON-serialisable even with default=str
-        raise EffectError("image is not serialisable: {}".format(exc))
+        raise EffectError(f"image is not serialisable: {exc}") from exc
     if size <= MAX_IMAGE_BYTES:
         return dict(value), False
     return _truncation_marker(value, size), True
 
 
 def diff_images(
-    before: Optional[Mapping[str, Any]],
-    after: Optional[Mapping[str, Any]],
-) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    before: Mapping[str, Any] | None,
+    after: Mapping[str, Any] | None,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     """Reduce a pair of row snapshots to only the keys that actually changed.
 
     A key present in one side and absent from the other counts as changed, and
@@ -160,11 +161,11 @@ def diff_images(
 
 def decide_reversibility(
     op: str,
-    target_table: Optional[str],
-    target_id: Optional[str],
-    before_image: Optional[Mapping[str, Any]],
+    target_table: str | None,
+    target_id: str | None,
+    before_image: Mapping[str, Any] | None,
     truncated: bool,
-) -> Tuple[bool, Optional[str]]:
+) -> tuple[bool, str | None]:
     """Whether this effect carries enough to be undone, and why not if not.
 
     Deliberately conservative: every path that is not provably reversible
@@ -173,9 +174,7 @@ def decide_reversibility(
     reversible.
     """
     if truncated:
-        return False, "before/after image exceeded {} bytes and was truncated".format(
-            MAX_IMAGE_BYTES
-        )
+        return False, f"before/after image exceeded {MAX_IMAGE_BYTES} bytes and was truncated"
     if op == "external":
         return False, "effect is outside this database"
     if not target_table or target_id is None or target_id == "":
@@ -188,7 +187,7 @@ def decide_reversibility(
         if not before_image:
             return False, "no before image captured"
         return True, None
-    return False, "unknown op {!r}".format(op)
+    return False, f"unknown op {op!r}"
 
 
 def build_effect(
@@ -196,16 +195,16 @@ def build_effect(
     op: str,
     turn_id: str,
     seq: int,
-    session_id: Optional[str] = None,
-    actor_email: Optional[str] = None,
-    tool_name: Optional[str] = None,
-    target_table: Optional[str] = None,
-    target_id: Optional[Any] = None,
-    target_label: Optional[str] = None,
-    before: Optional[Mapping[str, Any]] = None,
-    after: Optional[Mapping[str, Any]] = None,
+    session_id: str | None = None,
+    actor_email: str | None = None,
+    tool_name: str | None = None,
+    target_table: str | None = None,
+    target_id: Any | None = None,
+    target_label: str | None = None,
+    before: Mapping[str, Any] | None = None,
+    after: Mapping[str, Any] | None = None,
     diff: bool = True,
-    meta: Optional[Dict[str, Any]] = None,
+    meta: dict[str, Any] | None = None,
 ) -> Effect:
     """Validate, diff, cap, and decide reversibility. Raises EffectError.
 
@@ -215,7 +214,7 @@ def build_effect(
     if not kind or not isinstance(kind, str):
         raise EffectError("kind is required")
     if op not in OPS:
-        raise EffectError("op must be one of {}, got {!r}".format(OPS, op))
+        raise EffectError(f"op must be one of {OPS}, got {op!r}")
 
     if op == "delete":
         diff = False

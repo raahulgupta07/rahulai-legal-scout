@@ -9,9 +9,9 @@ Uses PostgreSQL database for ALL data.
 from pathlib import Path
 from typing import Any
 
-from scout.tools.template_analyzer import get_all_templates_from_db, get_db_connection
-from scout.tools.document_tracker import get_all_documents, get_document_stats
 from scout.tools.companies_db import get_companies_info
+from scout.tools.document_tracker import get_document_stats
+from scout.tools.template_analyzer import get_all_templates_from_db, get_db_connection
 
 DOCUMENTS_DIR = Path("/documents")
 
@@ -94,9 +94,7 @@ def summarise_templates(info: dict[str, Any]) -> dict[str, Any]:
     return {
         **info,
         "analyzed_details": [
-            {k: t.get(k) for k in _SUMMARY_KEYS if t.get(k) not in (None, "")}
-            for t in details
-            if isinstance(t, dict)
+            {k: t.get(k) for k in _SUMMARY_KEYS if t.get(k) not in (None, "")} for t in details if isinstance(t, dict)
         ],
     }
 

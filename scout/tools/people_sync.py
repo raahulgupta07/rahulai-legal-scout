@@ -28,7 +28,7 @@ stay on `companies.members` and are handled by the corporate-signing path.
 import json
 import logging
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 logger = logging.getLogger("legalscout.people_sync")
 
@@ -59,7 +59,7 @@ _EMPTY_MARKERS = {"", "-", "--", "n/a", "na", "none", "null", "nil"}
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
-def _clean(value: Any, limit: int = 500) -> Optional[str]:
+def _clean(value: Any, limit: int = 500) -> str | None:
     """Trim a DICA value, mapping its placeholder markers to None."""
     if value is None:
         return None
@@ -69,7 +69,7 @@ def _clean(value: Any, limit: int = 500) -> Optional[str]:
     return text[:limit]
 
 
-def _pick(entry: Dict[str, Any], keys: Tuple[str, ...], limit: int = 500) -> Optional[str]:
+def _pick(entry: dict[str, Any], keys: tuple[str, ...], limit: int = 500) -> str | None:
     for key in keys:
         cleaned = _clean(entry.get(key), limit)
         if cleaned:
@@ -77,7 +77,7 @@ def _pick(entry: Dict[str, Any], keys: Tuple[str, ...], limit: int = 500) -> Opt
     return None
 
 
-def _clean_date(value: Any) -> Optional[str]:
+def _clean_date(value: Any) -> str | None:
     """Only accept an unambiguous ISO date — a half-parsed date is worse than none."""
     text = _clean(value, 32)
     if text and _DATE_RE.match(text):
@@ -90,7 +90,7 @@ def _norm_name(name: str) -> str:
     return re.sub(r"\s+", " ", (name or "").strip()).upper()
 
 
-def _is_corporate(entry: Dict[str, Any]) -> bool:
+def _is_corporate(entry: dict[str, Any]) -> bool:
     """A member row is a company, not a human."""
     kind = (_clean(entry.get("type")) or "").lower()
     if kind in {"company", "corporate", "corporation", "body corporate", "corporate shareholder"}:
@@ -99,7 +99,7 @@ def _is_corporate(entry: Dict[str, Any]) -> bool:
     return bool(_clean(entry.get("registration_number")))
 
 
-def _as_list(value: Any) -> List[Dict[str, Any]]:
+def _as_list(value: Any) -> list[dict[str, Any]]:
     """companies.directors / .members arrive as JSONB, str or already-parsed list."""
     if isinstance(value, str):
         try:
@@ -111,16 +111,16 @@ def _as_list(value: Any) -> List[Dict[str, Any]]:
     return [item for item in value if isinstance(item, dict)]
 
 
-def _collect(directors: Any, members: Any) -> List[Dict[str, Any]]:
+def _collect(directors: Any, members: Any) -> list[dict[str, Any]]:
     """Merge directors and individual members into one entry per human.
 
     Someone who is both a director and a shareholder collapses into a single
     person carrying the role 'both' and the shareholding from the member row.
     """
-    by_key: Dict[str, Dict[str, Any]] = {}
-    order: List[str] = []
+    by_key: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
 
-    def absorb(entry: Dict[str, Any], role: str) -> None:
+    def absorb(entry: dict[str, Any], role: str) -> None:
         name = _clean(entry.get("name"))
         if not name:
             return
@@ -183,10 +183,10 @@ def _collect(directors: Any, members: Any) -> List[Dict[str, Any]]:
 def _find_person(
     cur,
     name: str,
-    nrc: Optional[str],
-    dob: Optional[str],
-    company_id: Optional[int] = None,
-) -> Optional[int]:
+    nrc: str | None,
+    dob: str | None,
+    company_id: int | None = None,
+) -> int | None:
     """Locate an existing person, strongest evidence first.
 
     NRC → name + date of birth → same name already linked to THIS company →
@@ -248,8 +248,8 @@ def sync_company_people(
     company_id: int,
     directors: Any,
     members: Any,
-    created_by_email: Optional[str] = None,
-) -> Dict[str, Any]:
+    created_by_email: str | None = None,
+) -> dict[str, Any]:
     """Project a company's directors and individual members into the register.
 
     Runs on the caller's connection and does NOT commit — the caller owns the
@@ -263,7 +263,7 @@ def sync_company_people(
 
     # person_id -> merged roles + link data, so one human yields one link row
     # however many times the filing describes them.
-    resolved: Dict[int, Dict[str, Any]] = {}
+    resolved: dict[int, dict[str, Any]] = {}
 
     cur = conn.cursor()
     try:
@@ -279,11 +279,11 @@ def sync_company_people(
             person_id = _find_person(cur, name, nrc, dob, company_id)
 
             if person_id is None:
-                columns = ["full_name", "created_by_email"] + list(fields.keys())
+                columns = ["full_name", "created_by_email", *list(fields.keys())]
                 # Always SYNC_AUTHOR, never the admin who triggered it: this
                 # stamp is what lets prune_orphan_people tell a row the sync
                 # created from one a human typed in.
-                values = [name, SYNC_AUTHOR] + list(fields.values())
+                values = [name, SYNC_AUTHOR, *list(fields.values())]
                 placeholders = ", ".join(["%s"] * len(columns))
                 cur.execute(
                     f"INSERT INTO people ({', '.join(columns)}) VALUES ({placeholders}) RETURNING id",
@@ -309,7 +309,7 @@ def sync_company_people(
                 cur.execute(
                     f"UPDATE people SET {', '.join(sets)}, updated_at = NOW() "
                     f"WHERE id = %s AND ({' OR '.join(blanks)})",
-                    values + [person_id],
+                    [*values, person_id],
                 )
                 if cur.rowcount:
                     stats["updated"] += 1
@@ -321,9 +321,7 @@ def sync_company_people(
             # transposed township code. Those key as two records but resolve to
             # one person, and only grouping here turns them into a single
             # 'both' link instead of two contradictory rows.
-            slot = resolved.setdefault(
-                person_id, {"name": name, "roles": set(), "link": {}}
-            )
+            slot = resolved.setdefault(person_id, {"name": name, "roles": set(), "link": {}})
             slot["roles"].update(record["roles"])
             for k, v in record["link"].items():
                 if v and not slot["link"].get(k):
@@ -360,8 +358,7 @@ def sync_company_people(
             # Drop every role row for this person at this company except the one
             # just written — including rows left by an earlier, coarser sync.
             cur.execute(
-                "DELETE FROM company_people WHERE company_id = %s AND person_id = %s "
-                "AND role <> %s",
+                "DELETE FROM company_people WHERE company_id = %s AND person_id = %s AND role <> %s",
                 (company_id, person_id, role),
             )
 
@@ -372,7 +369,7 @@ def sync_company_people(
     return stats
 
 
-def prune_orphan_people(conn) -> Dict[str, Any]:
+def prune_orphan_people(conn) -> dict[str, Any]:
     """Remove people the sync created who are no longer linked to any company.
 
     Called after a company is deleted. Deliberately narrow: a person is only
@@ -402,7 +399,7 @@ def prune_orphan_people(conn) -> Dict[str, Any]:
     return {"removed": len(removed), "names": removed}
 
 
-def sync_all_companies(conn, created_by_email: Optional[str] = None) -> Dict[str, Any]:
+def sync_all_companies(conn, created_by_email: str | None = None) -> dict[str, Any]:
     """Replay the sync over every stored company. Caller commits."""
     totals = {"companies": 0, "created": 0, "updated": 0, "linked": 0, "errors": []}
     cur = conn.cursor()

@@ -63,12 +63,10 @@ mapping. The mapping fixtures here are therefore constructed, not loaded — see
 Run:  python3.12 tests/tracker_fill.py            (needs Python >= 3.10)
 """
 
-import hashlib
 import ast
+import hashlib
 import importlib
 import importlib.util
-import os
-import re
 import sys
 import types
 from pathlib import Path
@@ -187,9 +185,7 @@ def _install_slot_contract(enabled):
     app_pkg.__path__ = [str(REPO / "app")]
     sys.modules["app"] = app_pkg
 
-    spec = importlib.util.spec_from_file_location(
-        "app.slot_contract", str(REPO / "app" / "slot_contract.py")
-    )
+    spec = importlib.util.spec_from_file_location("app.slot_contract", str(REPO / "app" / "slot_contract.py"))
     module = importlib.util.module_from_spec(spec)
     sys.modules["app.slot_contract"] = module
     spec.loader.exec_module(module)
@@ -230,7 +226,7 @@ def load_product(contract):
             "  Fix:   add `from __future__ import annotations` to smart_doc.py, "
             "as slot_resolver.py:28 and repeat_regions.py already have.\n"
             "  Until then run this suite on 3.10+ (the container is 3.12.8)."
-        )
+        ) from exc
     return slot_resolver, repeat_regions, smart_doc, wired
 
 
@@ -246,10 +242,7 @@ CORPORATE_MEMBER = "EMERALD HOLDINGS LIMITED"
 
 def parties(n, prefix="FICTIONAL PARTY", party_type="individual"):
     """`n` distinct fictional parties, in the shape a picker hands back."""
-    return [
-        {"name": f"{prefix} {i}", "party_type": party_type, "identifier": f"NRC-{i:03d}"}
-        for i in range(1, n + 1)
-    ]
+    return [{"name": f"{prefix} {i}", "party_type": party_type, "identifier": f"NRC-{i:03d}"} for i in range(1, n + 1)]
 
 
 def slot_entry(kind, of="document_company", multi=False):
@@ -315,8 +308,7 @@ def declared_slots(placeholders_mod, family_of, position_of):
 # Each returns (label, got, want, note). `got` and `want` are NUMBERS.
 
 APPOINTMENT_TEMPLATE = (
-    "Corporate Shareholder Consent - Directors Resolution for New Company "
-    "Setup and Director Appointment.docx"
+    "Corporate Shareholder Consent - Directors Resolution for New Company Setup and Director Appointment.docx"
 )
 MEMBER_TEMPLATE = "Annual General Meeting Minutes.docx"
 
@@ -330,8 +322,7 @@ def appointed_mapping(declared, template=APPOINTMENT_TEMPLATE, family="appointed
     suppression rules under test would silently change meaning.
     """
     spellings = declared[template][family]
-    return {name: slot_entry("new_director")
-            for names in spellings.values() for name in names}
+    return {name: slot_entry("new_director") for names in spellings.values() for name in names}
 
 
 def positions_asked(requests, position_of):
@@ -351,8 +342,12 @@ def case_grow(sr, declared):
     data = {"members": parties(1), "appointed_directors": parties(7)}
     requests = sr.collect_slot_requests(mapping, list(mapping), data, company_name=COMPANY)
     got = len(positions_asked(requests, sr._slot_position))
-    return ("grow: 7 parties, template declares %d" % declared_max, got, 7,
-            "asked positions %s" % sorted(positions_asked(requests, sr._slot_position)))
+    return (
+        f"grow: 7 parties, template declares {declared_max}",
+        got,
+        7,
+        f"asked positions {sorted(positions_asked(requests, sr._slot_position))}",
+    )
 
 
 def case_grow_spelling(sr, declared):
@@ -369,8 +364,12 @@ def case_grow_spelling(sr, declared):
     spelt = {r["placeholder"] for r in requests}
     pattern = sr._position_pattern(sorted(mapping)[0])
     expected = {sr._placeholder_at(pattern, i) for i in range(1, 8)}
-    return ("grow: synthesised spelling matches the template's", len(spelt & expected), 7,
-            "unexpected: %s" % sorted(spelt - expected))
+    return (
+        "grow: synthesised spelling matches the template's",
+        len(spelt & expected),
+        7,
+        f"unexpected: {sorted(spelt - expected)}",
+    )
 
 
 def case_shrink(sr, declared):
@@ -440,8 +439,7 @@ def case_appointed_asks_per_declared_position(sr, declared):
     data = {"members": parties(1)}  # nothing that names the appointees
     requests = sr.collect_slot_requests(mapping, list(mapping), data, company_name=COMPANY)
     want = len({p for p in (sr._slot_position(n) for n in mapping) if p})
-    return ("appointed: one ask per declared position",
-            len(positions_asked(requests, sr._slot_position)), want, "")
+    return ("appointed: one ask per declared position", len(positions_asked(requests, sr._slot_position)), want, "")
 
 
 def case_member_family_suppressed(sr, declared):
@@ -472,16 +470,14 @@ def case_member_family_suppressed(sr, declared):
     register already knows should still be confirmed. Deliberately not touched.
     """
     spellings = declared[MEMBER_TEMPLATE]["member"]
-    mapping = {name: slot_entry("shareholder_list", multi=True)
-               for names in spellings.values() for name in names}
+    mapping = {name: slot_entry("shareholder_list", multi=True) for names in spellings.values() for name in names}
     # `corporate_shareholder_name` is supplied because the corporate spelling
     # (`corporate shareholder_3_name`) routes through
     # `_corporate_shareholder_name`, which otherwise SELECTs shareholder_links
     # to find the member company. The agent supplies it in a real run too.
     data = {"members": parties(7), "corporate_shareholder_name": CORPORATE_MEMBER}
     requests = sr.collect_slot_requests(mapping, list(mapping), data, company_name=COMPANY)
-    return ("member family: 7 known members suppress the numbered asks",
-            len(requests), 0, "")
+    return ("member family: 7 known members suppress the numbered asks", len(requests), 0, "")
 
 
 def case_member_family_unknown_asks(sr, declared):
@@ -492,11 +488,9 @@ def case_member_family_unknown_asks(sr, declared):
     a document gets signed by whoever happened to be first.
     """
     spellings = declared[MEMBER_TEMPLATE]["member"]
-    mapping = {name: slot_entry("shareholder_list", multi=True)
-               for names in spellings.values() for name in names}
+    mapping = {name: slot_entry("shareholder_list", multi=True) for names in spellings.values() for name in names}
     requests = sr.collect_slot_requests(mapping, list(mapping), {}, company_name=None)
-    return ("member family: nothing on file, still asks", 1 if requests else 0, 1,
-            "%d request(s)" % len(requests))
+    return ("member family: nothing on file, still asks", 1 if requests else 0, 1, f"{len(requests)} request(s)")
 
 
 def case_render_grows(sr, rr):
@@ -508,11 +502,8 @@ def case_render_grows(sr, rr):
     from docx import Document
 
     doc = Document(str(TEMPLATE_DIR / MEMBER_TEMPLATE))
-    synth = rr.expand_repeat_regions(
-        doc, {"members": parties(7)}, template_name=MEMBER_TEMPLATE, company_name=COMPANY
-    )
-    return ("render: 7 members expand the document", len(synth), 14,
-            "two tokens per member (name + identifier)")
+    synth = rr.expand_repeat_regions(doc, {"members": parties(7)}, template_name=MEMBER_TEMPLATE, company_name=COMPANY)
+    return ("render: 7 members expand the document", len(synth), 14, "two tokens per member (name + identifier)")
 
 
 def case_render_shrinks(sr, rr):
@@ -520,9 +511,7 @@ def case_render_shrinks(sr, rr):
     from docx import Document
 
     doc = Document(str(TEMPLATE_DIR / MEMBER_TEMPLATE))
-    synth = rr.expand_repeat_regions(
-        doc, {"members": parties(1)}, template_name=MEMBER_TEMPLATE, company_name=COMPANY
-    )
+    synth = rr.expand_repeat_regions(doc, {"members": parties(1)}, template_name=MEMBER_TEMPLATE, company_name=COMPANY)
     return ("render: 1 member shrinks the document", len(synth), 2, "")
 
 
@@ -536,20 +525,20 @@ def case_smart_doc_reaches_expander(sr, sd):
 
     Row counts on this template: 3 slots ship as 4 rows; 7 parties render 22.
     """
-    from docx import Document  # noqa: F401  (imported by smart_doc's return type)
 
     path = TEMPLATE_DIR / MEMBER_TEMPLATE
     before = hashlib.md5(path.read_bytes()).hexdigest()
     doc = sd.fill_template_with_validation(
-        path, {"members": parties(7), "company_name": COMPANY},
-        template_name=MEMBER_TEMPLATE, company_name=COMPANY,
+        path,
+        {"members": parties(7), "company_name": COMPANY},
+        template_name=MEMBER_TEMPLATE,
+        company_name=COMPANY,
     )
     rows = sum(len(t.rows) for t in doc.tables)
     after = hashlib.md5(path.read_bytes()).hexdigest()
     if before != after:
         return ("smart_doc: MUTATED THE TEMPLATE ON DISK", 1, 0, "template md5 changed")
-    return ("smart_doc: reaches the expander (7 parties -> table rows)", rows, 22,
-            "template unchanged on disk")
+    return ("smart_doc: reaches the expander (7 parties -> table rows)", rows, 22, "template unchanged on disk")
 
 
 SLOT_CASES = [
@@ -638,17 +627,26 @@ def mutate_collapse_distinct_positions(sr, rr):
 
 MUTANTS = [
     # (name, apply, the cases whose number MUST move)
-    ("layout-only (the original bug)", mutate_layout_only,
-     ["grow: 7 parties, template declares 3",
-      "grow: synthesised spelling matches the template's",
-      "shrink: 2 parties, template declares 3"]),
-    ("never-shrink (over-correction)", mutate_never_shrink,
-     ["shrink: 2 parties, template declares 3"]),
-    ("member list unresolvable", mutate_member_list_unresolvable,
-     ["member family: 7 known members suppress the numbered asks"]),
-    ("collapse distinct positions (the under-asking bug)",
-     mutate_collapse_distinct_positions,
-     ["appointed: one ask per declared position"]),
+    (
+        "layout-only (the original bug)",
+        mutate_layout_only,
+        [
+            "grow: 7 parties, template declares 3",
+            "grow: synthesised spelling matches the template's",
+            "shrink: 2 parties, template declares 3",
+        ],
+    ),
+    ("never-shrink (over-correction)", mutate_never_shrink, ["shrink: 2 parties, template declares 3"]),
+    (
+        "member list unresolvable",
+        mutate_member_list_unresolvable,
+        ["member family: 7 known members suppress the numbered asks"],
+    ),
+    (
+        "collapse distinct positions (the under-asking bug)",
+        mutate_collapse_distinct_positions,
+        ["appointed: one ask per declared position"],
+    ),
 ]
 
 
@@ -697,9 +695,12 @@ def case_defaults_have_real_defaults(smart_doc_source, mutant=""):
         defaults = defaults | {"auditor_name", "financial_year_end_date"}
     overlap = defaults & user_input
     tbd_shaped = {f for f in defaults if "auditor" in f or "financial_year" in f}
-    return ("DEFAULT_FIELDS names no unfillable field",
-            len(overlap | tbd_shaped), 0,
-            f"offenders={sorted(overlap | tbd_shaped)}" if (overlap | tbd_shaped) else "")
+    return (
+        "DEFAULT_FIELDS names no unfillable field",
+        len(overlap | tbd_shaped),
+        0,
+        f"offenders={sorted(overlap | tbd_shaped)}" if (overlap | tbd_shaped) else "",
+    )
 
 
 def run_mode(contract, rows):
@@ -715,9 +716,11 @@ def run_mode(contract, rows):
     placeholders = importlib.import_module("scout.tools.placeholders")
     declared = declared_slots(placeholders, rr._family, sr._slot_position)
 
-    print(f"\n{'='*82}\nmode={label}  (slot_contract wired: {sr._contract_normalise is not None})")
-    print(f"templates on disk: {len(list(TEMPLATE_DIR.glob('*.docx')))}  "
-          f"declaring numbered repeat families: {len(declared)}")
+    print(f"\n{'=' * 82}\nmode={label}  (slot_contract wired: {sr._contract_normalise is not None})")
+    print(
+        f"templates on disk: {len(list(TEMPLATE_DIR.glob('*.docx')))}  "
+        f"declaring numbered repeat families: {len(declared)}"
+    )
     for name, families in declared.items():
         summary = "  ".join(f"{fam}={sorted(pos)}" for fam, pos in sorted(families.items()))
         print(f"  · {name[:62]:<62} {summary}")
@@ -729,8 +732,7 @@ def run_mode(contract, rows):
         golden[name] = got
         ok = got == want
         rows.append((f"[{label}]", name, got, want, ok, note))
-        print(f"  {'OK ' if ok else 'BAD'} {name:<58} got={got:<3} want={want}"
-              + (f"   {note}" if note else ""))
+        print(f"  {'OK ' if ok else 'BAD'} {name:<58} got={got:<3} want={want}" + (f"   {note}" if note else ""))
     sd_source = (REPO / "scout" / "tools" / "smart_doc.py").read_text()
     for mut in ("", "default_fields_drift"):
         name, got, want, note = case_defaults_have_real_defaults(sd_source, mut)
@@ -739,21 +741,18 @@ def run_mode(contract, rows):
             name, want = f"MUTANT {mut} moves DEFAULT_FIELDS check", 2
         ok = got == want
         rows.append((f"[{label}]", name, got, want, ok, note))
-        print(f"  {'OK ' if ok else 'BAD'} {name:<58} got={got:<3} want={want}"
-              + (f"   {note}" if note else ""))
+        print(f"  {'OK ' if ok else 'BAD'} {name:<58} got={got:<3} want={want}" + (f"   {note}" if note else ""))
 
     slot_db = TRIPWIRE.attempts - before
     rows.append((f"[{label}]", "slot cases attempted no DB access", slot_db, 0, slot_db == 0, ""))
-    print(f"  {'OK ' if slot_db == 0 else 'BAD'} {'slot cases attempted no DB access':<58} "
-          f"got={slot_db:<3} want=0")
+    print(f"  {'OK ' if slot_db == 0 else 'BAD'} {'slot cases attempted no DB access':<58} got={slot_db:<3} want=0")
 
     for case in (case_render_grows, case_render_shrinks):
         name, got, want, note = case(sr, rr)
         golden[name] = got
         ok = got == want
         rows.append((f"[{label}]", name, got, want, ok, note))
-        print(f"  {'OK ' if ok else 'BAD'} {name:<58} got={got:<3} want={want}"
-              + (f"   {note}" if note else ""))
+        print(f"  {'OK ' if ok else 'BAD'} {name:<58} got={got:<3} want={want}" + (f"   {note}" if note else ""))
 
     # smart_doc legitimately tries the DB for `field_mapping`; the tripwire
     # refuses every attempt, which is why its slot pass is out of scope here.
@@ -763,11 +762,13 @@ def run_mode(contract, rows):
     rows.append((f"[{label}]", name, got, want, ok, note))
     print(f"  {'OK ' if ok else 'BAD'} {name:<58} got={got:<3} want={want}   {note}")
     refused = TRIPWIRE.attempts - before
-    print(f"      (smart_doc made {refused} field_mapping DB attempt(s); all refused, "
-          f"so its slot pass ran on an empty mapping — see the module docstring)")
+    print(
+        f"      (smart_doc made {refused} field_mapping DB attempt(s); all refused, "
+        f"so its slot pass ran on an empty mapping — see the module docstring)"
+    )
 
     # ── mutants ──
-    print(f"\n  mutants (fault injected at a seam, restored after):")
+    print("\n  mutants (fault injected at a seam, restored after):")
     for mutant_name, apply, must_move in MUTANTS:
         restore = apply(sr, rr)
         try:
@@ -776,19 +777,21 @@ def run_mode(contract, rows):
                 if name not in must_move:
                     continue
                 moved = got != golden[name]
-                rows.append((f"[{label}]", f"MUTANT {mutant_name} moves {name[:28]}",
-                             got, golden[name], moved, "must differ"))
-                print(f"    {'OK ' if moved else 'BAD'} {mutant_name:<34} "
-                      f"{name[:30]:<30} golden={golden[name]} mutant={got}"
-                      + ("" if moved else "   <<< NUMBER DID NOT MOVE"))
+                rows.append(
+                    (f"[{label}]", f"MUTANT {mutant_name} moves {name[:28]}", got, golden[name], moved, "must differ")
+                )
+                print(
+                    f"    {'OK ' if moved else 'BAD'} {mutant_name:<34} "
+                    f"{name[:30]:<30} golden={golden[name]} mutant={got}"
+                    + ("" if moved else "   <<< NUMBER DID NOT MOVE")
+                )
         finally:
             restore()
 
     # the seam really is restored
     name, got, want, _ = case_grow(sr, declared)
     rows.append((f"[{label}]", "seams restored after mutants", got, want, got == want, ""))
-    print(f"  {'OK ' if got == want else 'BAD'} {'seams restored after mutants':<58} "
-          f"got={got:<3} want={want}")
+    print(f"  {'OK ' if got == want else 'BAD'} {'seams restored after mutants':<58} got={got:<3} want={want}")
     return golden
 
 
@@ -805,7 +808,7 @@ def main():
     # `app.slot_contract` imports, which depends on the machine — see
     # `_install_slot_contract`. A number that differs between them is a bug that
     # only appears in the container, or only on a laptop.
-    print(f"\n{'='*82}\nfallback vs contract")
+    print(f"\n{'=' * 82}\nfallback vs contract")
     if golden_fallback and golden_contract:
         for name in sorted(golden_fallback):
             a, b = golden_fallback[name], golden_contract.get(name)
@@ -819,11 +822,12 @@ def main():
     for mode, name, got, want, ok, _note in rows:
         print(f"{mode:<12} {name[:58]:<58} {got!s:>5} {want!s:>5}  {'ok' if ok else 'BAD'}")
 
-    print(f"\nSUMMARY: {len(rows)} checks · {len(failures)} failed · "
-          f"{TRIPWIRE.attempts} DB attempt(s), all refused")
+    print(f"\nSUMMARY: {len(rows)} checks · {len(failures)} failed · {TRIPWIRE.attempts} DB attempt(s), all refused")
     if failures:
-        print("A mutant whose number did NOT move means the case is not measuring "
-              "what it claims to measure — treat it as a broken gate, not a flake.")
+        print(
+            "A mutant whose number did NOT move means the case is not measuring "
+            "what it claims to measure — treat it as a broken gate, not a flake."
+        )
     return 1 if failures else 0
 
 

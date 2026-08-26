@@ -39,8 +39,6 @@ check runs with no agno installed.
 
 from __future__ import annotations
 
-from typing import Dict, List
-
 from scout.routines.model import (
     DONE_ALWAYS,
     DONE_MANUAL,
@@ -55,8 +53,8 @@ def _doc_chain(
     start_no: float,
     what: str,
     template_hint: str,
-    extra_requires: List[str],
-) -> List[RoutineStep]:
+    extra_requires: list[str],
+) -> list[RoutineStep]:
     """The find -> preview -> generate triple that produces one document.
 
     Written once rather than three times because the ORDER inside it is the
@@ -67,7 +65,7 @@ def _doc_chain(
     routine makes that ordering a row a test can read, instead of a sentence in
     a prompt that may or may not be obeyed.
     """
-    requires = ["company_name"] + list(extra_requires)
+    requires = ["company_name", *list(extra_requires)]
     tpl_key = f"{prefix}_template"
     return [
         RoutineStep(
@@ -90,7 +88,7 @@ def _doc_chain(
             title=f"Preview the {what} before anything is finalised",
             tool="preview_doc",
             args={"template_name": f"${tpl_key}", "company_name": "$company_name"},
-            requires=requires + [tpl_key],
+            requires=[*requires, tpl_key],
             produces=[f"{prefix}_preview"],
         ),
         RoutineStep(
@@ -99,7 +97,7 @@ def _doc_chain(
             title=f"Generate the {what}",
             tool="generate_document",
             args={"template_name": f"${tpl_key}", "company_name": "$company_name"},
-            requires=requires + [tpl_key, f"{prefix}_preview"],
+            requires=[*requires, tpl_key, f"{prefix}_preview"],
             produces=[f"{prefix}_doc"],
         ),
     ]
@@ -165,11 +163,9 @@ DIRECTOR_RESIGNATION = Routine(
             tool="load_skill",
             args={"name": "director-resignation"},
             produces=["playbook"],
-            notes=(
-                "The routine sequences the skill, it does not replace it. The "
-                "body carries the legal reasoning, the gates and the wording; "
-                "these rows carry only the order and the inputs."
-            ),
+            notes="The routine sequences the skill, it does not replace it. The "
+            "body carries the legal reasoning, the gates and the wording; "
+            "these rows carry only the order and the inputs.",
         ),
         RoutineStep(
             key="read_company",
@@ -213,12 +209,10 @@ DIRECTOR_RESIGNATION = Routine(
             tool="choose_director",
             requires=["director_candidates"],
             produces=["resigning_director"],
-            notes=(
-                "Never guessed and never carried over from another "
-                "conversation. A person picked in one chat reappearing "
-                "unasked in another is the measured defect migration 017 "
-                "exists to prevent."
-            ),
+            notes="Never guessed and never carried over from another "
+            "conversation. A person picked in one chat reappearing "
+            "unasked in another is the measured defect migration 017 "
+            "exists to prevent.",
         ),
         RoutineStep(
             key="confirm_effective_date",
@@ -234,61 +228,49 @@ DIRECTOR_RESIGNATION = Routine(
             title="Flag if the resignation drops the board below its minimum",
             requires=["board", "resigning_director"],
             done_when=DONE_ALWAYS,
-            notes=(
-                "A resignation that breaches the constitutional or statutory "
-                "minimum needs an appointment at the same time. Flagged for "
-                "the user to verify — this routine asserts no day-count and no "
-                "section number it has not confirmed."
-            ),
+            notes="A resignation that breaches the constitutional or statutory "
+            "minimum needs an appointment at the same time. Flagged for "
+            "the user to verify — this routine asserts no day-count and no "
+            "section number it has not confirmed.",
         ),
-    ]
-    + _doc_chain(
-        "letter",
-        9,
-        "resignation letter",
-        "Director Resignation Letter",
-        ["resigning_director", "effective_date"],
-    )
-    + _doc_chain(
-        "resolution",
-        12,
-        "shareholders resolution",
-        "Shareholders Resolution In Writing - Director Resignation",
-        ["resigning_director", "effective_date", "resignation_variant"],
-    )
-    + _doc_chain(
-        "minutes",
-        15,
-        "meeting minutes",
-        "Shareholders Meeting Minutes - Director Resignation",
-        ["resigning_director", "effective_date", "resignation_variant"],
-    )
-    + [
+        *_doc_chain(
+            "letter", 9, "resignation letter", "Director Resignation Letter", ["resigning_director", "effective_date"]
+        ),
+        *_doc_chain(
+            "resolution",
+            12,
+            "shareholders resolution",
+            "Shareholders Resolution In Writing - Director Resignation",
+            ["resigning_director", "effective_date", "resignation_variant"],
+        ),
+        *_doc_chain(
+            "minutes",
+            15,
+            "meeting minutes",
+            "Shareholders Meeting Minutes - Director Resignation",
+            ["resigning_director", "effective_date", "resignation_variant"],
+        ),
         RoutineStep(
             key="register_soft_end",
             no=18,
             title="Record the cessation in the register (soft-end, never delete)",
             requires=["resigning_director", "effective_date"],
             done_when=DONE_MANUAL,
-            notes=(
-                "Confirm with the user before writing. History has to remain "
-                "reconstructable for future filings and diligence, so the "
-                "person is ended, not removed. This step is a human gate on "
-                "purpose: the routine flags the update, it does not silently "
-                "mutate the register."
-            ),
+            notes="Confirm with the user before writing. History has to remain "
+            "reconstructable for future filings and diligence, so the "
+            "person is ended, not removed. This step is a human gate on "
+            "purpose: the routine flags the update, it does not silently "
+            "mutate the register.",
         ),
         RoutineStep(
             key="form_c_followup",
             no=19,
             title="Note the DICA officer-change filing as a follow-up",
             done_when=DONE_ALWAYS,
-            notes=(
-                "An officer change is notified to DICA. Verify the current "
-                "form and window with DICA practice rather than quoting a "
-                "day-count from memory — hardcoded citations are how Indian "
-                "company law ended up in a Myanmar product (migration 018)."
-            ),
+            notes="An officer change is notified to DICA. Verify the current "
+            "form and window with DICA practice rather than quoting a "
+            "day-count from memory — hardcoded citations are how Indian "
+            "company law ended up in a Myanmar product (migration 018).",
         ),
     ],
 )
@@ -390,29 +372,23 @@ DIRECTOR_APPOINTMENT = Routine(
             requires=["incoming_director"],
             produces=["effective_date"],
         ),
-    ]
-    + _doc_chain(
-        "consent",
-        7,
-        "director consent form",
-        "Director Consent Form",
-        ["incoming_director", "consent_variant"],
-    )
-    + _doc_chain(
-        "resolution",
-        10,
-        "shareholders resolution",
-        "Shareholders Resolution In Writing - Director Appointment",
-        ["incoming_director", "effective_date"],
-    )
-    + _doc_chain(
-        "minutes",
-        13,
-        "meeting minutes",
-        "Shareholders Meeting Minutes - Director Appointment",
-        ["incoming_director", "effective_date"],
-    )
-    + [
+        *_doc_chain(
+            "consent", 7, "director consent form", "Director Consent Form", ["incoming_director", "consent_variant"]
+        ),
+        *_doc_chain(
+            "resolution",
+            10,
+            "shareholders resolution",
+            "Shareholders Resolution In Writing - Director Appointment",
+            ["incoming_director", "effective_date"],
+        ),
+        *_doc_chain(
+            "minutes",
+            13,
+            "meeting minutes",
+            "Shareholders Meeting Minutes - Director Appointment",
+            ["incoming_director", "effective_date"],
+        ),
         RoutineStep(
             key="form_c_followup",
             no=16,
@@ -449,12 +425,8 @@ AGM_MEETING_CHAIN = Routine(
             kind="company",
             source_hint="company",
         ),
-        RoutineInput(
-            key="meeting_date", label="Meeting date", kind="date", source_hint="user"
-        ),
-        RoutineInput(
-            key="meeting_time", label="Meeting time", kind="text", source_hint="user"
-        ),
+        RoutineInput(key="meeting_date", label="Meeting date", kind="date", source_hint="user"),
+        RoutineInput(key="meeting_time", label="Meeting time", kind="text", source_hint="user"),
         RoutineInput(
             key="financial_year_end",
             label="Financial year end being reported on",
@@ -487,10 +459,7 @@ AGM_MEETING_CHAIN = Routine(
             args={"company_name": "$company_name"},
             requires=["company_name"],
             produces=["company"],
-            notes=(
-                "The registered office is the meeting-location default. Never "
-                "put a person's address there."
-            ),
+            notes="The registered office is the meeting-location default. Never put a person's address there.",
         ),
         RoutineStep(
             key="read_shareholders",
@@ -508,12 +477,10 @@ AGM_MEETING_CHAIN = Routine(
             tool="ask_questions",
             requires=["company"],
             produces=["meeting_date", "meeting_time", "financial_year_end"],
-            notes=(
-                "Asked ONCE for the whole chain. Today each template's fill "
-                "recomputes its own missing fields from the company record "
-                "alone, which is why new-company setup asks for the meeting "
-                "date once per template."
-            ),
+            notes="Asked ONCE for the whole chain. Today each template's fill "
+            "recomputes its own missing fields from the company record "
+            "alone, which is why new-company setup asks for the meeting "
+            "date once per template.",
         ),
         RoutineStep(
             key="notice_checklist",
@@ -521,42 +488,34 @@ AGM_MEETING_CHAIN = Routine(
             title="Walk the notice-period and quorum checklist, surface any gap",
             requires=["members", "meeting_date"],
             done_when=DONE_MANUAL,
-            notes=(
-                "If the minutes would record a meeting that was not quorate, "
-                "stop and flag it — do not produce minutes that imply a valid "
-                "AGM occurred."
-            ),
+            notes="If the minutes would record a meeting that was not quorate, "
+            "stop and flag it — do not produce minutes that imply a valid "
+            "AGM occurred.",
         ),
-    ]
-    + _doc_chain(
-        "calling",
-        6,
-        "notice of calling",
-        "Notice of Calling for Annual General Meeting",
-        ["meeting_date"],
-    )
-    + _doc_chain(
-        "notice",
-        9,
-        "notice to shareholders",
-        "Notice of Annual General Meeting to Shareholders",
-        ["meeting_date", "members"],
-    )
-    + _doc_chain(
-        "minutes",
-        12,
-        "AGM minutes",
-        "Annual General Meeting Minutes",
-        ["meeting_date", "meeting_time", "members", "financial_year_end"],
-    )
-    + _doc_chain(
-        "resolution",
-        15,
-        "shareholders resolution in writing",
-        "Shareholders Resolution In Writing for Annual General Meeting",
-        ["meeting_date", "members"],
-    )
-    + [
+        *_doc_chain(
+            "calling", 6, "notice of calling", "Notice of Calling for Annual General Meeting", ["meeting_date"]
+        ),
+        *_doc_chain(
+            "notice",
+            9,
+            "notice to shareholders",
+            "Notice of Annual General Meeting to Shareholders",
+            ["meeting_date", "members"],
+        ),
+        *_doc_chain(
+            "minutes",
+            12,
+            "AGM minutes",
+            "Annual General Meeting Minutes",
+            ["meeting_date", "meeting_time", "members", "financial_year_end"],
+        ),
+        *_doc_chain(
+            "resolution",
+            15,
+            "shareholders resolution in writing",
+            "Shareholders Resolution In Writing for Annual General Meeting",
+            ["meeting_date", "members"],
+        ),
         RoutineStep(
             key="annual_return_followup",
             no=18,
@@ -567,14 +526,14 @@ AGM_MEETING_CHAIN = Routine(
 )
 
 
-CATALOG: List[Routine] = [
+CATALOG: list[Routine] = [
     AGM_MEETING_CHAIN,
     DIRECTOR_APPOINTMENT,
     DIRECTOR_RESIGNATION,
 ]
 
 
-def by_name() -> Dict[str, Routine]:
+def by_name() -> dict[str, Routine]:
     return {r.name: r for r in CATALOG}
 
 

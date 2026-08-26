@@ -5,17 +5,16 @@ Companies Database Module
 Manages companies in PostgreSQL database.
 """
 
-import json
-from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from scout.tools.template_analyzer import get_db_connection
 
 
-def save_company(name: str, data: Dict = None) -> bool:
+def save_company(name: str, data: dict | None = None) -> bool:
     """Save or update a company in database. Delegates to knowledge_base.add_company."""
     try:
         from scout.tools.knowledge_base import add_company
+
         payload = data or {}
         if not payload.get("company_name_english"):
             payload["company_name_english"] = name
@@ -26,7 +25,7 @@ def save_company(name: str, data: Dict = None) -> bool:
         return False
 
 
-def get_all_companies(limit: int = 100) -> List[Dict]:
+def get_all_companies(limit: int = 100) -> list[dict]:
     """Get all companies from database (DICA format)."""
     try:
         conn = get_db_connection()
@@ -56,35 +55,37 @@ def get_all_companies(limit: int = 100) -> List[Dict]:
             mems = row[9] if isinstance(row[9], list) else []
             director_names = ", ".join(d.get("name", "") for d in dirs) if dirs else ""
             shareholder_names = ", ".join(m.get("name", "") for m in mems) if mems else ""
-            results.append({
-                "id": row[0],
-                "name": row[1] or "",
-                "registration_number": row[2] or "",
-                "address": row[3] or "",
-                "directors": director_names,
-                "directors_list": dirs,
-                "shareholders": shareholder_names,
-                "shareholders_list": mems,
-                "total_shares": row[10] or "",
-                "currency": row[11] or "",
-                "status": row[5] or "",
-                "company_type": row[6] or "",
-                "created_at": row[7].isoformat() if row[7] else None,
-                "updated_at": row[8].isoformat() if row[8] else None,
-                "financial_year_end_date": row[12] or "",
-                "next_financial_year_end_date": row[13] or "",
-                "auditor_name": row[14] or "",
-                "auditor_fee": row[15] or "",
-                "custom_fields": row[16] if isinstance(row[16], dict) else {},
-                "source": row[17] or "",
-            })
+            results.append(
+                {
+                    "id": row[0],
+                    "name": row[1] or "",
+                    "registration_number": row[2] or "",
+                    "address": row[3] or "",
+                    "directors": director_names,
+                    "directors_list": dirs,
+                    "shareholders": shareholder_names,
+                    "shareholders_list": mems,
+                    "total_shares": row[10] or "",
+                    "currency": row[11] or "",
+                    "status": row[5] or "",
+                    "company_type": row[6] or "",
+                    "created_at": row[7].isoformat() if row[7] else None,
+                    "updated_at": row[8].isoformat() if row[8] else None,
+                    "financial_year_end_date": row[12] or "",
+                    "next_financial_year_end_date": row[13] or "",
+                    "auditor_name": row[14] or "",
+                    "auditor_fee": row[15] or "",
+                    "custom_fields": row[16] if isinstance(row[16], dict) else {},
+                    "source": row[17] or "",
+                }
+            )
         return results
     except Exception as e:
         print(f"Error getting companies: {e}")
         return []
 
 
-def get_company_names(limit: int = 50) -> List[str]:
+def get_company_names(limit: int = 50) -> list[str]:
     """Get just company names (for dropdowns, etc)."""
     try:
         conn = get_db_connection()
@@ -119,7 +120,7 @@ def is_corporate_member(member: Any) -> bool:
     return str(member.get("type") or "").strip().lower() in {"company", "corporate"}
 
 
-def get_companies_info() -> Dict[str, Any]:
+def get_companies_info() -> dict[str, Any]:
     """Get companies info for fast_info tool.
 
     `companies` stays a list of plain names because existing callers index it
@@ -131,18 +132,20 @@ def get_companies_info() -> Dict[str, Any]:
     for c in companies[:50]:
         members = c.get("shareholders_list") or []
         corporate = [m for m in members if is_corporate_member(m)]
-        records.append({
-            "name": c.get("name", ""),
-            "registration_number": c.get("registration_number", ""),
-            "status": c.get("status", ""),
-            "company_type": c.get("company_type", ""),
-            "director_count": len(c.get("directors_list") or []),
-            "shareholder_count": len(members),
-            "corporate_member_count": len(corporate),
-            "has_corporate_member": bool(corporate),
-            # Fixtures are otherwise indistinguishable from a real client.
-            "is_test_data": str(c.get("source") or "").strip().lower() == "test-fixture",
-        })
+        records.append(
+            {
+                "name": c.get("name", ""),
+                "registration_number": c.get("registration_number", ""),
+                "status": c.get("status", ""),
+                "company_type": c.get("company_type", ""),
+                "director_count": len(c.get("directors_list") or []),
+                "shareholder_count": len(members),
+                "corporate_member_count": len(corporate),
+                "has_corporate_member": bool(corporate),
+                # Fixtures are otherwise indistinguishable from a real client.
+                "is_test_data": str(c.get("source") or "").strip().lower() == "test-fixture",
+            }
+        )
 
     return {
         "total": len(companies),

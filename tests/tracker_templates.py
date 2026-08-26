@@ -199,10 +199,7 @@ def t5_no_template_declares_zero_placeholders(state):
     success and stored no placeholders — the only difference from a healthy
     template is a number nobody was printing."""
     names = sorted(_row_names(state))
-    zero = [
-        n for n in names
-        if isinstance(state["mappings"].get(n), dict) and len(state["mappings"][n]) == 0
-    ]
+    zero = [n for n in names if isinstance(state["mappings"].get(n), dict) and len(state["mappings"][n]) == 0]
     detail = f"{len(names) - len(zero)}/{len(names)} template(s) declare ≥1 placeholder"
     if zero:
         detail += f" — zero placeholders: {zero}"
@@ -251,14 +248,14 @@ def m_null_mapping(state):
 
 
 def m_bad_source(state):
-    for name, ph, entry in _entries(state):
+    for _name, _ph, entry in _entries(state):
         entry["source"] = "guess"
         return state
     return state
 
 
 def m_slot_without_kind(state):
-    for name, ph, entry in _entries(state):
+    for _name, _ph, entry in _entries(state):
         if entry.get("source") == "slot" and isinstance(entry.get("slot"), dict):
             entry["slot"]["kind"] = ""
             return state
@@ -331,8 +328,7 @@ def main():
             print(f"{name:<24}{failed:>10}{after:>10}   {verdict}")
         if inert:
             print(f"\nBROKEN GATE: inert control(s): {', '.join(inert)}")
-            print("A check that cannot be made to fail is not a check — fix it "
-                  "before trusting the number above.")
+            print("A check that cannot be made to fail is not a check — fix it before trusting the number above.")
         print(f"\nPASS: {len(MUTANTS) - len(inert)}/{len(MUTANTS)} controls moved the number.")
 
     # Always 0: the runner greps the SUMMARY line, same contract as

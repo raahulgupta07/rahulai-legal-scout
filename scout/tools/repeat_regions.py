@@ -37,7 +37,8 @@ from __future__ import annotations
 import copy
 import logging
 import re
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from docx.oxml.ns import qn
 
@@ -46,20 +47,20 @@ from scout.tools.placeholders import PLACEHOLDER_PATTERN
 _log = logging.getLogger("legalscout")
 
 # Families of list placeholders we know how to expand.
-_MEMBER_RE = re.compile(r"(individual|corporate)?\s*shareholder|member", re.I)
-_APPOINTED_RE = re.compile(r"appointed[_ ]?director|new[_ ]?director", re.I)
-_SIGN_DIR_RE = re.compile(r"^director$|^director[_ ]", re.I)
+_MEMBER_RE = re.compile(r"(individual|corporate)?\s*shareholder|member", re.IGNORECASE)
+_APPOINTED_RE = re.compile(r"appointed[_ ]?director|new[_ ]?director", re.IGNORECASE)
+_SIGN_DIR_RE = re.compile(r"^director$|^director[_ ]", re.IGNORECASE)
 _ROLE_TAG_RE = re.compile(r"^[\s ()/,.\-–—:]*$")  # what may remain around a slot
-_TO_SIGN_RE = re.compile(r"to\s*sign|signature|signed", re.I)
+_TO_SIGN_RE = re.compile(r"to\s*sign|signature|signed", re.IGNORECASE)
 _CORP_SIGN_RE = re.compile(
     # "Represented by its authorized director" is the wording the firm's own
     # signature blocks use; without it a corporate signatory group classified as
     # individual and got the plain block with no representative line.
     r"authoris?ed\s+representative|authoriz?ed\s+representative|on\s+behalf"
     r"|its\s+representative|represented\s+by",
-    re.I,
+    re.IGNORECASE,
 )
-_REP_SLOT_RE = re.compile(r"authoris?ed[_ ]?director|authoriz?ed[_ ]?director|representative", re.I)
+_REP_SLOT_RE = re.compile(r"authoris?ed[_ ]?director|authoriz?ed[_ ]?director|representative", re.IGNORECASE)
 
 
 def _clean(text: str) -> str:
@@ -124,6 +125,7 @@ def _unit_family(text: str) -> str | None:
 # Rendering                                                                    #
 # --------------------------------------------------------------------------- #
 
+
 def _member_display(member: dict) -> str:
     return _clean(member.get("name") or member.get("full_name") or member.get("value") or "")
 
@@ -144,7 +146,9 @@ def _render_value(item: Any, tail: str) -> str:
     """Render a party item for the given tail attribute."""
     if isinstance(item, dict):
         if tail == "nrc":
-            return _clean(item.get("nrc") or item.get("nrc_passport_no") or item.get("identifier") or item.get("name") or "")
+            return _clean(
+                item.get("nrc") or item.get("nrc_passport_no") or item.get("identifier") or item.get("name") or ""
+            )
         if tail in ("shares", "percentage"):
             return _clean(str(item.get(tail) or item.get("shares") or ""))
         return _member_display(item)
@@ -155,17 +159,19 @@ def _render_value(item: Any, tail: str) -> str:
 # Party-list resolution                                                        #
 # --------------------------------------------------------------------------- #
 
+
 def _members_of(company_name: str | None) -> list[dict]:
     if not company_name:
         return []
     try:
         from scout.tools.companies_db import get_all_companies
+
         target = _clean(company_name).lower()
         for c in get_all_companies(limit=300):
             if _clean(c.get("name")).lower() == target or target in _clean(c.get("name")).lower():
                 mems = c.get("shareholders_list") or []
                 return [m for m in mems if isinstance(m, dict) and _member_display(m)]
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         _log.warning(f"repeat_regions: members lookup failed for {company_name!r}: {e}")
     return []
 
@@ -177,6 +183,7 @@ def _board_of(company_name: str) -> list[str]:
     "has no directors", so callers must not treat empty as grounds to reject."""
     try:
         from scout.tools.slot_resolver import corporate_shareholder_directors
+
         out = []
         for c in corporate_shareholder_directors(company_name) or []:
             name = (c.get("name") or c.get("full_name") or "") if isinstance(c, dict) else str(c)
@@ -184,7 +191,7 @@ def _board_of(company_name: str) -> list[str]:
             if name:
                 out.append(name)
         return out
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         _log.warning(f"repeat_regions: board lookup failed for {company_name!r}: {e}")
         return []
 
@@ -227,14 +234,21 @@ def _corp_representative(party: dict, data: dict) -> str:
             _log.warning(
                 "repeat_regions: cannot verify representative %r (%s) — %r is not in "
                 "the register, so its board is unknown",
-                name, source, _member_display(party) if isinstance(party, dict) else party)
+                name,
+                source,
+                _member_display(party) if isinstance(party, dict) else party,
+            )
             return name
         if _on_board(name, board):
             return name
         _log.warning(
             "repeat_regions: DROPPED representative %r (%s) — not a current director of %r "
             "(board: %s). A name off the board cannot bind the company.",
-            name, source, _member_display(party) if isinstance(party, dict) else party, board)
+            name,
+            source,
+            _member_display(party) if isinstance(party, dict) else party,
+            board,
+        )
         return ""
 
     if isinstance(party, dict):
@@ -267,11 +281,18 @@ def _corp_representative(party: dict, data: dict) -> str:
     # this collapses back to a plain ordered lookup.
     default_first_director = _clean(str(data.get("director_name") or ""))
     candidates = []
-    for k in ("representative", "representative_name", "corporate_representative",
-              "corporate_shareholder_representative", "authorized_director",
-              "authorised_director", "authorized director_name",
-              "authorised director_name", "authorized_director_name",
-              "authorised_director_name"):
+    for k in (
+        "representative",
+        "representative_name",
+        "corporate_representative",
+        "corporate_shareholder_representative",
+        "authorized_director",
+        "authorised_director",
+        "authorized director_name",
+        "authorised director_name",
+        "authorized_director_name",
+        "authorised_director_name",
+    ):
         v = data.get(k)
         if v and str(v).strip() and str(v).strip().upper() != "TBD":
             candidates.append(_clean(str(v)))
@@ -294,9 +315,10 @@ def _corp_representative(party: dict, data: dict) -> str:
     # resigned directors, so no second lookup is needed.
     if board:
         _log.warning(
-            "repeat_regions: falling back to register order for %r's representative (%r) — "
-            "nobody chose one",
-            _member_display(party) if isinstance(party, dict) else party, board[0])
+            "repeat_regions: falling back to register order for %r's representative (%r) — nobody chose one",
+            _member_display(party) if isinstance(party, dict) else party,
+            board[0],
+        )
         return board[0]
     return ""
 
@@ -341,6 +363,7 @@ def _board_parties_of(company_name: str | None) -> list[dict]:
         return []
     try:
         from scout.tools.slot_resolver import corporate_shareholder_directors
+
         out = []
         for c in corporate_shareholder_directors(company_name) or []:
             if isinstance(c, dict):
@@ -349,7 +372,7 @@ def _board_parties_of(company_name: str | None) -> list[dict]:
             elif _clean(str(c)):
                 out.append({"name": _clean(str(c))})
         return out
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         _log.warning(f"repeat_regions: director lookup failed for {company_name!r}: {e}")
         return []
 
@@ -383,6 +406,7 @@ def _parties_for_family(family: str, tail: str, data: dict, company_name: str | 
 # Low-level docx helpers                                                       #
 # --------------------------------------------------------------------------- #
 
+
 def _set_unit_placeholder(element_text_setter: Callable[[str], None], token: str) -> None:
     element_text_setter(token)
 
@@ -415,6 +439,7 @@ def _para_render_template(orig_text: str, token: str) -> str:
 # --------------------------------------------------------------------------- #
 # Paragraph-block expansion                                                    #
 # --------------------------------------------------------------------------- #
+
 
 def _expand_paragraph_blocks(doc, data, company_name, synth, counter):
     paras = doc.paragraphs
@@ -473,8 +498,9 @@ def _is_numbered(placeholder: str) -> bool:
     """Whether a placeholder names an explicit position (`director_2_name`)."""
     try:
         from scout.tools.slot_resolver import _slot_position
+
         return bool(_slot_position(placeholder or ""))
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         _log.warning(f"repeat_regions: position classify failed for {placeholder!r}: {e}")
         return False
 
@@ -504,6 +530,7 @@ def _rewrite_paragraph_block(block, family, data, company_name, synth, counter):
     if len(parties) > len(block):
         anchor = last._p
         from docx.text.paragraph import Paragraph
+
         for idx in range(len(block), len(parties)):
             key = f"__rr_{next(counter)}__"
             synth[key] = _render_value(parties[idx], tail)
@@ -514,13 +541,14 @@ def _rewrite_paragraph_block(block, family, data, company_name, synth, counter):
 
     # 3) surplus template slots -> remove the paragraph entirely (no blank lines)
     if len(parties) < len(block):
-        for unit in block[len(parties):]:
+        for unit in block[len(parties) :]:
             unit._p.getparent().remove(unit._p)
 
 
 # --------------------------------------------------------------------------- #
 # Signing-table expansion                                                      #
 # --------------------------------------------------------------------------- #
+
 
 def _row_family(row) -> str | None:
     for cell in row.cells:
@@ -534,12 +562,13 @@ def _expand_signing_tables(doc, data, company_name, synth, counter):
     for table in doc.tables:
         try:
             _expand_one_table(table, data, company_name, synth, counter)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             _log.warning(f"repeat_regions: table expansion skipped: {e}")
 
 
 def _row_group_is_corporate(trs, table) -> bool:
     from docx.table import _Row
+
     for tr in trs:
         row = _Row(tr, table)
         for cell in row.cells:
@@ -590,7 +619,7 @@ def _signing_rows_to_scan(table) -> range | None:
     # nearby preceding paragraph carries the signing cue, so this cannot claim
     # an ordinary data table that happens to mention a shareholder.
     if _row_family(rows[0]) and _TO_SIGN_RE.search(_prev_paragraph_text(table._tbl)):
-        return range(0, len(rows))
+        return range(len(rows))
     return None
 
 
@@ -641,6 +670,7 @@ def _expand_one_table(table, data, company_name, synth, counter):
                 parent.remove(tr)
 
     from docx.table import _Row
+
     for party in parties:
         corporate = _is_corporate(party)
         tpl = corp_tpl if (corporate and corp_tpl is not None) else indiv_tpl
@@ -701,7 +731,8 @@ def _rewrite_cell_placeholder(cell, token: str):
 # Entry point                                                                  #
 # --------------------------------------------------------------------------- #
 
-def expand_repeat_regions(doc, data: dict, template_name: str = None, company_name: str = None) -> dict:
+
+def expand_repeat_regions(doc, data: dict, template_name: str | None = None, company_name: str | None = None) -> dict:
     """Expand list regions in `doc` to match the real party count.
 
     Returns a dict of synthetic {placeholder_key: value} to merge into `data`
@@ -712,6 +743,6 @@ def expand_repeat_regions(doc, data: dict, template_name: str = None, company_na
         counter = iter(range(1, 100000))
         _expand_paragraph_blocks(doc, data, company_name, synth, counter)
         _expand_signing_tables(doc, data, company_name, synth, counter)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         _log.warning(f"repeat_regions: expansion aborted for {template_name!r}: {e}")
     return synth

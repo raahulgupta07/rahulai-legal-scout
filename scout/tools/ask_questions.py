@@ -20,7 +20,7 @@ selection stays with the dedicated pickers in people_picker.py.
 
 import json
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from agno.tools import tool
 
@@ -40,9 +40,9 @@ EXPECTED_SCHEMA = {
 }
 
 
-def _validate_questions(questions: Any) -> List[str]:
+def _validate_questions(questions: Any) -> list[str]:
     """Return a list of human-readable problems; empty list means valid."""
-    problems: List[str] = []
+    problems: list[str] = []
     if not isinstance(questions, list):
         return ["questions_json must be a JSON array of question objects"]
     if not (1 <= len(questions) <= 4):
@@ -60,22 +60,16 @@ def _validate_questions(questions: Any) -> List[str]:
             problems.append(f"question {i}: 'options' must be a list when present")
         itype = q.get("input_type")
         if itype is not None and itype not in ("text", "date"):
-            problems.append(
-                f"question {i}: 'input_type' must be 'text' or 'date' when present"
-            )
+            problems.append(f"question {i}: 'input_type' must be 'text' or 'date' when present")
         # `default` only means something to a date picker. Rejecting it
         # elsewhere keeps the model from inventing a pre-filled free-text box,
         # where a stale default reads as an answer the user gave.
         dflt = q.get("default")
         if dflt is not None:
             if itype != "date":
-                problems.append(
-                    f"question {i}: 'default' is only valid with input_type 'date'"
-                )
+                problems.append(f"question {i}: 'default' is only valid with input_type 'date'")
             elif dflt != "today":
-                problems.append(
-                    f"question {i}: the only supported 'default' is 'today'"
-                )
+                problems.append(f"question {i}: the only supported 'default' is 'today'")
     return problems
 
 
@@ -177,7 +171,7 @@ _NOT_A_PERSON_NAME_RE = re.compile(
 
 # Which picker pair answers each role. Both tools of every pair are registered
 # in scout/agent.py `_tools_to_add`.
-_PICKER_FOR_ROLE: Dict[str, Tuple[str, str]] = {
+_PICKER_FOR_ROLE: dict[str, tuple[str, str]] = {
     "representative": ("lookup_representative_candidates", "choose_representative_director"),
     "attendee": ("lookup_attendee_candidates", "choose_attendees"),
     "shareholder": ("lookup_attendee_candidates", "choose_attendees"),
@@ -211,7 +205,7 @@ def _role_key(word: str) -> str:
     return "register"
 
 
-def _person_role(text: str) -> Optional[str]:
+def _person_role(text: str) -> str | None:
     """Role key if this question asks the user to TYPE a person, else None.
 
     Conservative by construction — a miss costs a prompt-only enforcement, a
@@ -222,11 +216,7 @@ def _person_role(text: str) -> Optional[str]:
         return None
 
     entity_spans = [m.span() for m in _ENTITY_ROLE_RE.finditer(t)]
-    role_hits = [
-        m
-        for m in _ROLE_RE.finditer(t)
-        if not any(s <= m.start() and m.end() <= e for s, e in entity_spans)
-    ]
+    role_hits = [m for m in _ROLE_RE.finditer(t) if not any(s <= m.start() and m.end() <= e for s, e in entity_spans)]
 
     if role_hits:
         key = _role_key(role_hits[0].group(1))
@@ -254,7 +244,7 @@ def _question_id(q: Any, index: int) -> str:
     return f"q{index}"
 
 
-def _split_person_questions(questions: Any) -> Tuple[List[str], List[Dict[str, Any]]]:
+def _split_person_questions(questions: Any) -> tuple[list[str], list[dict[str, Any]]]:
     """Partition the batch into allowed question ids and blocked descriptors.
 
     Only FREE-TEXT questions are inspected. A question carrying `options` is
@@ -263,8 +253,8 @@ def _split_person_questions(questions: Any) -> Tuple[List[str], List[Dict[str, A
     measured defect is free text. Person-shaped questions that do carry options
     are left to the system prompt's rule.
     """
-    allowed: List[str] = []
-    blocked: List[Dict[str, Any]] = []
+    allowed: list[str] = []
+    blocked: list[dict[str, Any]] = []
     if not isinstance(questions, list):
         return allowed, blocked
 
@@ -292,7 +282,7 @@ def _split_person_questions(questions: Any) -> Tuple[List[str], List[Dict[str, A
     return allowed, blocked
 
 
-def _filter_answers(parsed: Any, questions: Any, allowed_ids: List[str]) -> Any:
+def _filter_answers(parsed: Any, questions: Any, allowed_ids: list[str]) -> Any:
     """Keep only the answers belonging to questions the guard allowed.
 
     The card has sent answers back in three shapes over the life of this tool:
@@ -309,16 +299,12 @@ def _filter_answers(parsed: Any, questions: Any, allowed_ids: List[str]) -> Any:
         if all(isinstance(a, dict) and a.get("id") is not None for a in parsed):
             return [a for a in parsed if str(a.get("id")) in keep]
         if isinstance(questions, list) and len(parsed) == len(questions):
-            return [
-                a
-                for i, (a, q) in enumerate(zip(parsed, questions))
-                if _question_id(q, i) in keep
-            ]
+            return [a for i, (a, q) in enumerate(zip(parsed, questions, strict=False)) if _question_id(q, i) in keep]
 
     return parsed
 
 
-def _blocked_instruction(blocked: List[Dict[str, Any]]) -> str:
+def _blocked_instruction(blocked: list[dict[str, Any]]) -> str:
     calls = []
     for b in blocked:
         lookup_tool, picker_tool = b["call_instead"]
@@ -510,8 +496,7 @@ def ask_questions(questions_json: str, answers: str = "") -> str:
                 "blocked": blocked,
                 "instruction": (
                     "Use the values in `answers` verbatim — those questions were "
-                    "legitimate and are settled; do NOT ask them again. "
-                    + _blocked_instruction(blocked)
+                    "legitimate and are settled; do NOT ask them again. " + _blocked_instruction(blocked)
                 ),
             }
         )
@@ -545,7 +530,7 @@ def ask_questions(questions_json: str, answers: str = "") -> str:
                     _flat[str(_a["id"])] = _a.get("answer")
             if _flat:
                 merge_collected(_sid, _flat)
-    except Exception:  # noqa: BLE001 — an answer must never fail for storage
+    except Exception:
         pass
 
     # NOT given the pending-task sentence the pickers get.

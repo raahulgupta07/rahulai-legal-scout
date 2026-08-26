@@ -8,19 +8,18 @@ to create a knowledge base for the agent.
 
 import csv
 import json
-import os
 import re
-from pathlib import Path
-from typing import Any, Dict, List, Optional
-from openpyxl import load_workbook
-from openpyxl.utils import get_column_letter
-from docx import Document
-from psycopg import connect
-from scout.tools.template_analyzer import get_db_connection
 from os import getenv
+from pathlib import Path
+from typing import Any
+
+from docx import Document
+from openpyxl import load_workbook
+
+from scout.tools.template_analyzer import get_db_connection
 
 
-def analyze_excel_with_ai(file_path: str, filename: str) -> Dict[str, Any]:
+def analyze_excel_with_ai(file_path: str, filename: str) -> dict[str, Any]:
     """
     AI-powered Excel analyzer that understands complex Excel structures.
     Handles merged cells, multi-line headers, and complex data.
@@ -62,6 +61,7 @@ def analyze_excel_with_ai(file_path: str, filename: str) -> Dict[str, Any]:
         batch = data_rows[:50]
 
         from app.model_config import OPENROUTER_BASE_URL, get_model
+
         client = OpenAI(
             api_key=api_key,
             base_url=OPENROUTER_BASE_URL,
@@ -96,8 +96,7 @@ Return ONLY JSON array."""
             content = content.strip()
             if content.startswith("```"):
                 content = content.split("```")[1]
-                if content.startswith("json"):
-                    content = content[4:]
+                content = content.removeprefix("json")
             content = content.strip()
 
         cleaned_data = json.loads(content)
@@ -118,7 +117,7 @@ def clean_header(header: str) -> str:
     return header
 
 
-def process_excel(file_path: str, filename: str, use_ai: bool = True) -> Dict[str, Any]:
+def process_excel(file_path: str, filename: str, use_ai: bool = True) -> dict[str, Any]:
     """Process Excel file - with AI analysis for complex files."""
 
     if use_ai:
@@ -129,7 +128,7 @@ def process_excel(file_path: str, filename: str, use_ai: bool = True) -> Dict[st
     return process_excel_legacy(file_path, filename)
 
 
-def process_file(file_path: str, filename: str) -> Dict[str, Any]:
+def process_file(file_path: str, filename: str) -> dict[str, Any]:
     """Process uploaded file based on type."""
     file_ext = Path(filename).suffix.lower()
 
@@ -143,7 +142,7 @@ def process_file(file_path: str, filename: str) -> Dict[str, Any]:
         return {"success": False, "error": f"Unsupported file type: {file_ext}"}
 
 
-def store_cleaned_data(filename: str, cleaned_data: List[Dict], file_type: str = "excel") -> Dict[str, Any]:
+def store_cleaned_data(filename: str, cleaned_data: list[dict], file_type: str = "excel") -> dict[str, Any]:
     """Store AI-cleaned data into the database."""
     try:
         conn = get_db_connection()
@@ -193,7 +192,7 @@ def store_cleaned_data(filename: str, cleaned_data: List[Dict], file_type: str =
         return {"success": False, "error": str(e)}
 
 
-def process_excel_legacy(file_path: str, filename: str) -> Dict[str, Any]:
+def process_excel_legacy(file_path: str, filename: str) -> dict[str, Any]:
     """Process Excel file - multiple sheets (legacy method)."""
     try:
         conn = get_db_connection()
@@ -266,7 +265,7 @@ def process_excel_legacy(file_path: str, filename: str) -> Dict[str, Any]:
         return {"success": False, "error": str(e)}
 
 
-def process_csv(file_path: str, filename: str) -> Dict[str, Any]:
+def process_csv(file_path: str, filename: str) -> dict[str, Any]:
     """Process CSV file."""
     try:
         conn = get_db_connection()
@@ -274,7 +273,7 @@ def process_csv(file_path: str, filename: str) -> Dict[str, Any]:
 
         record_count = 0
 
-        with open(file_path, "r", encoding="utf-8") as f:
+        with open(file_path, encoding="utf-8") as f:
             reader = csv.DictReader(f)
 
             for row_idx, row in enumerate(reader, start=1):
@@ -330,7 +329,7 @@ def process_csv(file_path: str, filename: str) -> Dict[str, Any]:
         return {"success": False, "error": str(e)}
 
 
-def process_word(file_path: str, filename: str) -> Dict[str, Any]:
+def process_word(file_path: str, filename: str) -> dict[str, Any]:
     """Process Word document - extract tables."""
     try:
         conn = get_db_connection()
@@ -347,7 +346,7 @@ def process_word(file_path: str, filename: str) -> Dict[str, Any]:
 
             for row_idx, row in enumerate(table.rows[1:], start=2):
                 cells = [cell.text.strip() for cell in row.cells]
-                record = dict(zip(headers, cells))
+                record = dict(zip(headers, cells, strict=False))
 
                 if any(record.values()):
                     cur.execute(
@@ -399,7 +398,7 @@ def process_word(file_path: str, filename: str) -> Dict[str, Any]:
         return {"success": False, "error": str(e)}
 
 
-def get_knowledge_sources() -> List[Dict]:
+def get_knowledge_sources() -> list[dict]:
     """Get all uploaded knowledge sources."""
     try:
         conn = get_db_connection()
@@ -465,7 +464,7 @@ def delete_knowledge_source(filename: str):
 _CLIENT_NAMESPACE = "company:%"
 
 
-def search_knowledge(query: str, limit: int = 10, include_clients: bool = False) -> List[Dict]:
+def search_knowledge(query: str, limit: int = 10, include_clients: bool = False) -> list[dict]:
     """Search knowledge base - exact matches.
 
     include_clients=False (the default, and what every agent path uses) excludes
@@ -510,7 +509,7 @@ def search_knowledge(query: str, limit: int = 10, include_clients: bool = False)
         return []
 
 
-def lookup_value(key: str, value: str) -> List[Dict]:
+def lookup_value(key: str, value: str) -> list[dict]:
     """Exact lookup by key-value."""
     try:
         conn = get_db_connection()
@@ -536,7 +535,7 @@ def lookup_value(key: str, value: str) -> List[Dict]:
         return []
 
 
-def get_source_data(filename: str, limit: int = 50) -> List[Dict]:
+def get_source_data(filename: str, limit: int = 50) -> list[dict]:
     """Get all data from a specific source file."""
     try:
         conn = get_db_connection()
@@ -574,7 +573,7 @@ def safe_json_dumps(val):
             return val
         except (json.JSONDecodeError, ValueError):
             return json.dumps(val)
-    return json.dumps(val) if val else '[]'
+    return json.dumps(val) if val else "[]"
 
 
 def add_company(data: dict) -> dict:
@@ -604,7 +603,8 @@ def add_company(data: dict) -> dict:
         if isinstance(filing_history, str):
             filing_history = []
 
-        cur.execute("""
+        cur.execute(
+            """
             INSERT INTO companies (
                 company_name_english, company_name_myanmar, company_registration_number,
                 registration_date, status, company_type, foreign_company, small_company,
@@ -648,40 +648,42 @@ def add_company(data: dict) -> dict:
                 custom_fields = COALESCE(companies.custom_fields, '{}'::jsonb) || EXCLUDED.custom_fields,
                 updated_at = NOW()
             RETURNING id
-        """, (
-            company_name,
-            data.get("company_name_myanmar"),
-            reg_no,
-            safe_date(data.get("registration_date")),
-            data.get("status"),
-            data.get("company_type"),
-            data.get("foreign_company"),
-            data.get("small_company"),
-            data.get("principal_activity"),
-            safe_date(data.get("date_of_last_annual_return")),
-            data.get("previous_registration_number"),
-            data.get("registered_office_address") or data.get("registered_office"),
-            data.get("principal_place_of_business"),
-            safe_json_dumps(directors),
-            data.get("ultimate_holding_company_name"),
-            data.get("ultimate_holding_company_jurisdiction"),
-            data.get("ultimate_holding_company_registration_number"),
-            data.get("total_shares_issued"),
-            data.get("currency_of_share_capital"),
-            safe_json_dumps(members),
-            safe_json_dumps(filing_history),
-            data.get("under_corpsec_management"),
-            data.get("group_company"),
-            data.get("total_capital"),
-            data.get("consideration_amount_paid"),
-            data.get("source", "manual"),
-            data.get("pdf_url"),
-            data.get("financial_year_end_date") or None,
-            data.get("next_financial_year_end_date") or None,
-            data.get("auditor_name") or None,
-            data.get("auditor_fee") or None,
-            safe_json_dumps(data.get("custom_fields") or {}),
-        ))
+        """,
+            (
+                company_name,
+                data.get("company_name_myanmar"),
+                reg_no,
+                safe_date(data.get("registration_date")),
+                data.get("status"),
+                data.get("company_type"),
+                data.get("foreign_company"),
+                data.get("small_company"),
+                data.get("principal_activity"),
+                safe_date(data.get("date_of_last_annual_return")),
+                data.get("previous_registration_number"),
+                data.get("registered_office_address") or data.get("registered_office"),
+                data.get("principal_place_of_business"),
+                safe_json_dumps(directors),
+                data.get("ultimate_holding_company_name"),
+                data.get("ultimate_holding_company_jurisdiction"),
+                data.get("ultimate_holding_company_registration_number"),
+                data.get("total_shares_issued"),
+                data.get("currency_of_share_capital"),
+                safe_json_dumps(members),
+                safe_json_dumps(filing_history),
+                data.get("under_corpsec_management"),
+                data.get("group_company"),
+                data.get("total_capital"),
+                data.get("consideration_amount_paid"),
+                data.get("source", "manual"),
+                data.get("pdf_url"),
+                data.get("financial_year_end_date") or None,
+                data.get("next_financial_year_end_date") or None,
+                data.get("auditor_name") or None,
+                data.get("auditor_fee") or None,
+                safe_json_dumps(data.get("custom_fields") or {}),
+            ),
+        )
         row = cur.fetchone()
         company_id = row[0] if row else None
         conn.commit()
@@ -693,9 +695,7 @@ def add_company(data: dict) -> dict:
             try:
                 from scout.tools.people_sync import sync_company_people
 
-                people_stats = sync_company_people(
-                    conn, company_id, directors, members, data.get("created_by_email")
-                )
+                people_stats = sync_company_people(conn, company_id, directors, members, data.get("created_by_email"))
                 conn.commit()
             except Exception as e:
                 conn.rollback()
@@ -706,7 +706,9 @@ def add_company(data: dict) -> dict:
             "company_name": company_name,
             "company_registration_number": reg_no,
             "registered_office": data.get("registered_office_address"),
-            "directors": ", ".join(d.get("name", "") for d in directors) if isinstance(directors, list) else str(directors),
+            "directors": ", ".join(d.get("name", "") for d in directors)
+            if isinstance(directors, list)
+            else str(directors),
             "company_type": data.get("company_type"),
             "status": data.get("status"),
         }
@@ -714,7 +716,7 @@ def add_company(data: dict) -> dict:
             if value:
                 cur.execute(
                     "INSERT INTO knowledge_lookup (key_name, key_value, source_file, created_at) VALUES (%s, %s, %s, NOW())",
-                    (key, str(value), f"company:{company_name}")
+                    (key, str(value), f"company:{company_name}"),
                 )
         conn.commit()
         cur.close()
@@ -784,7 +786,7 @@ def map_columns_to_internal(record: dict) -> dict:
     return mapped
 
 
-def process_excel_with_mapping(file_path: str, filename: str) -> Dict[str, Any]:
+def process_excel_with_mapping(file_path: str, filename: str) -> dict[str, Any]:
     """Process Excel file with column mapping for new format."""
     try:
         import pandas as pd

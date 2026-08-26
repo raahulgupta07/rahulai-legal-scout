@@ -18,7 +18,6 @@ Importing this package pulls in no driver, no agno and no mcp.
 from __future__ import annotations
 
 from scout.memory.flags import MEMORY_FLAG_ENV, memory_enabled
-from scout.memory.scope import MemoryScope, MemoryScopeError, require_scope
 from scout.memory.resolve import (
     AMBIGUOUS,
     BY_EXACT_NAME,
@@ -33,6 +32,7 @@ from scout.memory.resolve import (
     session_binding,
     unbind_session,
 )
+from scout.memory.scope import MemoryScope, MemoryScopeError, require_scope
 from scout.memory.store import (
     MAX_KEY_CHARS,
     MAX_VALUE_CHARS,
@@ -50,13 +50,13 @@ __all__ = [
     "BY_EXACT_NAME",
     "BY_REGISTRATION",
     "BY_SESSION",
-    "MEMORY_FLAG_ENV",
     "MAX_KEY_CHARS",
     "MAX_VALUE_CHARS",
-    "MemoryScope",
-    "MemoryScopeError",
+    "MEMORY_FLAG_ENV",
     "NONE",
     "RESOLVED",
+    "MemoryScope",
+    "MemoryScopeError",
     "Resolution",
     "bind_session",
     "connection_factory",

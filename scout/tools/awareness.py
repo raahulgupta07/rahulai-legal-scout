@@ -5,7 +5,7 @@ before diving into search.
 """
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from agno.tools import tool
@@ -132,7 +132,7 @@ def create_get_metadata_tool(base_dir: Path):
             if target.is_file():
                 # File metadata
                 stat = target.stat()
-                modified = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).strftime("%Y-%m-%d")
+                modified = datetime.fromtimestamp(stat.st_mtime, tz=UTC).strftime("%Y-%m-%d")
                 lines = [f"## File: {clean}", ""]
                 lines.append(f"**Size:** {_format_size(stat.st_size)}")
                 lines.append(f"**Modified:** {modified}")
@@ -162,7 +162,7 @@ def create_get_metadata_tool(base_dir: Path):
                     elif entry.is_file():
                         stat = entry.stat()
                         size_info = f" ({_format_size(stat.st_size)})"
-                        modified = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).strftime("%Y-%m-%d")
+                        modified = datetime.fromtimestamp(stat.st_mtime, tz=UTC).strftime("%Y-%m-%d")
                         lines.append(f"[file] {entry.name}{size_info} - {modified}")
 
                 return "\n".join(lines)

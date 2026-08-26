@@ -35,6 +35,50 @@ include = ["scout*", "db*", "app*"]
 line-length = 120
 exclude = [".venv*"]
 
+[tool.ruff.lint]
+# Declared explicitly. Left undeclared, ruff applies whatever its current
+# default set is, so a new ruff release silently adds rules and turns CI red
+# without a line of this code changing — which is how CI came to sit failing
+# with 1306 errors it had never been asked to enforce.
+select = [
+    "E4", "E7", "E9",  # pycodestyle: real errors, not layout ruff already formats
+    "F",               # pyflakes
+    "I",               # import sorting
+    "UP",              # pyupgrade
+    "B",               # bugbear
+    "SIM",             # simplify
+    "C4",              # comprehensions
+    "PIE",
+    "RUF",
+]
+# Deliberately NOT selected, with reasons:
+#   BLE001 / S110 — this codebase catches broadly on purpose. startup_sync,
+#     the migration check and the knowledge refreshes all swallow so an
+#     import-time failure cannot take the whole app down.
+#   DTZ — naive vs aware datetimes are part of the API contract here. A tz
+#     fix changes the serialized wire shape, so it is a product decision.
+#   ASYNC / PLW1510 — worth doing, but not as a formatting sweep.
+ignore = [
+    # Lazy imports inside functions are deliberate here — they keep boot cheap
+    # and let optional subsystems fail without taking the app down.
+    "E402",
+    # NBSP, FIGURE SPACE, NARROW NBSP and EN DASH are load-bearing: five of the
+    # shipped templates carry NBSP inside placeholder names, and
+    # placeholders.py / field_aliases.py / repeat_regions.py exist to fold them.
+    # "Fixing" these to plain spaces breaks template matching.
+    "RUF001", "RUF002", "RUF003",
+]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's whole dependency system is function calls in argument defaults.
+# File(...), Depends(...), Query(...) and Form(...) are the framework idiom,
+# not the mutable-default bug B008 exists to catch.
+extend-immutable-calls = [
+    "fastapi.File", "fastapi.Form", "fastapi.Body",
+    "fastapi.Depends", "fastapi.Query", "fastapi.Header", "fastapi.Path",
+    "File", "Form", "Body", "Depends", "Query", "Header", "Path",
+]
+
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401", "F403"]
 

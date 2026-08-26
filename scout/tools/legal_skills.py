@@ -13,7 +13,7 @@ Tools:
 """
 
 import logging
-from typing import Any, Dict
+from typing import Any
 
 from db.connection import get_db_conn
 
@@ -21,7 +21,7 @@ from db.connection import get_db_conn
 def create_legal_skills_tools():
     """Create the legal-skills tools for the agent."""
 
-    def list_skills() -> Dict[str, Any]:
+    def list_skills() -> dict[str, Any]:
         """
         List the legal playbooks (skills) available to load.
 
@@ -59,7 +59,7 @@ def create_legal_skills_tools():
             if conn:
                 conn.close()
 
-    def load_skill(name: str) -> Dict[str, Any]:
+    def load_skill(name: str) -> dict[str, Any]:
         """
         Load a legal playbook (skill) by name and follow it now.
 
@@ -89,9 +89,7 @@ def create_legal_skills_tools():
             row = cur.fetchone()
 
             if not row:
-                cur.execute(
-                    "SELECT name FROM legal_skills WHERE enabled = TRUE ORDER BY name"
-                )
+                cur.execute("SELECT name FROM legal_skills WHERE enabled = TRUE ORDER BY name")
                 available = [r[0] for r in cur.fetchall()]
                 cur.close()
                 return {
@@ -108,8 +106,7 @@ def create_legal_skills_tools():
                 "name": row[0],
                 "description": row[1],
                 "version": row[3],
-                "body": body
-                + "\n\nFollow this playbook now for the current request.",
+                "body": body + "\n\nFollow this playbook now for the current request.",
             }
         except Exception as e:
             logging.getLogger("legalscout").warning(f"Error in load_skill: {e}")

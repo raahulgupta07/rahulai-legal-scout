@@ -28,8 +28,8 @@ from __future__ import annotations
 
 import os
 import re
-import subprocess
 import sqlite3
+import subprocess
 import sys
 import traceback
 import types
@@ -76,9 +76,9 @@ MEMORY_PKG = REPO_ROOT / "scout" / "memory"
 BREAK = os.environ.get("TRACKER_MEMORY_BREAK", "")
 
 # --- fictional fixtures -----------------------------------------------------
-CO_GOLDEN = 101      # Golden Lotus Trading Company Limited
-CO_EMERALD = 202     # Emerald Pagoda Holdings Limited
-CO_SAFFRON = 303     # Saffron River Logistics Limited
+CO_GOLDEN = 101  # Golden Lotus Trading Company Limited
+CO_EMERALD = 202  # Emerald Pagoda Holdings Limited
+CO_SAFFRON = 303  # Saffron River Logistics Limited
 CLERK = "thiri.aung@firm.example"
 OTHER_CLERK = "kyaw.min.htet@firm.example"
 
@@ -86,6 +86,7 @@ OTHER_CLERK = "kyaw.min.htet@firm.example"
 # ===========================================================================
 # sqlite harness — executes the real SQL
 # ===========================================================================
+
 
 def _pg_ddl_to_sqlite(ddl: str) -> str:
     """Translate the migration's PostgreSQL DDL for sqlite.
@@ -113,7 +114,7 @@ def _pg_sql_to_sqlite(statement: str) -> str:
     return statement.replace("%s", "?")
 
 
-class _TranslatingCursor(object):
+class _TranslatingCursor:
     """A cursor that speaks psycopg's paramstyle to a sqlite backend."""
 
     def __init__(self, cursor):
@@ -136,7 +137,7 @@ class _TranslatingCursor(object):
         self._cursor.close()
 
 
-class _TranslatingConnection(object):
+class _TranslatingConnection:
     def __init__(self, connection):
         self._connection = connection
 
@@ -172,6 +173,7 @@ class _TranslatingConnection(object):
 # load-bearing so the code can be falsified; only the live database proves
 # the model is faithful.
 
+
 class InFailedSqlTransaction(Exception):
     """Stand-in for psycopg.errors.InFailedSqlTransaction."""
 
@@ -185,8 +187,7 @@ class _AbortingCursor(_TranslatingCursor):
         recovers = statement.strip().upper().startswith("ROLLBACK")
         if self._state["aborted"] and not recovers:
             raise InFailedSqlTransaction(
-                "current transaction is aborted, commands ignored until "
-                "end of transaction block"
+                "current transaction is aborted, commands ignored until end of transaction block"
             )
         try:
             result = _TranslatingCursor.execute(self, statement, params)
@@ -250,8 +251,7 @@ def build_db(companies=DEFAULT_COMPANIES, aborting=False):
     )
     for company_id, name, registration_number in companies:
         raw.execute(
-            "INSERT INTO companies (id, company_name_english, company_registration_number)"
-            " VALUES (?, ?, ?)",
+            "INSERT INTO companies (id, company_name_english, company_registration_number) VALUES (?, ?, ?)",
             (company_id, name, registration_number),
         )
     for path in (MIGRATION, MIGRATION_SESSION):
@@ -262,7 +262,7 @@ def build_db(companies=DEFAULT_COMPANIES, aborting=False):
     return _TranslatingConnection(raw)
 
 
-class ExplodingFactory(object):
+class ExplodingFactory:
     """A connection factory that fails if anything tries to use it.
 
     This is how "the flag is off so no connection is opened" is proved:
@@ -282,9 +282,12 @@ class ExplodingFactory(object):
 # injected defects (negative controls)
 # ===========================================================================
 
+
 def apply_break(name):
     """Introduce one real defect, so the suite can be proved able to fail."""
-    from scout.memory import flags, scope as scope_mod, sql as sql_mod, store
+    from scout.memory import flags, store
+    from scout.memory import scope as scope_mod
+    from scout.memory import sql as sql_mod
 
     if name == "scope_read":
         # Reads stop restricting to the company.
@@ -307,9 +310,7 @@ def apply_break(name):
 
     elif name == "no_supersede":
         # Re-remembering inserts without retiring the old revision.
-        sql_mod.select_owned_active = lambda scope, key: (
-            "SELECT id, revision FROM company_memory WHERE 1=0", []
-        )
+        sql_mod.select_owned_active = lambda scope, key: ("SELECT id, revision FROM company_memory WHERE 1=0", [])
 
     elif name == "scope_no_validate":
         # require_scope waves everything through.
@@ -321,6 +322,7 @@ def apply_break(name):
         # silently becomes a pick. This is precisely what
         # people_picker.py:123 does today — ILIKE ORDER BY LENGTH ASC LIMIT 1.
         from scout.memory import resolve as resolve_mod
+
         original = resolve_mod.resolve_company
 
         def collapsing(name_arg, conn=None):
@@ -342,6 +344,7 @@ def apply_break(name):
     elif name == "fuzzy_resolves":
         # Softer version: only a LONE substring match is auto-picked.
         from scout.memory import resolve as resolve_mod
+
         original = resolve_mod.resolve_company
 
         def lone_pick(name_arg, conn=None):
@@ -372,6 +375,7 @@ def apply_break(name):
         store._release_savepoint = lambda conn, borrowed: None
         store._rollback_savepoint = lambda conn, borrowed: None
         from scout.memory import resolve as resolve_mod
+
         resolve_mod._enter_savepoint = lambda conn, borrowed: None
         resolve_mod._release_savepoint = lambda conn, borrowed: None
         resolve_mod._rollback_savepoint = lambda conn, borrowed: None
@@ -379,9 +383,9 @@ def apply_break(name):
     elif name == "binding_ignores_name":
         # A bound session ignores a name that resolves somewhere else.
         from scout.memory import resolve as resolve_mod
-        resolve_mod.resolve_for_session = (
-            lambda session_id, name=None, conn=None:
-            resolve_mod.session_binding(session_id, conn=conn)
+
+        resolve_mod.resolve_for_session = lambda session_id, name=None, conn=None: resolve_mod.session_binding(
+            session_id, conn=conn
         )
 
     else:
@@ -420,6 +424,7 @@ def check(label, condition, detail=""):
 
 def case(fn):
     """Register a test function; exceptions inside count as failures."""
+
     def wrapped():
         try:
             fn()
@@ -427,6 +432,7 @@ def case(fn):
             FAILED.append((fn.__name__, f"{type(exc).__name__}: {exc}"))
             if os.environ.get("TRACKER_MEMORY_TRACE"):
                 traceback.print_exc()
+
     wrapped.__name__ = fn.__name__
     CASES.append(wrapped)
     return wrapped
@@ -439,9 +445,11 @@ CASES = []
 # flag gate — the product must be byte-identical with the flag off
 # ===========================================================================
 
+
 @case
 def t01_flag_defaults_off():
     from scout.memory import flags
+
     os.environ.pop(flags.MEMORY_FLAG_ENV, None)
     check("t01 flag unset -> disabled", flags.memory_enabled() is False)
 
@@ -449,6 +457,7 @@ def t01_flag_defaults_off():
 @case
 def t02_flag_truthy_and_falsy_values():
     from scout.memory import flags
+
     for value in ("1", "true", "TRUE", "  Yes ", "on", "enabled"):
         os.environ[flags.MEMORY_FLAG_ENV] = value
         check(f"t02 {value!r} -> enabled", flags.memory_enabled() is True, f"got False for {value!r}")
@@ -461,7 +470,8 @@ def t02_flag_truthy_and_falsy_values():
 @case
 def t03_flag_off_opens_no_connection():
     """Every entry point, with the DB made unreachable."""
-    from scout.memory import flags, store, MemoryScope
+    from scout.memory import MemoryScope, flags, store
+
     os.environ.pop(flags.MEMORY_FLAG_ENV, None)
     exploding = ExplodingFactory()
     store.connection_factory.set_override(exploding)
@@ -482,7 +492,8 @@ def t03_flag_off_opens_no_connection():
 @case
 def t04_flag_off_prompt_is_byte_identical():
     """render_for_prompt contributes exactly zero bytes while off."""
-    from scout.memory import flags, store, MemoryScope
+    from scout.memory import MemoryScope, flags, store
+
     conn = build_db()
     os.environ[flags.MEMORY_FLAG_ENV] = "1"
     scope = MemoryScope(CO_GOLDEN, CLERK)
@@ -499,15 +510,18 @@ def t04_flag_off_prompt_is_byte_identical():
 # scope — the security-relevant part. Every one asserts a NUMBER MOVED.
 # ===========================================================================
 
+
 def _enabled_scope_db():
     from scout.memory import flags
+
     os.environ[flags.MEMORY_FLAG_ENV] = "1"
     return build_db()
 
 
 @case
 def t05_write_under_a_is_invisible_to_b():
-    from scout.memory import store, MemoryScope
+    from scout.memory import MemoryScope, store
+
     conn = _enabled_scope_db()
     golden = MemoryScope(CO_GOLDEN, CLERK)
     emerald = MemoryScope(CO_EMERALD, CLERK)
@@ -531,7 +545,8 @@ def t05_write_under_a_is_invisible_to_b():
 @case
 def t06_same_key_different_companies_do_not_collide():
     """Both companies remember 'financial year end' — each reads its own."""
-    from scout.memory import store, MemoryScope
+    from scout.memory import MemoryScope, store
+
     conn = _enabled_scope_db()
     golden = MemoryScope(CO_GOLDEN, CLERK)
     emerald = MemoryScope(CO_EMERALD, CLERK)
@@ -552,7 +567,8 @@ def t06_same_key_different_companies_do_not_collide():
 
 @case
 def t07_private_rows_do_not_cross_users():
-    from scout.memory import store, MemoryScope
+    from scout.memory import MemoryScope, store
+
     conn = _enabled_scope_db()
     mine = MemoryScope(CO_GOLDEN, CLERK)
     theirs = MemoryScope(CO_GOLDEN, OTHER_CLERK)
@@ -572,7 +588,8 @@ def t07_private_rows_do_not_cross_users():
 
 @case
 def t08_history_is_scoped():
-    from scout.memory import store, MemoryScope
+    from scout.memory import MemoryScope, store
+
     conn = _enabled_scope_db()
     golden = MemoryScope(CO_GOLDEN, CLERK)
     emerald = MemoryScope(CO_EMERALD, CLERK)
@@ -584,7 +601,8 @@ def t08_history_is_scoped():
 
 @case
 def t09_forget_cannot_reach_another_company():
-    from scout.memory import store, MemoryScope
+    from scout.memory import MemoryScope, store
+
     conn = _enabled_scope_db()
     golden = MemoryScope(CO_GOLDEN, CLERK)
     emerald = MemoryScope(CO_EMERALD, CLERK)
@@ -605,7 +623,8 @@ def t09_forget_cannot_reach_another_company():
 @case
 def t10_remember_cannot_overwrite_another_company():
     """A write under B must never touch A's row for the same key."""
-    from scout.memory import store, MemoryScope
+    from scout.memory import MemoryScope, store
+
     conn = _enabled_scope_db()
     golden = MemoryScope(CO_GOLDEN, CLERK)
     emerald = MemoryScope(CO_EMERALD, CLERK)
@@ -615,8 +634,7 @@ def t10_remember_cannot_overwrite_another_company():
     conn.commit()
 
     golden_rows = store.recall(golden, key="registered office", conn=conn)
-    check("t10 A value untouched",
-          golden_rows[0]["memory_value"] == "No. 12, Pyay Road, Yangon", str(golden_rows))
+    check("t10 A value untouched", golden_rows[0]["memory_value"] == "No. 12, Pyay Road, Yangon", str(golden_rows))
     check("t10 A still at revision 1", golden_rows[0]["revision"] == 1, str(golden_rows))
     check("t10 A history still length 1", len(store.history(golden, "registered office", conn=conn)) == 1)
 
@@ -624,7 +642,8 @@ def t10_remember_cannot_overwrite_another_company():
 @case
 def t11_deleting_the_company_takes_its_memories():
     """The scope key is a real FK, not a loose integer."""
-    from scout.memory import store, MemoryScope
+    from scout.memory import MemoryScope, store
+
     conn = _enabled_scope_db()
     golden = MemoryScope(CO_GOLDEN, CLERK)
     store.remember(golden, "financial year end", "31 March", conn=conn)
@@ -644,7 +663,8 @@ def t11_deleting_the_company_takes_its_memories():
 @case
 def t12_memory_for_unknown_company_is_refused():
     """No FK row -> the write fails rather than filing an orphan."""
-    from scout.memory import store, MemoryScope
+    from scout.memory import MemoryScope, store
+
     conn = _enabled_scope_db()
     orphan = MemoryScope(999999, CLERK)
     result = store.remember(orphan, "financial year end", "31 March", conn=conn)
@@ -655,9 +675,11 @@ def t12_memory_for_unknown_company_is_refused():
 # revisions + provenance
 # ===========================================================================
 
+
 @case
 def t13_reremember_supersedes_and_bumps_revision():
-    from scout.memory import store, MemoryScope
+    from scout.memory import MemoryScope, store
+
     conn = _enabled_scope_db()
     golden = MemoryScope(CO_GOLDEN, CLERK)
     store.remember(golden, "auditor", "Shwe Pyi Audit Services", conn=conn)
@@ -676,20 +698,26 @@ def t13_reremember_supersedes_and_bumps_revision():
     check("t13 history keeps both revisions", len(trail) == 2, f"got {len(trail)}")
     check("t13 history is oldest first", trail[0]["revision"] == 1 and trail[1]["revision"] == 2, str(trail))
     check("t13 old row marked inactive", not trail[0]["active"], str(trail[0]))
-    check("t13 old row records who superseded it",
-          trail[0]["superseded_by_email"] == OTHER_CLERK, str(trail[0]))
+    check("t13 old row records who superseded it", trail[0]["superseded_by_email"] == OTHER_CLERK, str(trail[0]))
     check("t13 old row records when", trail[0]["superseded_at"] is not None, str(trail[0]))
 
 
 @case
 def t14_provenance_columns_are_recorded():
-    from scout.memory import store, MemoryScope
+    from scout.memory import MemoryScope, store
+
     conn = _enabled_scope_db()
     golden = MemoryScope(CO_GOLDEN, CLERK)
     store.remember(
-        golden, "filing naming convention", "GLT-<form>-<yyyymmdd>",
-        category="convention", confidence=0.9, source="chat",
-        session_id="sess-abc", run_id="run-xyz", conn=conn,
+        golden,
+        "filing naming convention",
+        "GLT-<form>-<yyyymmdd>",
+        category="convention",
+        confidence=0.9,
+        source="chat",
+        session_id="sess-abc",
+        run_id="run-xyz",
+        conn=conn,
     )
     conn.commit()
     row = store.recall(golden, key="filing naming convention", conn=conn)[0]
@@ -703,7 +731,8 @@ def t14_provenance_columns_are_recorded():
 
 @case
 def t15_forget_is_soft_and_keeps_the_trail():
-    from scout.memory import store, MemoryScope
+    from scout.memory import MemoryScope, store
+
     conn = _enabled_scope_db()
     golden = MemoryScope(CO_GOLDEN, CLERK)
     store.remember(golden, "auditor", "Shwe Pyi Audit Services", conn=conn)
@@ -717,16 +746,16 @@ def t15_forget_is_soft_and_keeps_the_trail():
 @case
 def t16_unique_index_forbids_two_live_rows():
     """Belt to the supersede braces: the DB refuses a duplicate live key."""
-    from scout.memory import store, sql as sql_mod, MemoryScope
+    from scout.memory import MemoryScope, store
+    from scout.memory import sql as sql_mod
+
     conn = _enabled_scope_db()
     golden = MemoryScope(CO_GOLDEN, CLERK)
     store.remember(golden, "auditor", "Shwe Pyi Audit Services", conn=conn)
     conn.commit()
 
     # Bypass remember() and insert a second live row directly.
-    statement, params = sql_mod.insert(
-        golden, "auditor", "Duplicate", "fact", None, 1, "chat", None, None, CLERK
-    )
+    statement, params = sql_mod.insert(golden, "auditor", "Duplicate", "fact", None, 1, "chat", None, None, CLERK)
     duplicated = False
     try:
         cur = conn.cursor()
@@ -736,8 +765,11 @@ def t16_unique_index_forbids_two_live_rows():
         duplicated = True
     except Exception:
         conn.rollback()
-    check("t16 duplicate live row rejected", duplicated is False,
-          "a second active row for the same (company, owner, key) was accepted")
+    check(
+        "t16 duplicate live row rejected",
+        duplicated is False,
+        "a second active row for the same (company, owner, key) was accepted",
+    )
     check("t16 still 1 live row", store.count(golden, conn=conn) == 1)
 
 
@@ -745,9 +777,11 @@ def t16_unique_index_forbids_two_live_rows():
 # validation — the scope cannot be omitted or faked
 # ===========================================================================
 
+
 @case
 def t17_bad_company_ids_are_refused():
     from scout.memory import MemoryScope, MemoryScopeError
+
     for bad in (None, 0, -1, "abc", "", True, False, 1.5, [], {}):
         raised = False
         try:
@@ -761,7 +795,8 @@ def t17_bad_company_ids_are_refused():
 
 @case
 def t18_scope_must_be_a_scope():
-    from scout.memory import flags, store, MemoryScopeError
+    from scout.memory import MemoryScopeError, flags, store
+
     os.environ[flags.MEMORY_FLAG_ENV] = "1"
     conn = build_db()
     for bad in (CO_GOLDEN, "101", None, {"company_id": CO_GOLDEN}):
@@ -778,13 +813,15 @@ def t18_scope_must_be_a_scope():
 @case
 def t19_numeric_string_company_id_is_accepted_and_coerced():
     from scout.memory import MemoryScope
+
     scope = MemoryScope("101", CLERK)
     check("t19 '101' coerces to int 101", scope.company_id == 101 and isinstance(scope.company_id, int))
 
 
 @case
 def t20_key_and_value_validation():
-    from scout.memory import flags, store, MemoryScope, MemoryScopeError
+    from scout.memory import MemoryScope, MemoryScopeError, flags, store
+
     os.environ[flags.MEMORY_FLAG_ENV] = "1"
     conn = build_db()
     scope = MemoryScope(CO_GOLDEN, CLERK)
@@ -826,15 +863,19 @@ def t20_key_and_value_validation():
 
 @case
 def t21_keys_are_normalised():
-    from scout.memory import store, MemoryScope
+    from scout.memory import MemoryScope, store
+
     conn = _enabled_scope_db()
     scope = MemoryScope(CO_GOLDEN, CLERK)
     store.remember(scope, "Financial   Year  End", "31 March", conn=conn)
     conn.commit()
     store.remember(scope, "  financial year end  ", "31 March (confirmed)", conn=conn)
     conn.commit()
-    check("t21 case+space variants are one key", store.count(scope, conn=conn) == 1,
-          f"got {store.count(scope, conn=conn)}")
+    check(
+        "t21 case+space variants are one key",
+        store.count(scope, conn=conn) == 1,
+        f"got {store.count(scope, conn=conn)}",
+    )
     rows = store.recall(scope, key="FINANCIAL YEAR END", conn=conn)
     check("t21 lookup is case-insensitive", len(rows) == 1, f"got {len(rows)}")
     check("t21 stored key is normalised", rows[0]["memory_key"] == "financial year end", str(rows))
@@ -842,23 +883,28 @@ def t21_keys_are_normalised():
 
 @case
 def t22_oversized_value_is_truncated_not_rejected():
-    from scout.memory import store, MemoryScope
+    from scout.memory import MemoryScope, store
+
     conn = _enabled_scope_db()
     scope = MemoryScope(CO_GOLDEN, CLERK)
     store.remember(scope, "long note", "x" * 9000, conn=conn)
     conn.commit()
     row = store.recall(scope, key="long note", conn=conn)[0]
-    check("t22 truncated to the cap", len(row["memory_value"]) == store.MAX_VALUE_CHARS,
-          f"got {len(row['memory_value'])}")
+    check(
+        "t22 truncated to the cap", len(row["memory_value"]) == store.MAX_VALUE_CHARS, f"got {len(row['memory_value'])}"
+    )
 
 
 # ===========================================================================
 # SQL shape — no statement can ship without the scope predicate
 # ===========================================================================
 
+
 @case
 def t23_every_builder_carries_company_id():
-    from scout.memory import sql as sql_mod, MemoryScope
+    from scout.memory import MemoryScope
+    from scout.memory import sql as sql_mod
+
     scope = MemoryScope(CO_GOLDEN, CLERK)
     built = {
         "select_active": sql_mod.select_active(scope),
@@ -868,37 +914,45 @@ def t23_every_builder_carries_company_id():
         "insert": sql_mod.insert(scope, "k", "v", "fact", None, 1, "chat", None, None, CLERK),
         "count_active": sql_mod.count_active(scope),
     }
-    check("t23 every builder is covered",
-          set(built) == set(sql_mod.ALL_BUILDERS),
-          f"builders={sorted(sql_mod.ALL_BUILDERS)} covered={sorted(built)}")
+    check(
+        "t23 every builder is covered",
+        set(built) == set(sql_mod.ALL_BUILDERS),
+        f"builders={sorted(sql_mod.ALL_BUILDERS)} covered={sorted(built)}",
+    )
     for name, (statement, params) in built.items():
         check(f"t23 {name} names company_id", "company_id" in statement, statement[:120])
-        check(f"t23 {name} binds the company id", CO_GOLDEN in list(params),
-              f"params={params}")
+        check(f"t23 {name} binds the company id", CO_GOLDEN in list(params), f"params={params}")
     for name in ("select_active", "select_history", "count_active"):
         statement = built[name][0]
-        check(f"t23 {name} equality-filters company_id",
-              "company_id = %s" in statement, statement[:160])
+        check(f"t23 {name} equality-filters company_id", "company_id = %s" in statement, statement[:160])
     for name in ("select_owned_active", "supersede"):
         statement = built[name][0]
-        check(f"t23 {name} equality-filters company_id",
-              "company_id = %s" in statement, statement[:160])
-    check("t23 insert supplies company_id as a column",
-          "company_id" in built["insert"][0].split("VALUES")[0], built["insert"][0][:160])
+        check(f"t23 {name} equality-filters company_id", "company_id = %s" in statement, statement[:160])
+    check(
+        "t23 insert supplies company_id as a column",
+        "company_id" in built["insert"][0].split("VALUES")[0],
+        built["insert"][0][:160],
+    )
 
 
 @case
 def t24_read_columns_match_the_select():
-    from scout.memory import sql as sql_mod, MemoryScope
+    from scout.memory import MemoryScope
+    from scout.memory import sql as sql_mod
+
     statement, _ = sql_mod.select_active(MemoryScope(CO_GOLDEN, CLERK))
     selected = statement.split(" FROM ")[0].replace("SELECT ", "").split(", ")
-    check("t24 SELECT list == READ_COLUMNS", tuple(selected) == sql_mod.READ_COLUMNS,
-          f"select={selected} constant={list(sql_mod.READ_COLUMNS)}")
+    check(
+        "t24 SELECT list == READ_COLUMNS",
+        tuple(selected) == sql_mod.READ_COLUMNS,
+        f"select={selected} constant={list(sql_mod.READ_COLUMNS)}",
+    )
 
 
 # ===========================================================================
 # migration file rules
 # ===========================================================================
+
 
 @case
 def t25_migration_file_rules():
@@ -909,20 +963,27 @@ def t25_migration_file_rules():
     check("t25 table is IF NOT EXISTS", "CREATE TABLE IF NOT EXISTS company_memory" in code)
     index_count = code.count("CREATE INDEX IF NOT EXISTS") + code.count("CREATE UNIQUE INDEX IF NOT EXISTS")
     total_indexes = len(re.findall(r"CREATE (?:UNIQUE )?INDEX", code))
-    check("t25 every index is IF NOT EXISTS", index_count == total_indexes and total_indexes == 4,
-          f"guarded={index_count} total={total_indexes}")
+    check(
+        "t25 every index is IF NOT EXISTS",
+        index_count == total_indexes and total_indexes == 4,
+        f"guarded={index_count} total={total_indexes}",
+    )
     check("t25 no %s placeholders", "%s" not in code, "migrate.py executes this as raw DDL")
-    check("t25 does not touch schema_migrations",
-          "schema_migrations" not in code,
-          "the runner inserts the row; a second insert violates the unique constraint")
+    check(
+        "t25 does not touch schema_migrations",
+        "schema_migrations" not in code,
+        "the runner inserts the row; a second insert violates the unique constraint",
+    )
     check("t25 company_id is NOT NULL", "company_id          INTEGER NOT NULL" in code, code[:0])
-    check("t25 company_id is a FK to companies",
-          "REFERENCES companies(id) ON DELETE CASCADE" in code)
-    check("t25 no DML", not re.search(r"^\s*(INSERT|UPDATE|DELETE)\b", code, re.M | re.I), "pure DDL only")
+    check("t25 company_id is a FK to companies", "REFERENCES companies(id) ON DELETE CASCADE" in code)
+    check(
+        "t25 no DML",
+        not re.search(r"^\s*(INSERT|UPDATE|DELETE)\b", code, re.MULTILINE | re.IGNORECASE),
+        "pure DDL only",
+    )
 
     # reversing DROPs present, and commented out
-    for statement in ("DROP TABLE IF EXISTS company_memory",
-                      "DROP INDEX IF EXISTS uq_company_memory_active_key"):
+    for statement in ("DROP TABLE IF EXISTS company_memory", "DROP INDEX IF EXISTS uq_company_memory_active_key"):
         check(f"t25 reversing '{statement[:24]}...' documented", statement in text)
         check(f"t25 reversing '{statement[:24]}...' is commented", statement not in code)
 
@@ -933,15 +994,18 @@ def t26_migration_number_is_free_and_ordered():
     names = sorted(p.name for p in db_dir.glob("migration_*.sql"))
     same_number = [n for n in names if n.startswith("migration_023")]
     check("t26 exactly one migration_023", len(same_number) == 1, str(same_number))
-    check("t26 sorts before 025",
-          "migration_023_memory.sql" in names
-          and names.index("migration_023_memory.sql") < names.index("migration_025_people_cessation.sql"),
-          str(names))
+    check(
+        "t26 sorts before 025",
+        "migration_023_memory.sql" in names
+        and names.index("migration_023_memory.sql") < names.index("migration_025_people_cessation.sql"),
+        str(names),
+    )
 
 
 # ===========================================================================
 # import hygiene
 # ===========================================================================
+
 
 @case
 def t27_package_imports_no_heavy_dependency():
@@ -954,12 +1018,12 @@ def t27_package_imports_no_heavy_dependency():
     """
     script = (
         "import sys, types\n"
-        "sys.path.insert(0, %r)\n"
-        "pkg = types.ModuleType('scout'); pkg.__path__ = [%r]\n"
+        "sys.path.insert(0, {!r})\n"
+        "pkg = types.ModuleType('scout'); pkg.__path__ = [{!r}]\n"
         "sys.modules['scout'] = pkg\n"
         "import scout.memory\n"
         "banned = [m for m in ('psycopg','agno','mcp','openai','docx') if m in sys.modules]\n"
-        "print(','.join(banned))\n" % (str(REPO_ROOT), str(REPO_ROOT / "scout"))
+        "print(','.join(banned))\n".format(str(REPO_ROOT), str(REPO_ROOT / "scout"))
     )
     proc = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
     check("t27 import succeeds", proc.returncode == 0, proc.stderr[-400:])
@@ -969,11 +1033,10 @@ def t27_package_imports_no_heavy_dependency():
 @case
 def t28_future_annotations_everywhere():
     """Local python is 3.9.6; `X | None` needs the future import."""
-    modules = sorted(MEMORY_PKG.glob("*.py")) + [Path(__file__)]
+    modules = [*sorted(MEMORY_PKG.glob("*.py")), Path(__file__)]
     for path in modules:
         head = path.read_text(encoding="utf-8")[:1500]
-        check(f"t28 {path.name} has future annotations",
-              "from __future__ import annotations" in head, str(path))
+        check(f"t28 {path.name} has future annotations", "from __future__ import annotations" in head, str(path))
 
 
 @case
@@ -981,8 +1044,7 @@ def t29_no_module_level_db_import():
     """store.py must not import db.connection at module scope."""
     source = (MEMORY_PKG / "store.py").read_text(encoding="utf-8")
     module_level = [
-        line for line in source.splitlines()
-        if re.match(r"^(import|from)\s", line) and "db.connection" in line
+        line for line in source.splitlines() if re.match(r"^(import|from)\s", line) and "db.connection" in line
     ]
     check("t29 db.connection is imported lazily", module_level == [], str(module_level))
     check("t29 the lazy import exists", "from db.connection import get_db_conn" in source)
@@ -1004,6 +1066,7 @@ PREFIX_REGISTER = (
 
 def _enabled_db(companies=DEFAULT_COMPANIES, aborting=False):
     from scout.memory import flags
+
     os.environ[flags.MEMORY_FLAG_ENV] = "1"
     return build_db(companies, aborting=aborting)
 
@@ -1011,6 +1074,7 @@ def _enabled_db(companies=DEFAULT_COMPANIES, aborting=False):
 @case
 def t30_exact_name_resolves():
     from scout.memory import resolve as r
+
     conn = _enabled_db()
     result = r.resolve_company("Golden Lotus Trading Company Limited", conn=conn)
     check("t30 status RESOLVED", result.status == r.RESOLVED, str(result))
@@ -1022,18 +1086,23 @@ def t30_exact_name_resolves():
 @case
 def t31_exact_name_is_case_and_space_insensitive():
     from scout.memory import resolve as r
+
     conn = _enabled_db()
-    for variant in ("golden lotus trading company limited",
-                    "  GOLDEN LOTUS TRADING COMPANY LIMITED  ",
-                    "Golden  Lotus   Trading Company Limited"):
+    for variant in (
+        "golden lotus trading company limited",
+        "  GOLDEN LOTUS TRADING COMPANY LIMITED  ",
+        "Golden  Lotus   Trading Company Limited",
+    ):
         result = r.resolve_company(variant, conn=conn)
-        check(f"t31 {variant.strip()[:22]!r} resolves",
-              result.is_resolved and result.company_id == CO_GOLDEN, str(result))
+        check(
+            f"t31 {variant.strip()[:22]!r} resolves", result.is_resolved and result.company_id == CO_GOLDEN, str(result)
+        )
 
 
 @case
 def t32_registration_number_resolves():
     from scout.memory import resolve as r
+
     conn = _enabled_db()
     result = r.resolve_company("108765432", conn=conn)
     check("t32 status RESOLVED", result.status == r.RESOLVED, str(result))
@@ -1050,19 +1119,18 @@ def t33_ambiguous_must_not_collapse_to_a_pick():
     people_picker.py:123 does today (ILIKE ORDER BY LENGTH ASC LIMIT 1).
     """
     from scout.memory import resolve as r
+
     conn = _enabled_db(PREFIX_REGISTER)
     result = r.resolve_company("Golden Lotus", conn=conn)
 
     check("t33 status is AMBIGUOUS", result.status == r.AMBIGUOUS, str(result))
     check("t33 company_id is NOT set", result.company_id is None, str(result))
     check("t33 is_resolved is False", result.is_resolved is False, str(result))
-    check("t33 exactly 2 candidates", len(result.candidates) == 2,
-          f"got {len(result.candidates)}: {result.candidates}")
+    check("t33 exactly 2 candidates", len(result.candidates) == 2, f"got {len(result.candidates)}: {result.candidates}")
     ids = {c["company_id"] for c in result.candidates}
     check("t33 both companies offered", ids == {CO_GL_TRADING, CO_GL_HOLDINGS}, str(ids))
     # The shorter name is the one a LENGTH-ordered resolver would have picked.
-    check("t33 shorter name did not win silently",
-          result.company_id != CO_GL_HOLDINGS, str(result))
+    check("t33 shorter name did not win silently", result.company_id != CO_GL_HOLDINGS, str(result))
 
 
 @case
@@ -1074,18 +1142,19 @@ def t34_a_lone_substring_match_still_does_not_resolve():
     match into a wrong one already written down.
     """
     from scout.memory import resolve as r
+
     conn = _enabled_db()
     result = r.resolve_company("Saffron River", conn=conn)
     check("t34 status is AMBIGUOUS", result.status == r.AMBIGUOUS, str(result))
     check("t34 company_id is NOT set", result.company_id is None, str(result))
     check("t34 the single candidate is offered", len(result.candidates) == 1, str(result))
-    check("t34 candidate is the right company",
-          result.candidates[0]["company_id"] == CO_SAFFRON, str(result))
+    check("t34 candidate is the right company", result.candidates[0]["company_id"] == CO_SAFFRON, str(result))
 
 
 @case
 def t35_no_match_is_none():
     from scout.memory import resolve as r
+
     conn = _enabled_db()
     result = r.resolve_company("Nonexistent Trading Limited", conn=conn)
     check("t35 status NONE", result.status == r.NONE, str(result))
@@ -1101,6 +1170,7 @@ def t36_like_metacharacters_are_escaped():
     "GOLDEN_LOTUS" matches "GOLDEN LOTUS", and "%" matches everything.
     """
     from scout.memory import resolve as r
+
     register = (
         (501, "GOLDEN LOTUS TRADING LIMITED", "111000111"),
         (502, "GOLDEN_LOTUS TRADING LIMITED", "111000222"),
@@ -1110,24 +1180,26 @@ def t36_like_metacharacters_are_escaped():
 
     # Exact match must find the underscore company only.
     exact = r.resolve_company("GOLDEN_LOTUS TRADING LIMITED", conn=conn)
-    check("t36 underscore name resolves exactly", exact.is_resolved and exact.company_id == 502,
-          str(exact))
+    check("t36 underscore name resolves exactly", exact.is_resolved and exact.company_id == 502, str(exact))
 
     # A substring query containing `_` must not pull in the space sibling.
     partial = r.resolve_company("GOLDEN_LOTUS", conn=conn)
     ids = {c["company_id"] for c in partial.candidates}
-    check("t36 underscore does not match a space", ids == {502},
-          f"got {ids} — the escape is missing")
+    check("t36 underscore does not match a space", ids == {502}, f"got {ids} — the escape is missing")
 
     # A bare '%' must not return the whole register.
     wildcard = r.resolve_company("%", conn=conn)
-    check("t36 '%' does not match everything", len(wildcard.candidates) == 0,
-          f"got {len(wildcard.candidates)} candidates for a bare wildcard")
+    check(
+        "t36 '%' does not match everything",
+        len(wildcard.candidates) == 0,
+        f"got {len(wildcard.candidates)} candidates for a bare wildcard",
+    )
 
 
 @case
 def t37_two_rows_differing_only_by_case_are_ambiguous():
     from scout.memory import resolve as r
+
     register = (
         (601, "Jade Harbour Limited", "222000111"),
         (602, "JADE HARBOUR LIMITED", "222000222"),
@@ -1142,6 +1214,7 @@ def t37_two_rows_differing_only_by_case_are_ambiguous():
 @case
 def t38_name_with_a_digit_is_not_probed_as_a_registration_number():
     from scout.memory import resolve as r
+
     register = ((701, "Lotus 2 Trading Limited", "333000111"),)
     conn = _enabled_db(register)
     result = r.resolve_company("Lotus 2 Trading Limited", conn=conn)
@@ -1151,7 +1224,9 @@ def t38_name_with_a_digit_is_not_probed_as_a_registration_number():
 
 @case
 def t39_resolver_is_flag_gated():
-    from scout.memory import flags, store, resolve as r
+    from scout.memory import flags, store
+    from scout.memory import resolve as r
+
     os.environ.pop(flags.MEMORY_FLAG_ENV, None)
     exploding = ExplodingFactory()
     store.connection_factory.set_override(exploding)
@@ -1168,9 +1243,11 @@ def t39_resolver_is_flag_gated():
 
 # --- session binding -------------------------------------------------------
 
+
 @case
 def t40_bind_and_read_back():
     from scout.memory import resolve as r
+
     conn = _enabled_db()
     ok = r.bind_session("sess-alpha", CO_GOLDEN, bound_by=CLERK, conn=conn)
     conn.commit()
@@ -1179,13 +1256,13 @@ def t40_bind_and_read_back():
     check("t40 reads back RESOLVED", bound.status == r.RESOLVED, str(bound))
     check("t40 correct company", bound.company_id == CO_GOLDEN, str(bound))
     check("t40 match kind", bound.match_kind == r.BY_SESSION, str(bound))
-    check("t40 carries the name", bound.company_name == "Golden Lotus Trading Company Limited",
-          str(bound))
+    check("t40 carries the name", bound.company_name == "Golden Lotus Trading Company Limited", str(bound))
 
 
 @case
 def t41_unbound_session_reads_none():
     from scout.memory import resolve as r
+
     conn = _enabled_db()
     check("t41 no binding", r.session_binding("sess-never-bound", conn=conn).status == r.NONE)
     check("t41 blank session id", r.session_binding("", conn=conn).status == r.NONE)
@@ -1195,6 +1272,7 @@ def t41_unbound_session_reads_none():
 def t42_for_session_without_a_name_uses_the_binding():
     """The whole point: "remember their year end is 31 March" needs no name."""
     from scout.memory import resolve as r
+
     conn = _enabled_db()
     r.bind_session("sess-alpha", CO_EMERALD, bound_by=CLERK, conn=conn)
     conn.commit()
@@ -1207,6 +1285,7 @@ def t42_for_session_without_a_name_uses_the_binding():
 def t43_a_name_resolving_elsewhere_beats_the_binding():
     """The user changed subject. The binding must not win."""
     from scout.memory import resolve as r
+
     conn = _enabled_db()
     r.bind_session("sess-alpha", CO_EMERALD, bound_by=CLERK, conn=conn)
     conn.commit()
@@ -1218,6 +1297,7 @@ def t43_a_name_resolving_elsewhere_beats_the_binding():
 @case
 def t44_ambiguous_name_including_the_bound_company_uses_the_binding():
     from scout.memory import resolve as r
+
     conn = _enabled_db(PREFIX_REGISTER)
     r.bind_session("sess-alpha", CO_GL_TRADING, bound_by=CLERK, conn=conn)
     conn.commit()
@@ -1236,8 +1316,12 @@ def t45_ambiguous_name_excluding_the_bound_company_stays_ambiguous():
     trail.
     """
     from scout.memory import resolve as r
-    register = PREFIX_REGISTER + ((403, "Jade Harbour Trading Limited", "444000111"),
-                                  (404, "Jade Harbour Holdings Limited", "444000222"))
+
+    register = (
+        *PREFIX_REGISTER,
+        (403, "Jade Harbour Trading Limited", "444000111"),
+        (404, "Jade Harbour Holdings Limited", "444000222"),
+    )
     conn = _enabled_db(register)
     r.bind_session("sess-alpha", CO_GL_TRADING, bound_by=CLERK, conn=conn)
     conn.commit()
@@ -1252,6 +1336,7 @@ def t45_ambiguous_name_excluding_the_bound_company_stays_ambiguous():
 @case
 def t46_rebinding_replaces():
     from scout.memory import resolve as r
+
     conn = _enabled_db()
     r.bind_session("sess-alpha", CO_GOLDEN, bound_by=CLERK, conn=conn)
     conn.commit()
@@ -1269,6 +1354,7 @@ def t46_rebinding_replaces():
 @case
 def t47_unbind_removes():
     from scout.memory import resolve as r
+
     conn = _enabled_db()
     r.bind_session("sess-alpha", CO_GOLDEN, conn=conn)
     conn.commit()
@@ -1282,6 +1368,7 @@ def t47_unbind_removes():
 @case
 def t48_binding_to_an_unknown_company_is_refused():
     from scout.memory import resolve as r
+
     conn = _enabled_db()
     ok = r.bind_session("sess-alpha", 999999, conn=conn)
     check("t48 FK refuses the bind", ok is False, "an orphan binding was accepted")
@@ -1290,6 +1377,7 @@ def t48_binding_to_an_unknown_company_is_refused():
 @case
 def t49_deleting_the_company_takes_the_binding():
     from scout.memory import resolve as r
+
     conn = _enabled_db()
     r.bind_session("sess-alpha", CO_GOLDEN, conn=conn)
     conn.commit()
@@ -1305,7 +1393,9 @@ def t49_deleting_the_company_takes_the_binding():
 
 @case
 def t50_bind_validates_company_id():
-    from scout.memory import resolve as r, MemoryScopeError
+    from scout.memory import MemoryScopeError
+    from scout.memory import resolve as r
+
     conn = _enabled_db()
     for bad in (None, 0, -1, True, "abc", 1.5):
         raised = False
@@ -1327,7 +1417,9 @@ def t50_bind_validates_company_id():
 @case
 def t51_resolve_then_bind_then_remember_end_to_end():
     """The real flow, asserting a NUMBER MOVED on both companies."""
-    from scout.memory import resolve as r, store, MemoryScope
+    from scout.memory import MemoryScope, store
+    from scout.memory import resolve as r
+
     conn = _enabled_db(PREFIX_REGISTER)
 
     # A short name cannot be written against.
@@ -1345,8 +1437,7 @@ def t51_resolve_then_bind_then_remember_end_to_end():
     check("t51 later turn resolves from the binding", later.company_id == CO_GL_TRADING, str(later))
 
     scope = MemoryScope(later.company_id, CLERK)
-    store.remember(scope, "financial year end", "31 March", category="convention",
-                   session_id="sess-alpha", conn=conn)
+    store.remember(scope, "financial year end", "31 March", category="convention", session_id="sess-alpha", conn=conn)
     conn.commit()
 
     trading = store.count(MemoryScope(CO_GL_TRADING, CLERK), conn=conn)
@@ -1358,6 +1449,7 @@ def t51_resolve_then_bind_then_remember_end_to_end():
 @case
 def t52_resolver_sql_never_limits_an_ambiguity():
     from scout.memory import sql as sql_mod
+
     built = {
         "select_by_registration_number": sql_mod.select_by_registration_number("1"),
         "select_by_exact_name": sql_mod.select_by_exact_name("x"),
@@ -1366,32 +1458,34 @@ def t52_resolver_sql_never_limits_an_ambiguity():
         "upsert_session_binding": sql_mod.upsert_session_binding("s", 1, None),
         "delete_session_binding": sql_mod.delete_session_binding("s"),
     }
-    check("t52 every resolver builder covered",
-          set(built) == set(sql_mod.RESOLVER_BUILDERS),
-          f"declared={sorted(sql_mod.RESOLVER_BUILDERS)} covered={sorted(built)}")
+    check(
+        "t52 every resolver builder covered",
+        set(built) == set(sql_mod.RESOLVER_BUILDERS),
+        f"declared={sorted(sql_mod.RESOLVER_BUILDERS)} covered={sorted(built)}",
+    )
 
     # The two that decide identity must be able to see a second row.
     for name in ("select_by_registration_number", "select_by_exact_name"):
-        check(f"t52 {name} has no LIMIT",
-              "LIMIT" not in built[name][0].upper(),
-              built[name][0])
+        check(f"t52 {name} has no LIMIT", "LIMIT" not in built[name][0].upper(), built[name][0])
     # The candidate query is allowed a LIMIT — it offers, it does not pick —
     # but it must be a bound parameter, not a hardcoded 1.
     candidates_sql = built["select_name_candidates"][0]
     check("t52 candidate LIMIT is parameterised", "LIMIT %s" in candidates_sql, candidates_sql)
     check("t52 candidate query escapes LIKE", "ESCAPE" in candidates_sql, candidates_sql)
-    check("t52 candidate query is not length-ordered",
-          "LENGTH" not in candidates_sql.upper(),
-          "ORDER BY LENGTH is how people_picker.py:123 silently picks")
+    check(
+        "t52 candidate query is not length-ordered",
+        "LENGTH" not in candidates_sql.upper(),
+        "ORDER BY LENGTH is how people_picker.py:123 silently picks",
+    )
 
 
 @case
 def t53_like_escape_is_correct():
     from scout.memory import sql as sql_mod
+
     check("t53 percent escaped", sql_mod.like_escape("a%b") == "a\\%b", sql_mod.like_escape("a%b"))
     check("t53 underscore escaped", sql_mod.like_escape("a_b") == "a\\_b", sql_mod.like_escape("a_b"))
-    check("t53 backslash doubled first",
-          sql_mod.like_escape("a\\b") == "a\\\\b", sql_mod.like_escape("a\\b"))
+    check("t53 backslash doubled first", sql_mod.like_escape("a\\b") == "a\\\\b", sql_mod.like_escape("a\\b"))
     check("t53 plain text untouched", sql_mod.like_escape("Golden Lotus") == "Golden Lotus")
 
 
@@ -1404,16 +1498,18 @@ def t54_migration_026_file_rules():
     check("t54 table is IF NOT EXISTS", "CREATE TABLE IF NOT EXISTS session_company" in code)
     total_indexes = len(re.findall(r"CREATE (?:UNIQUE )?INDEX", code))
     guarded = code.count("CREATE INDEX IF NOT EXISTS") + code.count("CREATE UNIQUE INDEX IF NOT EXISTS")
-    check("t54 every index is IF NOT EXISTS", guarded == total_indexes and total_indexes == 1,
-          f"guarded={guarded} total={total_indexes}")
+    check(
+        "t54 every index is IF NOT EXISTS",
+        guarded == total_indexes and total_indexes == 1,
+        f"guarded={guarded} total={total_indexes}",
+    )
     check("t54 no %s placeholders", "%s" not in code)
     check("t54 does not touch schema_migrations", "schema_migrations" not in code)
     check("t54 company_id NOT NULL", "company_id  INTEGER NOT NULL" in code, "")
     check("t54 company_id is a FK", "REFERENCES companies(id) ON DELETE CASCADE" in code)
     check("t54 session_id is the PK", "session_id  TEXT PRIMARY KEY" in code)
-    check("t54 no DML", not re.search(r"^\s*(INSERT|UPDATE|DELETE)\b", code, re.M | re.I))
-    for statement in ("DROP TABLE IF EXISTS session_company",
-                      "DROP INDEX IF EXISTS idx_session_company_company"):
+    check("t54 no DML", not re.search(r"^\s*(INSERT|UPDATE|DELETE)\b", code, re.MULTILINE | re.IGNORECASE))
+    for statement in ("DROP TABLE IF EXISTS session_company", "DROP INDEX IF EXISTS idx_session_company_company"):
         check(f"t54 reversing '{statement[:26]}...' documented", statement in text)
         check(f"t54 reversing '{statement[:26]}...' is commented", statement not in code)
 
@@ -1424,9 +1520,11 @@ def t55_migration_026_number_is_free_and_ordered():
     names = sorted(p.name for p in db_dir.glob("migration_*.sql"))
     same = [n for n in names if n.startswith("migration_026")]
     check("t55 exactly one migration_026", len(same) == 1, str(same))
-    check("t55 sorts after 025",
-          names.index("migration_026_session_company.sql") > names.index("migration_025_people_cessation.sql"),
-          str(names))
+    check(
+        "t55 sorts after 025",
+        names.index("migration_026_session_company.sql") > names.index("migration_025_people_cessation.sql"),
+        str(names),
+    )
     check("t55 023 untouched by this change", "migration_023_memory.sql" in names)
 
 
@@ -1446,16 +1544,17 @@ def t55_migration_026_number_is_free_and_ordered():
 # caller's in-flight work survives and commits. The PG half needs the live
 # database.
 
+
 @case
 def t56_failed_write_on_a_borrowed_connection_spares_the_caller():
-    from scout.memory import store, MemoryScope
+    from scout.memory import MemoryScope, store
+
     conn = _enabled_db(aborting=True)
 
     # The caller has work in flight on this connection, uncommitted.
     cur = conn.cursor()
     cur.execute(
-        "INSERT INTO companies (id, company_name_english, company_registration_number)"
-        " VALUES (%s, %s, %s)",
+        "INSERT INTO companies (id, company_name_english, company_registration_number) VALUES (%s, %s, %s)",
         [808, "Cobalt Ridge Limited", "555000111"],
     )
     cur.close()
@@ -1482,7 +1581,8 @@ def t56_failed_write_on_a_borrowed_connection_spares_the_caller():
 @case
 def t57_savepoint_rollback_is_scoped_to_our_rows():
     """A failed second write must not undo our own earlier committed one."""
-    from scout.memory import store, MemoryScope
+    from scout.memory import MemoryScope, store
+
     conn = _enabled_db(aborting=True)
     scope = MemoryScope(CO_GOLDEN, CLERK)
     store.remember(scope, "financial year end", "31 March", conn=conn)
@@ -1505,12 +1605,12 @@ def t57_savepoint_rollback_is_scoped_to_our_rows():
 @case
 def t58_failed_bind_on_a_borrowed_connection_spares_the_caller():
     from scout.memory import resolve as r
+
     conn = _enabled_db(aborting=True)
 
     cur = conn.cursor()
     cur.execute(
-        "INSERT INTO companies (id, company_name_english, company_registration_number)"
-        " VALUES (%s, %s, %s)",
+        "INSERT INTO companies (id, company_name_english, company_registration_number) VALUES (%s, %s, %s)",
         [909, "Indigo Field Limited", "666000111"],
     )
     cur.close()
@@ -1535,12 +1635,14 @@ def t59_owning_the_connection_uses_no_savepoint():
     helpers rather than by reading the code.
     """
     from scout.memory import store
+
     calls = []
     real_enter = store._enter_savepoint
     store._enter_savepoint = lambda conn, borrowed: calls.append(borrowed)
     try:
         conn = _enabled_db()
         from scout.memory import MemoryScope
+
         store.remember(MemoryScope(CO_GOLDEN, CLERK), "k", "v", conn=conn)
         check("t59 borrowed connection asks for a savepoint", calls == [True], str(calls))
     finally:
@@ -1552,11 +1654,16 @@ def t60_savepoint_helpers_use_a_fixed_identifier():
     """The savepoint name must never be built from input."""
     source = (MEMORY_PKG / "store.py").read_text(encoding="utf-8")
     check("t60 name is a module constant", '_SAVEPOINT_NAME = "ls_memory_write"' in source)
-    check("t60 no format interpolation into SAVEPOINT",
-          not re.search(r'SAVEPOINT\s*[%{]', source), "savepoint name is interpolated")
-    for fragment in ('"SAVEPOINT " + _SAVEPOINT_NAME',
-                     '"RELEASE SAVEPOINT " + _SAVEPOINT_NAME',
-                     '"ROLLBACK TO SAVEPOINT " + _SAVEPOINT_NAME'):
+    check(
+        "t60 no format interpolation into SAVEPOINT",
+        not re.search(r"SAVEPOINT\s*[%{]", source),
+        "savepoint name is interpolated",
+    )
+    for fragment in (
+        '"SAVEPOINT " + _SAVEPOINT_NAME',
+        '"RELEASE SAVEPOINT " + _SAVEPOINT_NAME',
+        '"ROLLBACK TO SAVEPOINT " + _SAVEPOINT_NAME',
+    ):
         check(f"t60 {fragment[:26]}... is a literal concat", fragment in source)
 
 
@@ -1572,8 +1679,7 @@ def t62_the_aborting_harness_really_poisons():
     conn = build_db(aborting=True)
     cur = conn.cursor()
     cur.execute(
-        "INSERT INTO companies (id, company_name_english, company_registration_number)"
-        " VALUES (%s, %s, %s)",
+        "INSERT INTO companies (id, company_name_english, company_registration_number) VALUES (%s, %s, %s)",
         [700, "Vermilion Coast Limited", "777000111"],
     )
     cur.close()
@@ -1599,16 +1705,18 @@ def t62_the_aborting_harness_really_poisons():
         cur.close()
     except InFailedSqlTransaction:
         died = True
-    check("t62 caller's next statement raises", died,
-          "the harness is inert — it does not model the abort")
+    check("t62 caller's next statement raises", died, "the harness is inert — it does not model the abort")
 
     conn.commit()
     cur = conn.cursor()
     cur.execute("SELECT COUNT(*) FROM companies WHERE id = %s", [700])
     survived = cur.fetchone()[0]
     cur.close()
-    check("t62 commit reported success but DISCARDED the work", survived == 0,
-          f"got {survived} — the harness does not model the silent rollback")
+    check(
+        "t62 commit reported success but DISCARDED the work",
+        survived == 0,
+        f"got {survived} — the harness does not model the silent rollback",
+    )
 
 
 @case
@@ -1619,10 +1727,12 @@ def t61_every_write_path_is_savepoint_guarded():
         enters = source.count("_enter_savepoint(conn, not owns_connection)")
         releases = source.count("_release_savepoint(conn, not owns_connection)")
         rollbacks = source.count("_rollback_savepoint(conn, True)")
-        check(f"t61 {module} enter/release balanced", enters == releases,
-              f"enter={enters} release={releases}")
-        check(f"t61 {module} every guarded write has a rollback", enters == rollbacks,
-              f"enter={enters} rollback={rollbacks}")
+        check(f"t61 {module} enter/release balanced", enters == releases, f"enter={enters} release={releases}")
+        check(
+            f"t61 {module} every guarded write has a rollback",
+            enters == rollbacks,
+            f"enter={enters} rollback={rollbacks}",
+        )
         check(f"t61 {module} has guarded writes", enters >= 2, f"got {enters}")
 
 
@@ -1630,10 +1740,12 @@ def t61_every_write_path_is_savepoint_guarded():
 # main
 # ===========================================================================
 
+
 def run_suite():
     # t12 deliberately provokes a FK violation; the store logs it, correctly.
     # Silence it so a green run has clean output. TRACKER_MEMORY_TRACE=1 to see it.
     import logging
+
     if not os.environ.get("TRACKER_MEMORY_TRACE"):
         logging.getLogger("legalscout.memory").setLevel(logging.CRITICAL)
 
@@ -1645,7 +1757,7 @@ def run_suite():
 
 
 def print_report(passed, failed):
-    print("")
+    print()
     print("=" * 74)
     header = "tracker_memory"
     if BREAK:
@@ -1656,7 +1768,7 @@ def print_report(passed, failed):
         print(f"  FAIL  {label}")
         if detail:
             print(f"        {detail}")
-    print("")
+    print()
 
 
 def run_negative_controls():
@@ -1664,31 +1776,29 @@ def run_negative_controls():
     env = dict(os.environ)
     env.pop("TRACKER_MEMORY_BREAK", None)
 
-    baseline = subprocess.run(
-        [sys.executable, str(Path(__file__))], capture_output=True, text=True, env=env
-    )
+    baseline = subprocess.run([sys.executable, str(Path(__file__))], capture_output=True, text=True, env=env)
     base_pass, base_fail = _parse_counts(baseline.stdout)
 
-    print("")
+    print()
     print("NEGATIVE CONTROLS")
     print("-" * 74)
     print(f"{'defect injected':<22} {'PASS':>6} {'FAIL':>6}   verdict")
     print("-" * 74)
-    print(f"{'(none — baseline)':<22} {base_pass:>6} {base_fail:>6}   {'OK' if base_fail == 0 else 'BASELINE ALREADY RED'}")
+    print(
+        f"{'(none — baseline)':<22} {base_pass:>6} {base_fail:>6}   {'OK' if base_fail == 0 else 'BASELINE ALREADY RED'}"
+    )
 
     all_good = base_fail == 0
     for name in BREAKS:
         env["TRACKER_MEMORY_BREAK"] = name
-        proc = subprocess.run(
-            [sys.executable, str(Path(__file__))], capture_output=True, text=True, env=env
-        )
+        proc = subprocess.run([sys.executable, str(Path(__file__))], capture_output=True, text=True, env=env)
         broken_pass, broken_fail = _parse_counts(proc.stdout)
         caught = broken_fail > 0
         all_good = all_good and caught
         print(f"{name:<22} {broken_pass:>6} {broken_fail:>6}   {'caught' if caught else 'NOT CAUGHT'}")
     print("-" * 74)
     print("Every defect must move FAIL off zero. A defect that does not is a test to delete.")
-    print("")
+    print()
     return 0 if all_good else 1
 
 

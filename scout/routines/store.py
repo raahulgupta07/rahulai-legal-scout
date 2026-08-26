@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from scout.routines.engine import routines_enabled
 from scout.routines.model import Routine, RoutineInput, RoutineStep
@@ -34,7 +34,7 @@ def _conn():
 # ---------------------------------------------------------------------------
 # Catalogue sync
 # ---------------------------------------------------------------------------
-def sync_catalog(routines: Optional[List[Routine]] = None) -> Dict[str, Any]:
+def sync_catalog(routines: list[Routine] | None = None) -> dict[str, Any]:
     """UPSERT the source catalogue into the routine tables.
 
     Idempotent: routines are matched by `name`, steps and inputs by
@@ -148,7 +148,7 @@ def sync_catalog(routines: Optional[List[Routine]] = None) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Reading routines back
 # ---------------------------------------------------------------------------
-def load_routines(enabled_only: bool = True) -> List[Routine]:
+def load_routines(enabled_only: bool = True) -> list[Routine]:
     """Rebuild Routine objects from the tables.
 
     Returns [] — never raises — when routines are off, the tables do not exist,
@@ -176,7 +176,7 @@ def load_routines(enabled_only: bool = True) -> List[Routine]:
         )
         rows = cur.fetchall()
 
-        out: List[Routine] = []
+        out: list[Routine] = []
         for rid, name, title, desc, skill, version, enabled, source in rows:
             cur.execute(
                 """
@@ -267,8 +267,8 @@ def start_run(
     routine: Routine,
     session_id: str = "",
     company_name: str = "",
-    state: Optional[Dict[str, Any]] = None,
-) -> Optional[int]:
+    state: dict[str, Any] | None = None,
+) -> int | None:
     """Open a run row and return its id, or None when routines are off."""
     if not routines_enabled():
         return None
@@ -287,8 +287,7 @@ def start_run(
             VALUES (%s, %s, %s, %s, 'running', %s)
             RETURNING id
             """,
-            (row[0], routine.name, session_id or "", company_name or "",
-             json.dumps(state or {})),
+            (row[0], routine.name, session_id or "", company_name or "", json.dumps(state or {})),
         )
         run_id = cur.fetchone()[0]
         conn.commit()
@@ -307,8 +306,8 @@ def record_event(
     run_id: int,
     step: RoutineStep,
     status: str,
-    detail: Optional[Dict[str, Any]] = None,
-    state: Optional[Dict[str, Any]] = None,
+    detail: dict[str, Any] | None = None,
+    state: dict[str, Any] | None = None,
 ) -> bool:
     """Append one step event and move the run's cursor.
 
@@ -382,7 +381,7 @@ def finish_run(run_id: int, status: str = "done", error: str = "") -> bool:
             conn.close()
 
 
-def load_run(run_id: int) -> Optional[Dict[str, Any]]:
+def load_run(run_id: int) -> dict[str, Any] | None:
     """Read a run back, state included — the resume path."""
     if not routines_enabled():
         return None

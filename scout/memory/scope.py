@@ -27,7 +27,7 @@ def _clean_email(value):
     return cleaned or None
 
 
-class MemoryScope(object):
+class MemoryScope:
     """(company_id, user_email) — the key every row is filed under.
 
     ``company_id`` is required and must be a positive integer; it maps to
@@ -46,7 +46,7 @@ class MemoryScope(object):
         self.user_email = _clean_email(user_email)
 
     def __repr__(self):
-        return "MemoryScope(company_id=%r, user_email=%r)" % (self.company_id, self.user_email)
+        return f"MemoryScope(company_id={self.company_id!r}, user_email={self.user_email!r})"
 
     def __eq__(self, other):
         if not isinstance(other, MemoryScope):
@@ -90,8 +90,8 @@ def require_scope(scope):
     """
     if not isinstance(scope, MemoryScope):
         raise MemoryScopeError(
-            "scope must be a MemoryScope, got %s — build one with "
-            "MemoryScope(company_id=..., user_email=...)" % type(scope).__name__
+            f"scope must be a MemoryScope, got {type(scope).__name__} — build one with "
+            "MemoryScope(company_id=..., user_email=...)"
         )
     # Re-validate: __slots__ attributes are writable, so a scope could have
     # been mutated after construction.

@@ -1,10 +1,13 @@
 """Sync filesystem templates to database on startup."""
-import os, json, sys
+
+import json
+import sys
+
 try:
-    from psycopg import connect
     from pathlib import Path
 
     from db.connection import get_db_conn
+
     conn = get_db_conn()
     conn.autocommit = True
     cur = conn.cursor()
@@ -22,10 +25,12 @@ try:
     for name in existing - in_db:
         try:
             from scout.tools.smart_doc import extract_placeholders_from_template
+
             fields = extract_placeholders_from_template(templates_dir / name).get("fields", [])
             cur.execute(
                 "INSERT INTO templates (name, path, fields, total_fields) VALUES (%s,%s,%s,%s) ON CONFLICT DO NOTHING",
-                (name, str(templates_dir / name), json.dumps(fields), len(fields)))
+                (name, str(templates_dir / name), json.dumps(fields), len(fields)),
+            )
             added += 1
             print(f"  Added: {name} ({len(fields)} fields)")
         except Exception as e:
@@ -44,6 +49,7 @@ try:
     else:
         print(f"Templates in sync ({len(in_db)} in DB, {len(existing)} on disk)")
 
-    cur.close(); conn.close()
+    cur.close()
+    conn.close()
 except Exception as e:
     print(f"Sync warning: {e}")

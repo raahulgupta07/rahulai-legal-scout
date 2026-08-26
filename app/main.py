@@ -8,27 +8,48 @@ Run:
     python -m app.main
 """
 
+import json
+from datetime import datetime
 from os import getenv
 from pathlib import Path
-from datetime import datetime
-import json
-import jwt
+from typing import ClassVar
+
 import bcrypt
-
+import jwt
 from agno.os import AgentOS
-from fastapi import FastAPI, UploadFile, File, Form, Request
+from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 
-from scout.agent import scout  # single agent (fallback)
-from db import get_postgres_db
-from app.model_config import (get_model, get_all_models, save_models, clear_cache as clear_model_cache,
-    get_timezone, save_timezone, get_current_datetime, get_current_date, OPENROUTER_BASE_URL)
-from db.connection import get_db_conn
-from app.s3_storage import s3_upload_async, s3_delete_async, s3_download, s3_test, s3_sync_all, s3_list, is_s3_enabled, save_s3_config, _get_s3_config, _local_to_s3_key
-from app.slot_contract import normalise_mapping, sanitise_mapping
 from app import training_jobs
+from app.model_config import (
+    OPENROUTER_BASE_URL,
+    get_all_models,
+    get_current_datetime,
+    get_model,
+    get_timezone,
+    save_models,
+    save_timezone,
+)
+from app.model_config import (
+    clear_cache as clear_model_cache,
+)
+from app.s3_storage import (
+    _get_s3_config,
+    is_s3_enabled,
+    s3_delete_async,
+    s3_download,
+    s3_list,
+    s3_sync_all,
+    s3_test,
+    s3_upload_async,
+    save_s3_config,
+)
+from app.slot_contract import normalise_mapping, sanitise_mapping
+from db import get_postgres_db
+from db.connection import get_db_conn
+from scout.agent import scout  # single agent (fallback)
 
 # ---------------------------------------------------------------------------
 # Production-safe host configuration
@@ -48,6 +69,7 @@ def add_cors_middleware(app: FastAPI):
     elif cors_origins == "*":
         # Explicitly reject wildcard CORS in production
         import logging
+
         logging.getLogger("legalscout.security").warning("CORS_ORIGINS='*' is insecure — using same-origin only")
         allow_origins = []
     else:
@@ -88,6 +110,7 @@ app = agent_os.get_app()
 _agenos_override_paths = {"/", "/health"}
 app.routes[:] = [r for r in app.routes if not (hasattr(r, "path") and r.path in _agenos_override_paths)]
 
+
 # Mount frontend static assets early (before other routes can intercept)
 #
 # ★★★This mount is why the `immutable` branch in serve_frontend() below never
@@ -114,7 +137,7 @@ class _HashedStatic(StaticFiles):
                 resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
             else:
                 resp.headers["Cache-Control"] = "no-cache"
-        except Exception:  # noqa: BLE001 — never fail a static asset over a header
+        except Exception:
             pass
         return resp
 
@@ -131,8 +154,8 @@ add_cors_middleware(app)
 # ---------------------------------------------------------------------------
 # Prometheus Metrics — /metrics endpoint for monitoring
 # ---------------------------------------------------------------------------
-from prometheus_fastapi_instrumentator import Instrumentator
 from prometheus_client import Counter, Histogram
+from prometheus_fastapi_instrumentator import Instrumentator
 
 # Auto-instrument all HTTP requests (latency, status codes, in-progress)
 _instrumentator = Instrumentator(
@@ -168,6 +191,7 @@ import signal
 def _handle_shutdown(signum, frame):
     """Log shutdown signal for observability."""
     import logging
+
     sig_name = signal.Signals(signum).name
     logging.getLogger("legalscout").info(f"Received {sig_name} — shutting down gracefully")
 
@@ -206,13 +230,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             content_length = request.headers.get("content-length")
             if content_length and int(content_length) > limit:
                 return JSONResponse(
-                    {
-                        "error": (
-                            "Resume payload too large (max 2MB)"
-                            if is_resume
-                            else "Message too large (max 50KB)"
-                        )
-                    },
+                    {"error": ("Resume payload too large (max 2MB)" if is_resume else "Message too large (max 50KB)")},
                     status_code=413,
                 )
         # ---- Bind the conversation for the whole resume request ------------
@@ -243,7 +261,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
                 async def _replay() -> dict:
                     return {"type": "http.request", "body": raw, "more_body": False}
 
-                request._receive = _replay  # noqa: SLF001 — the standard replay
+                request._receive = _replay
                 sid = ""
                 for part in raw.split(b"&"):
                     if part.startswith(b"session_id="):
@@ -256,7 +274,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
                     with session_scope(sid):
                         return await self._finish(request, call_next)
-            except Exception as e:  # noqa: BLE001 — never fail a resume for this
+            except Exception as e:
                 logger.warning(f"[SCOPE] could not bind session on resume: {e}")
 
         return await self._finish(request, call_next)
@@ -297,7 +315,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
                             entry.pop("system_message", None)
                             entry.pop("tools", None)
                     body = json.dumps(payload).encode()
-            except Exception as e:  # noqa: BLE001 — never break /agents for a trim
+            except Exception as e:
                 logger.warning(f"[AGENTS] trim skipped: {e}")
             headers = dict(response.headers)
             headers.pop("content-length", None)
@@ -341,16 +359,21 @@ def startup_sync():
     """
     # Ensure all required document directories exist (defense-in-depth beyond Docker)
     import logging as _log
+
     for _d in [
-        "/documents/legal/templates", "/documents/legal/data",
-        "/documents/legal/output", "/documents/legal/uploads",
-        "/documents/legal/previews", "/documents/legal/knowledge",
+        "/documents/legal/templates",
+        "/documents/legal/data",
+        "/documents/legal/output",
+        "/documents/legal/uploads",
+        "/documents/legal/previews",
+        "/documents/legal/knowledge",
         "/documents/legal/extracts",
     ]:
         Path(_d).mkdir(parents=True, exist_ok=True)
 
     # Version
     from pathlib import Path as _P
+
     _vf = _P("/app/VERSION")
     _ver = _vf.read_text().strip() if _vf.exists() else "unknown"
     print(f"[STARTUP] Legal Scout v{_ver}")
@@ -369,13 +392,16 @@ def startup_sync():
     # Check migration status
     try:
         from db.connection import get_db_conn as _sconn
+
         _sc = _sconn()
         _scur = _sc.cursor()
         _scur.execute("SELECT COUNT(*) FROM schema_migrations")
         _applied = _scur.fetchone()[0]
-        _scur.close(); _sc.close()
+        _scur.close()
+        _sc.close()
 
         import glob
+
         _total = len(glob.glob("/app/db/migration_*.sql"))
         if _applied < _total:
             print(f"[STARTUP] WARNING: {_total - _applied} pending migration(s) — run 'python -m db.migrate'")
@@ -408,6 +434,7 @@ def startup_sync():
 def _refresh_agent_knowledge():
     """Reload template knowledge into the agent's system prompt."""
     import scout.agent as _am
+
     _am.TEMPLATE_KNOWLEDGE = _am._build_template_knowledge()
     # Rebuild INSTRUCTIONS f-string with updated TEMPLATE_KNOWLEDGE
     # The INSTRUCTIONS template uses {TEMPLATE_KNOWLEDGE} which was captured at import
@@ -416,7 +443,7 @@ def _refresh_agent_knowledge():
     _marker = "## Your Template Knowledge (auto-loaded from database)"
     _end_marker = "\n═══"
     if _marker in _old:
-        _before = _old[:_old.index(_marker)]
+        _before = _old[: _old.index(_marker)]
         _after_idx = _old.index(_end_marker, _old.index(_marker))
         _after = _old[_after_idx:]
         _am.INSTRUCTIONS = _before + _marker + "\n" + _am.TEMPLATE_KNOWLEDGE + "\n" + _after
@@ -432,12 +459,13 @@ def _refresh_legal_skills():
     never overlaps the template-knowledge span (marker .. "\n═══").
     """
     import scout.agent as _am
+
     _am.LEGAL_SKILLS_BLOCK = _am._build_legal_skills_block()
     _old = _am.INSTRUCTIONS
     _marker = "## Legal Skills (playbooks — load on demand)"
     _end_marker = "\n■■■"
     if _marker in _old and _end_marker in _old:
-        _before = _old[:_old.index(_marker)]
+        _before = _old[: _old.index(_marker)]
         _after_idx = _old.index(_end_marker, _old.index(_marker)) + len(_end_marker)
         _after = _old[_after_idx:]
         # _build_legal_skills_block() already includes the trailing end marker.
@@ -476,7 +504,7 @@ def _parse_follow_ups(content: str) -> list:
     if not text:
         return []
     # Strip a ```json ... ``` fence if the model added one.
-    fence = re.match(r"^```[a-zA-Z]*\s*(.*?)\s*```$", text, re.S)
+    fence = re.match(r"^```[a-zA-Z]*\s*(.*?)\s*```$", text, re.DOTALL)
     if fence:
         text = fence.group(1).strip()
 
@@ -497,7 +525,7 @@ def _parse_follow_ups(content: str) -> list:
     candidates = [text]
     # Last resort: the first {...} or [...] found anywhere in the reply.
     for pattern in (r"\{.*\}", r"\[.*\]"):
-        m = re.search(pattern, text, re.S)
+        m = re.search(pattern, text, re.DOTALL)
         if m:
             candidates.append(m.group(0))
 
@@ -538,7 +566,7 @@ async def set_session_title(request: Request):
     try:
         body = await request.json()
     except Exception:
-        raise HTTPException(status_code=400, detail="Body must be JSON")
+        raise HTTPException(status_code=400, detail="Body must be JSON") from None
 
     session_id = str(body.get("session_id") or "").strip()
     if not session_id:
@@ -574,7 +602,7 @@ async def set_session_title(request: Request):
         cur.close()
     except Exception as e:
         logger.warning(f"[TITLE] rename failed for {session_id}: {e}")
-        raise HTTPException(status_code=500, detail="Could not set title")
+        raise HTTPException(status_code=500, detail="Could not set title") from e
     finally:
         if conn:
             conn.close()
@@ -602,6 +630,7 @@ async def suggest_followups(request: Request):
             return {"suggestions": []}
 
         import httpx
+
         # Shape and wording follow Open WebUI's task-model template, which has
         # three rules this prompt used to lack, each of which produced a wrong
         # suggestion here:
@@ -642,7 +671,12 @@ Respond with ONLY this JSON object and nothing else:
             # whole budget, content came back as `[\n  "`, json.loads threw, and
             # the bare except below returned an empty list. Follow-ups were dead
             # from the moment the chat model changed, silently. 800 leaves room.
-            json={"model": get_model("task"), "messages": [{"role": "user", "content": prompt}], "max_tokens": 800, "temperature": 0.3},
+            json={
+                "model": get_model("task"),
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": 800,
+                "temperature": 0.3,
+            },
             timeout=10,
         )
         resp.raise_for_status()
@@ -661,7 +695,6 @@ Respond with ONLY this JSON object and nothing else:
 @app.get("/health")
 async def health_check():
     """Health check with full dependency status."""
-    from psycopg import OperationalError
     from pathlib import Path
 
     checks = {}
@@ -673,7 +706,8 @@ async def health_check():
         conn = get_db_conn()
         cur = conn.cursor()
         cur.execute("SELECT 1")
-        cur.close(); conn.close()
+        cur.close()
+        conn.close()
         db_latency_ms = round((_startup_time.time() - start) * 1000, 1)
         checks["database"] = {"status": "connected", "latency_ms": db_latency_ms}
     except Exception:
@@ -690,6 +724,7 @@ async def health_check():
     # 4. Templates loaded
     try:
         import scout.agent as _ag
+
         tpl_count = _ag.TEMPLATE_KNOWLEDGE.count("**") // 2 if _ag.TEMPLATE_KNOWLEDGE else 0
         checks["templates"] = {"status": "loaded", "count": tpl_count}
     except Exception:
@@ -699,6 +734,7 @@ async def health_check():
     is_healthy = checks["database"]["status"] == "connected"
 
     from fastapi.responses import JSONResponse
+
     return JSONResponse(
         status_code=200 if is_healthy else 503,
         content={
@@ -722,7 +758,14 @@ _logger = _logging.getLogger("legalscout.security")
 _JWT_SECRET = getenv("JWT_SECRET_KEY", "")
 _ADMIN_PASS = getenv("ADMIN_PASSWORD", "")
 
-_WEAK_JWT_SECRETS = {"legal-scout-default-secret", "secret", "changeme", "dev-only-change-in-production", "dev-secret-not-for-production", ""}
+_WEAK_JWT_SECRETS = {
+    "legal-scout-default-secret",
+    "secret",
+    "changeme",
+    "dev-only-change-in-production",
+    "dev-secret-not-for-production",
+    "",
+}
 _WEAK_PASSWORDS = {"admin123", "password", "123456", "admin", "change-me-12chars", ""}
 
 _security_warnings = []
@@ -743,7 +786,9 @@ if _critical:
     for c in _critical:
         print(f"  - {c}")
     print("Fix these in .env before deploying. Exiting.")
-    import sys; sys.exit(1)
+    import sys
+
+    sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -754,8 +799,9 @@ from collections import defaultdict
 
 _rate_limits: dict = defaultdict(list)  # IP -> [timestamps]
 RATE_LIMIT_WINDOW = 60  # seconds
-RATE_LIMIT_LOGIN = 5    # max login attempts per minute
-RATE_LIMIT_API = 120    # max API calls per minute
+RATE_LIMIT_LOGIN = 5  # max login attempts per minute
+RATE_LIMIT_API = 120  # max API calls per minute
+
 
 def _check_rate_limit(ip: str, limit: int) -> bool:
     """Returns True if rate limit exceeded."""
@@ -775,17 +821,19 @@ _cache: dict = {}
 _cache_ttl: dict = {}
 CACHE_TTL_SECONDS = 30  # Cache for 30 seconds
 
+
 def cached_response(key: str):
     """Get cached response if still valid."""
-    if key in _cache and key in _cache_ttl:
-        if _time.time() - _cache_ttl[key] < CACHE_TTL_SECONDS:
-            return _cache[key]
+    if key in _cache and key in _cache_ttl and _time.time() - _cache_ttl[key] < CACHE_TTL_SECONDS:
+        return _cache[key]
     return None
+
 
 def set_cache(key: str, value):
     """Set cache value."""
     _cache[key] = value
     _cache_ttl[key] = _time.time()
+
 
 def clear_cache(prefix: str = ""):
     """Clear cache entries matching prefix."""
@@ -800,45 +848,48 @@ def clear_cache(prefix: str = ""):
 # ---------------------------------------------------------------------------
 import re as _re
 
+
 def sanitize_string(value: str, max_length: int = 500) -> str:
     """Sanitize string input — strip, truncate, remove dangerous chars."""
     if not isinstance(value, str):
         return str(value)[:max_length] if value else ""
     return value.strip()[:max_length]
 
+
 def validate_email(email: str) -> bool:
     """Basic email validation."""
-    return bool(_re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', email))
+    return bool(_re.match(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$", email))
+
 
 def validate_filename(name: str) -> bool:
     """Validate filename — no path traversal, no absolute paths, safe chars only."""
     if not name or not isinstance(name, str):
         return False
     # Block path traversal and absolute paths
-    if '..' in name or '/' in name or '\\' in name or name.startswith(('.', '~')):
+    if ".." in name or "/" in name or "\\" in name or name.startswith((".", "~")):
         return False
     # Only allow safe characters: letters, numbers, spaces, hyphens, underscores, dots, parentheses
-    return bool(_re.match(r'^[\w\s\-\.\(\)]+$', name))
+    return bool(_re.match(r"^[\w\s\-\.\(\)]+$", name))
 
 
 def _highlight_placeholders_in_docx(source_path, dest_path):
     """Create a copy of DOCX with yellow-highlighted placeholders.
     Handles placeholders split across multiple Word runs by merging first."""
     import re as _hlre
+
     from docx import Document as _HlDoc
-    from docx.oxml.ns import qn as _hlqn
     from docx.oxml import OxmlElement as _HlEl
-    import copy as _hlcopy
+    from docx.oxml.ns import qn as _hlqn
 
     doc = _HlDoc(str(source_path))
-    patt = _hlre.compile(r'\{\{[^}]+\}\}|\[[^\]]+_[^\]]+\]|\{[^}]+\}')
+    patt = _hlre.compile(r"\{\{[^}]+\}\}|\[[^\]]+_[^\]]+\]|\{[^}]+\}")
 
     def _add_yellow(run):
         rPr = run._r.get_or_add_rPr()
-        for old in rPr.findall(_hlqn('w:highlight')):
+        for old in rPr.findall(_hlqn("w:highlight")):
             rPr.remove(old)
-        hl = _HlEl('w:highlight')
-        hl.set(_hlqn('w:val'), 'yellow')
+        hl = _HlEl("w:highlight")
+        hl.set(_hlqn("w:val"), "yellow")
         rPr.append(hl)
 
     def _merge_and_highlight(paragraph):
@@ -848,7 +899,7 @@ def _highlight_placeholders_in_docx(source_path, dest_path):
             return
 
         # Build full text and map char positions to runs
-        full_text = ''.join(r.text or '' for r in runs)
+        full_text = "".join(r.text or "" for r in runs)
         if not patt.search(full_text):
             return
 
@@ -860,7 +911,7 @@ def _highlight_placeholders_in_docx(source_path, dest_path):
         # Build char→run index mapping
         char_to_run = []
         for ri, run in enumerate(runs):
-            for _ in (run.text or ''):
+            for _ in run.text or "":
                 char_to_run.append(ri)
 
         # For each match, find which runs it spans
@@ -891,7 +942,8 @@ def _highlight_placeholders_in_docx(source_path, dest_path):
 # ---------------------------------------------------------------------------
 import logging
 import traceback
-from app.logging_config import setup_logging, get_logger
+
+from app.logging_config import get_logger, setup_logging
 
 logger = setup_logging()
 
@@ -905,13 +957,13 @@ def log_error(context: str, error: Exception):
 # ---------------------------------------------------------------------------
 # Authentication Middleware — protects ALL /api/ endpoints + rate limiting
 # ---------------------------------------------------------------------------
+from fastapi import HTTPException, Request
 from starlette.middleware.base import BaseHTTPMiddleware
-from fastapi import Request, HTTPException
 
 # Routes that don't require authentication
 PUBLIC_ROUTES = [
     "/api/auth/login",
-    "/api/auth/logout",      # clearing your own cookie needs no token
+    "/api/auth/logout",  # clearing your own cookie needs no token
     "/api/version",
     # PDF preview endpoints validate token via query param themselves
     "/api/templates/preview-pdf/",
@@ -944,30 +996,32 @@ PUBLIC_ROUTES = [
 # `/login`, `/admin/*`, `/_next/*`, `/favicon.ico` and every other static
 # frontend path fall through untouched, so a logged-out user can still render
 # the login page.
-AGENTOS_PROTECTED_ROOTS = frozenset({
-    "agents",               # incl. /agents/{id}/runs and .../continue (chat + HITL resume)
-    "sessions",             # leaks chat history — the reason this block exists
-    "teams",
-    "workflows",
-    "eval-runs",
-    "evals",
-    "schedules",
-    "approvals",
-    "components",
-    "config",               # AgentOS config dump (agent ids, models, db ids)
-    "registry",
-    "models",
-    "memories",
-    "memory",
-    "memory_topics",
-    "optimize-memories",
-    "user_memory_stats",
-    "traces",               # full agent run traces incl. tool arguments
-    "trace_session_stats",
-    "knowledge",            # bare /knowledge is Agno's; ours is /api/knowledge/*
-    "databases",            # /databases/{id}/migrate
-    "metrics",              # Agno usage metrics + the Prometheus scrape endpoint
-})
+AGENTOS_PROTECTED_ROOTS = frozenset(
+    {
+        "agents",  # incl. /agents/{id}/runs and .../continue (chat + HITL resume)
+        "sessions",  # leaks chat history — the reason this block exists
+        "teams",
+        "workflows",
+        "eval-runs",
+        "evals",
+        "schedules",
+        "approvals",
+        "components",
+        "config",  # AgentOS config dump (agent ids, models, db ids)
+        "registry",
+        "models",
+        "memories",
+        "memory",
+        "memory_topics",
+        "optimize-memories",
+        "user_memory_stats",
+        "traces",  # full agent run traces incl. tool arguments
+        "trace_session_stats",
+        "knowledge",  # bare /knowledge is Agno's; ours is /api/knowledge/*
+        "databases",  # /databases/{id}/migrate
+        "metrics",  # Agno usage metrics + the Prometheus scrape endpoint
+    }
+)
 
 # ---------------------------------------------------------------------------
 # Static file trees mounted outside /api
@@ -994,9 +1048,11 @@ AGENTOS_PROTECTED_ROOTS = frozenset({
 # link and an <img>/canvas fetch cannot set a header, but the browser sends the
 # cookie automatically on same-origin requests. So every existing download link
 # keeps working unchanged, and no token has to be put in a URL.
-STATIC_PROTECTED_ROOTS = frozenset({
-    "documents",            # generated docs, uploaded DICA filings, templates, previews
-})
+STATIC_PROTECTED_ROOTS = frozenset(
+    {
+        "documents",  # generated docs, uploaded DICA filings, templates, previews
+    }
+)
 
 # The JWT is also issued as an HttpOnly cookie at login so that same-origin
 # requests carry it automatically. See `auth_login` for why.
@@ -1025,6 +1081,7 @@ def _request_jwt(request: Request) -> str:
 class AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         from starlette.responses import JSONResponse
+
         path = request.url.path
         ip = request.client.host if request.client else "unknown"
 
@@ -1089,10 +1146,11 @@ class AuthMiddleware(BaseHTTPMiddleware):
         for public in PUBLIC_ROUTES:
             if path.startswith(public):
                 # Rate limit login specifically
-                if path == "/api/auth/login" and request.method == "POST":
-                    if _check_rate_limit(ip, RATE_LIMIT_LOGIN):
-                        logger.warning(f"Rate limit exceeded for login from {ip}")
-                        return JSONResponse(status_code=429, content={"detail": "Too many login attempts. Try again in 1 minute."})
+                if path == "/api/auth/login" and request.method == "POST" and _check_rate_limit(ip, RATE_LIMIT_LOGIN):
+                    logger.warning(f"Rate limit exceeded for login from {ip}")
+                    return JSONResponse(
+                        status_code=429, content={"detail": "Too many login attempts. Try again in 1 minute."}
+                    )
                 return await call_next(request)
 
         # General API rate limiting
@@ -1115,14 +1173,15 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # No valid token
         return JSONResponse(status_code=401, content={"detail": "Authentication required"})
 
+
 app.add_middleware(AuthMiddleware)
 
 
 # ---------------------------------------------------------------------------
 # Request Logging Middleware — correlation IDs + timing
 # ---------------------------------------------------------------------------
-import uuid
 import time as _req_time
+import uuid
 
 _request_logger = get_logger("request")
 
@@ -1143,9 +1202,7 @@ class EffectTurnMiddleware(BaseHTTPMiddleware):
 
     def _is_agent_run(self, request: Request) -> bool:
         path = request.url.path
-        return request.method == "POST" and "/runs" in path and (
-            path.startswith("/agents/") or path.startswith("/teams/")
-        )
+        return request.method == "POST" and "/runs" in path and (path.startswith(("/agents/", "/teams/")))
 
     async def dispatch(self, request: Request, call_next):
         if not self._is_agent_run(request):
@@ -1155,7 +1212,7 @@ class EffectTurnMiddleware(BaseHTTPMiddleware):
         try:
             user = get_current_user(request)
             actor = (user or {}).get("email")
-        except Exception:  # noqa: BLE001 — auth shape must never fail a run
+        except Exception:
             actor = None
 
         from scout.effects import turn_scope
@@ -1173,7 +1230,7 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
     """Logs every request with method, path, status, duration, and a unique request ID."""
 
     # Paths to skip logging (noisy/health)
-    SKIP_PATHS = {"/health", "/favicon.ico"}
+    SKIP_PATHS: ClassVar[set[str]] = {"/health", "/favicon.ico"}
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
@@ -1230,14 +1287,18 @@ JWT_SECRET = getenv("JWT_SECRET_KEY", "")
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRY_HOURS = 24
 
+
 def hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+
 
 def verify_password(password: str, hashed: str) -> bool:
     return bcrypt.checkpw(password.encode(), hashed.encode())
 
+
 def create_token(user_id: int, email: str, role: str) -> str:
     from datetime import datetime, timedelta
+
     payload = {
         "user_id": user_id,
         "email": email,
@@ -1246,6 +1307,7 @@ def create_token(user_id: int, email: str, role: str) -> str:
         "iat": datetime.utcnow(),
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
 
 def get_current_user(request: Request) -> dict:
     auth = request.headers.get("Authorization", "")
@@ -1260,21 +1322,25 @@ def get_current_user(request: Request) -> dict:
     except jwt.InvalidTokenError:
         return None
 
+
 def require_admin(request: Request) -> dict:
     user = get_current_user(request)
     if not user or user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Admin access required")
     return user
 
+
 def log_activity(user_id: int, email: str, action: str, details: str = "", ip: str = ""):
     try:
-        import os
-        from psycopg import connect
         conn = get_db_conn()
         cur = conn.cursor()
-        cur.execute("INSERT INTO activity_logs (user_id, user_email, action, details, ip_address) VALUES (%s, %s, %s, %s, %s)",
-            (user_id, email, action, details, ip))
-        conn.commit(); cur.close(); conn.close()
+        cur.execute(
+            "INSERT INTO activity_logs (user_id, user_email, action, details, ip_address) VALUES (%s, %s, %s, %s, %s)",
+            (user_id, email, action, details, ip),
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
     except Exception as e:
         logging.getLogger("legalscout").warning(f"Activity log failed: {e}")
 
@@ -1282,7 +1348,9 @@ def log_activity(user_id: int, email: str, action: str, details: str = "", ip: s
 def generate_embedding(text: str) -> list[float] | None:
     """Generate embedding via OpenRouter using configured model."""
     import httpx
+
     from app.model_config import get_model
+
     text = text[:8000]
 
     model = get_model("embedding")
@@ -1305,19 +1373,19 @@ def generate_embedding(text: str) -> list[float] | None:
         return None
 
 
-def invalidate_training(reason: str, template_name: str = None):
+def invalidate_training(reason: str, template_name: str | None = None):
     """Mark training as stale when templates/companies change.
     If template_name is given, only that template is marked untrained.
     If None, all training status is cleared."""
     try:
-        import os
-        from psycopg import connect
         conn = get_db_conn()
         cur = conn.cursor()
 
         if template_name:
             # Mark specific template as untrained
-            cur.execute("UPDATE templates SET ai_trained = FALSE, ai_analyzed = FALSE WHERE name = %s", (template_name,))
+            cur.execute(
+                "UPDATE templates SET ai_trained = FALSE, ai_analyzed = FALSE WHERE name = %s", (template_name,)
+            )
         else:
             # Mark ALL templates as untrained
             cur.execute("UPDATE templates SET ai_trained = FALSE, ai_analyzed = FALSE")
@@ -1325,7 +1393,9 @@ def invalidate_training(reason: str, template_name: str = None):
         # Clear training status and logs
         cur.execute("UPDATE training_status SET status = 'stale', logs = '[]'::jsonb WHERE training_type = 'templates'")
 
-        conn.commit(); cur.close(); conn.close()
+        conn.commit()
+        cur.close()
+        conn.close()
         logger.info(f"[TRAINING] Invalidated: {reason}")
     except Exception as e:
         logger.warning(f"[TRAINING] Failed to invalidate: {e}")
@@ -1333,7 +1403,8 @@ def invalidate_training(reason: str, template_name: str = None):
 
 def send_notification_email(to_email: str, subject: str, body: str):
     """Send email notification via SMTP (optional — only if configured)."""
-    import smtplib, os
+    import os
+    import smtplib
     from email.mime.text import MIMEText
 
     smtp_host = os.getenv("SMTP_HOST")
@@ -1363,8 +1434,9 @@ def send_notification_email(to_email: str, subject: str, body: str):
 def _init_admin():
     try:
         import os
-        from psycopg import connect
+
         from db.connection import get_db_conn as _get_admin_conn
+
         conn = _get_admin_conn()
         cur = conn.cursor()
         # Create tables if not exist
@@ -1410,8 +1482,10 @@ def _init_admin():
             if not admin_pass:
                 print("Admin NOT created: set ADMIN_PASSWORD to seed the admin account")
             else:
-                cur.execute("INSERT INTO users (email, hashed_password, full_name, role) VALUES (%s, %s, %s, %s)",
-                    (admin_email, hash_password(admin_pass), "Admin", "admin"))
+                cur.execute(
+                    "INSERT INTO users (email, hashed_password, full_name, role) VALUES (%s, %s, %s, %s)",
+                    (admin_email, hash_password(admin_pass), "Admin", "admin"),
+                )
                 print(f"Admin user created: {admin_email}")
         elif admin_pass and not verify_password(admin_pass, row[1]):
             # Rotation. This branch did not exist: the row was only ever
@@ -1419,12 +1493,17 @@ def _init_admin():
             # environment did NOTHING to an existing admin and the old
             # credential kept working — an operator who "rotated" the secret
             # was left believing they had.
-            cur.execute("UPDATE users SET hashed_password = %s, updated_at = now() WHERE id = %s",
-                (hash_password(admin_pass), row[0]))
+            cur.execute(
+                "UPDATE users SET hashed_password = %s, updated_at = now() WHERE id = %s",
+                (hash_password(admin_pass), row[0]),
+            )
             print(f"Admin password rotated from ADMIN_PASSWORD: {admin_email}")
-        conn.commit(); cur.close(); conn.close()
+        conn.commit()
+        cur.close()
+        conn.close()
     except Exception as e:
         print(f"Admin init warning: {e}")
+
 
 # Initialize admin on import
 try:
@@ -1441,15 +1520,18 @@ async def admin_get_settings(request: Request):
     """Get all app settings (admin only)."""
     require_admin(request)
     try:
-        import os
-        from psycopg import connect
         conn = get_db_conn()
         cur = conn.cursor()
-        cur.execute("CREATE TABLE IF NOT EXISTS app_settings (id SERIAL PRIMARY KEY, key VARCHAR(255) UNIQUE NOT NULL, value TEXT, updated_by VARCHAR(255), updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+        cur.execute(
+            "CREATE TABLE IF NOT EXISTS app_settings (id SERIAL PRIMARY KEY, key VARCHAR(255) UNIQUE NOT NULL, value TEXT, updated_by VARCHAR(255), updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+        )
         cur.execute("SELECT key, value, updated_by, updated_at FROM app_settings ORDER BY key")
         rows = cur.fetchall()
-        cur.close(); conn.close()
-        settings = {r[0]: {"value": r[1], "updated_by": r[2], "updated_at": r[3].isoformat() if r[3] else None} for r in rows}
+        cur.close()
+        conn.close()
+        settings = {
+            r[0]: {"value": r[1], "updated_by": r[2], "updated_at": r[3].isoformat() if r[3] else None} for r in rows
+        }
         return {"success": True, "settings": settings}
     except Exception as e:
         return {"success": False, "error": str(e)}
@@ -1461,17 +1543,23 @@ async def admin_save_settings(request: Request):
     admin = require_admin(request)
     try:
         body = await request.json()
-        import os
-        from psycopg import connect
+
         conn = get_db_conn()
         cur = conn.cursor()
-        cur.execute("CREATE TABLE IF NOT EXISTS app_settings (id SERIAL PRIMARY KEY, key VARCHAR(255) UNIQUE NOT NULL, value TEXT, updated_by VARCHAR(255), updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+        cur.execute(
+            "CREATE TABLE IF NOT EXISTS app_settings (id SERIAL PRIMARY KEY, key VARCHAR(255) UNIQUE NOT NULL, value TEXT, updated_by VARCHAR(255), updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+        )
         for key, value in body.items():
-            cur.execute("""
+            cur.execute(
+                """
                 INSERT INTO app_settings (key, value, updated_by, updated_at) VALUES (%s, %s, %s, NOW())
                 ON CONFLICT (key) DO UPDATE SET value = %s, updated_by = %s, updated_at = NOW()
-            """, (key, str(value), admin.get("email", ""), str(value), admin.get("email", "")))
-        conn.commit(); cur.close(); conn.close()
+            """,
+                (key, str(value), admin.get("email", ""), str(value), admin.get("email", "")),
+            )
+        conn.commit()
+        cur.close()
+        conn.close()
         log_activity(admin.get("user_id"), admin.get("email"), "update_settings", f"Updated {len(body)} settings", "")
         return {"success": True, "message": f"Saved {len(body)} settings"}
     except Exception as e:
@@ -1488,12 +1576,13 @@ async def admin_test_email(request: Request):
 
         # Get SMTP settings from DB
         import os
-        from psycopg import connect
+
         conn = get_db_conn()
         cur = conn.cursor()
         cur.execute("SELECT key, value FROM app_settings WHERE key LIKE 'smtp_%'")
         smtp_settings = {r[0]: r[1] for r in cur.fetchall()}
-        cur.close(); conn.close()
+        cur.close()
+        conn.close()
 
         smtp_host = smtp_settings.get("smtp_host") or os.getenv("SMTP_HOST", "")
         smtp_port = int(smtp_settings.get("smtp_port") or os.getenv("SMTP_PORT", "587"))
@@ -1506,7 +1595,10 @@ async def admin_test_email(request: Request):
 
         import smtplib
         from email.mime.text import MIMEText
-        msg = MIMEText("<h2>Legal Scout — Test Email</h2><p>If you see this, email notifications are working!</p>", "html")
+
+        msg = MIMEText(
+            "<h2>Legal Scout — Test Email</h2><p>If you see this, email notifications are working!</p>", "html"
+        )
         msg["Subject"] = "Legal Scout — Test Email"
         msg["From"] = smtp_from
         msg["To"] = to_email
@@ -1544,13 +1636,14 @@ async def auth_login(request: Request):
         if len(password) < 3 or len(password) > 200:
             return _login_failure("Invalid password")
 
-        import os
-        from psycopg import connect
         conn = get_db_conn()
         cur = conn.cursor()
-        cur.execute("SELECT id, email, hashed_password, full_name, role, is_active FROM users WHERE email = %s", (email,))
+        cur.execute(
+            "SELECT id, email, hashed_password, full_name, role, is_active FROM users WHERE email = %s", (email,)
+        )
         row = cur.fetchone()
-        cur.close(); conn.close()
+        cur.close()
+        conn.close()
 
         if not row:
             # Always hash-check to prevent timing attack (email enumeration)
@@ -1564,11 +1657,13 @@ async def auth_login(request: Request):
         token = create_token(row[0], row[1], row[4])
         log_activity(row[0], row[1], "login", "User logged in", request.client.host if request.client else "")
 
-        resp = JSONResponse(content={
-            "success": True,
-            "token": token,
-            "user": {"id": row[0], "email": row[1], "name": row[3], "role": row[4]},
-        })
+        resp = JSONResponse(
+            content={
+                "success": True,
+                "token": token,
+                "user": {"id": row[0], "email": row[1], "name": row[3], "role": row[4]},
+            }
+        )
         # Same token, second transport. The frontend keeps reading `token` out
         # of this body into localStorage exactly as before; the cookie exists
         # because the AgentOS routes (/agents, /sessions, ...) are called by
@@ -1614,14 +1709,26 @@ async def auth_me(request: Request):
 async def admin_list_users(request: Request):
     require_admin(request)
     try:
-        import os
-        from psycopg import connect
         conn = get_db_conn()
         cur = conn.cursor()
-        cur.execute("SELECT id, email, full_name, role, is_active, created_at, updated_at FROM users ORDER BY created_at DESC")
+        cur.execute(
+            "SELECT id, email, full_name, role, is_active, created_at, updated_at FROM users ORDER BY created_at DESC"
+        )
         rows = cur.fetchall()
-        cur.close(); conn.close()
-        users = [{"id": r[0], "email": r[1], "name": r[2], "role": r[3], "is_active": r[4], "created_at": r[5].isoformat() if r[5] else None, "updated_at": r[6].isoformat() if r[6] else None} for r in rows]
+        cur.close()
+        conn.close()
+        users = [
+            {
+                "id": r[0],
+                "email": r[1],
+                "name": r[2],
+                "role": r[3],
+                "is_active": r[4],
+                "created_at": r[5].isoformat() if r[5] else None,
+                "updated_at": r[6].isoformat() if r[6] else None,
+            }
+            for r in rows
+        ]
         return {"success": True, "users": users}
     except Exception as e:
         return {"success": False, "error": str(e)}
@@ -1645,14 +1752,16 @@ async def admin_create_user(request: Request):
         if role not in ("user", "editor", "admin"):
             return {"success": False, "error": "Role must be user, editor, or admin"}
 
-        import os
-        from psycopg import connect
         conn = get_db_conn()
         cur = conn.cursor()
-        cur.execute("INSERT INTO users (email, hashed_password, full_name, role) VALUES (%s, %s, %s, %s) RETURNING id",
-            (email, hash_password(password), name, role))
+        cur.execute(
+            "INSERT INTO users (email, hashed_password, full_name, role) VALUES (%s, %s, %s, %s) RETURNING id",
+            (email, hash_password(password), name, role),
+        )
         new_id = cur.fetchone()[0]
-        conn.commit(); cur.close(); conn.close()
+        conn.commit()
+        cur.close()
+        conn.close()
 
         log_activity(admin.get("user_id"), admin.get("email"), "create_user", f"Created user: {email}", "")
         return {"success": True, "message": f"User '{email}' created", "id": new_id}
@@ -1667,21 +1776,24 @@ async def admin_update_user(user_id: int, request: Request):
     admin = require_admin(request)
     try:
         body = await request.json()
-        import os
-        from psycopg import connect
+
         conn = get_db_conn()
         cur = conn.cursor()
 
         updates = []
         params = []
         if "name" in body:
-            updates.append("full_name = %s"); params.append(body["name"])
+            updates.append("full_name = %s")
+            params.append(body["name"])
         if "role" in body:
-            updates.append("role = %s"); params.append(body["role"])
+            updates.append("role = %s")
+            params.append(body["role"])
         if "is_active" in body:
-            updates.append("is_active = %s"); params.append(body["is_active"])
-        if "password" in body and body["password"]:
-            updates.append("hashed_password = %s"); params.append(hash_password(body["password"]))
+            updates.append("is_active = %s")
+            params.append(body["is_active"])
+        if body.get("password"):
+            updates.append("hashed_password = %s")
+            params.append(hash_password(body["password"]))
 
         if updates:
             updates.append("updated_at = NOW()")
@@ -1689,7 +1801,8 @@ async def admin_update_user(user_id: int, request: Request):
             cur.execute(f"UPDATE users SET {', '.join(updates)} WHERE id = %s", tuple(params))
             conn.commit()
 
-        cur.close(); conn.close()
+        cur.close()
+        conn.close()
         log_activity(admin.get("user_id"), admin.get("email"), "update_user", f"Updated user id={user_id}", "")
         return {"success": True, "message": "User updated"}
     except Exception as e:
@@ -1700,13 +1813,13 @@ async def admin_update_user(user_id: int, request: Request):
 async def admin_delete_user(user_id: int, request: Request):
     admin = require_admin(request)
     try:
-        import os
-        from psycopg import connect
         conn = get_db_conn()
         cur = conn.cursor()
         cur.execute("DELETE FROM users WHERE id = %s AND role != 'admin'", (user_id,))
         deleted = cur.rowcount
-        conn.commit(); cur.close(); conn.close()
+        conn.commit()
+        cur.close()
+        conn.close()
         if deleted:
             log_activity(admin.get("user_id"), admin.get("email"), "delete_user", f"Deleted user id={user_id}", "")
             return {"success": True, "message": "User deleted"}
@@ -1719,14 +1832,25 @@ async def admin_delete_user(user_id: int, request: Request):
 async def admin_activity_logs(request: Request):
     require_admin(request)
     try:
-        import os
-        from psycopg import connect
         conn = get_db_conn()
         cur = conn.cursor()
-        cur.execute("SELECT id, user_email, action, details, ip_address, created_at FROM activity_logs ORDER BY created_at DESC LIMIT 200")
+        cur.execute(
+            "SELECT id, user_email, action, details, ip_address, created_at FROM activity_logs ORDER BY created_at DESC LIMIT 200"
+        )
         rows = cur.fetchall()
-        cur.close(); conn.close()
-        logs = [{"id": r[0], "email": r[1], "action": r[2], "details": r[3], "ip": r[4], "created_at": r[5].isoformat() if r[5] else None} for r in rows]
+        cur.close()
+        conn.close()
+        logs = [
+            {
+                "id": r[0],
+                "email": r[1],
+                "action": r[2],
+                "details": r[3],
+                "ip": r[4],
+                "created_at": r[5].isoformat() if r[5] else None,
+            }
+            for r in rows
+        ]
         return {"success": True, "logs": logs}
     except Exception as e:
         return {"success": False, "error": str(e)}
@@ -1847,8 +1971,7 @@ async def list_people(request: Request, search: str = "", limit: int = 50, offse
             )
         else:
             cur.execute(
-                f"SELECT {_PEOPLE_COLS} FROM people "
-                "ORDER BY full_name ASC LIMIT %s OFFSET %s",
+                f"SELECT {_PEOPLE_COLS} FROM people ORDER BY full_name ASC LIMIT %s OFFSET %s",
                 (limit, offset),
             )
         rows = cur.fetchall()
@@ -1865,8 +1988,14 @@ async def list_people(request: Request, search: str = "", limit: int = 50, offse
         cur.close()
 
         people = [_person_row(r) for r in rows]
-        return {"success": True, "people": people, "count": len(people),
-                "total": total, "limit": limit, "offset": offset}
+        return {
+            "success": True,
+            "people": people,
+            "count": len(people),
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        }
     except Exception as e:
         logger.warning(f"[PEOPLE] list failed: {e}")
         return {"success": False, "error": str(e)}
@@ -1916,15 +2045,16 @@ async def create_person(request: Request):
         conn.commit()
         cur.close()
 
-        log_activity(admin.get("user_id"), admin.get("email"), "create_person",
-                     f"Created person: {full_name} (id={new_id})", "")
+        log_activity(
+            admin.get("user_id"), admin.get("email"), "create_person", f"Created person: {full_name} (id={new_id})", ""
+        )
         return {"success": True, "message": f"Person '{full_name}' created", "id": new_id}
     except Exception as e:
         if conn:
             conn.rollback()
         if _is_duplicate_nrc(e):
             logger.info(f"[PEOPLE] duplicate NRC rejected: {e}")
-            raise HTTPException(status_code=409, detail="A person with this NRC/passport number already exists")
+            raise HTTPException(status_code=409, detail="A person with this NRC/passport number already exists") from e
         logger.warning(f"[PEOPLE] create failed: {e}")
         return {"success": False, "error": str(e)}
     finally:
@@ -1951,7 +2081,9 @@ async def sync_people_from_companies(request: Request):
         conn.commit()
 
         log_activity(
-            admin.get("user_id"), admin.get("email"), "sync_people",
+            admin.get("user_id"),
+            admin.get("email"),
+            "sync_people",
             f"Synced People from {totals['companies']} companies: "
             f"{totals['created']} created, {totals['updated']} updated, {totals['linked']} linked",
             "",
@@ -2016,17 +2148,24 @@ async def update_person(person_id: int, request: Request):
             full_name = sanitize_string(body.get("full_name", ""), 500)
             if not full_name:
                 return {"success": False, "error": "full_name cannot be empty"}
-            updates.append("full_name = %s"); params.append(full_name)
+            updates.append("full_name = %s")
+            params.append(full_name)
         if "email" in body:
             email = _nullable_text(body.get("email"), 255)
             if email and not validate_email(email):
                 return {"success": False, "error": "Invalid email format"}
-            updates.append("email = %s"); params.append(email)
-        for field, max_len in (("nationality", 100), ("nrc_passport_no", 100),
-                               ("business_occupation", 255), ("country_of_residence", 100),
-                               ("father_name", 500),
-                               ("gender", 20), ("phone", 50),
-                               ("residential_address", 2000)):
+            updates.append("email = %s")
+            params.append(email)
+        for field, max_len in (
+            ("nationality", 100),
+            ("nrc_passport_no", 100),
+            ("business_occupation", 255),
+            ("country_of_residence", 100),
+            ("father_name", 500),
+            ("gender", 20),
+            ("phone", 50),
+            ("residential_address", 2000),
+        ):
             if field in body:
                 updates.append(f"{field} = %s")
                 params.append(_nullable_text(body.get(field), max_len))
@@ -2048,15 +2187,14 @@ async def update_person(person_id: int, request: Request):
 
         if not updated:
             return {"success": False, "error": "Person not found"}
-        log_activity(admin.get("user_id"), admin.get("email"), "update_person",
-                     f"Updated person id={person_id}", "")
+        log_activity(admin.get("user_id"), admin.get("email"), "update_person", f"Updated person id={person_id}", "")
         return {"success": True, "message": "Person updated"}
     except Exception as e:
         if conn:
             conn.rollback()
         if _is_duplicate_nrc(e):
             logger.info(f"[PEOPLE] duplicate NRC rejected on update: {e}")
-            raise HTTPException(status_code=409, detail="A person with this NRC/passport number already exists")
+            raise HTTPException(status_code=409, detail="A person with this NRC/passport number already exists") from e
         logger.warning(f"[PEOPLE] update id={person_id} failed: {e}")
         return {"success": False, "error": str(e)}
     finally:
@@ -2079,8 +2217,7 @@ async def delete_person(person_id: int, request: Request):
 
         if not deleted:
             return {"success": False, "error": "Person not found"}
-        log_activity(admin.get("user_id"), admin.get("email"), "delete_person",
-                     f"Deleted person id={person_id}", "")
+        log_activity(admin.get("user_id"), admin.get("email"), "delete_person", f"Deleted person id={person_id}", "")
         return {"success": True, "message": "Person deleted"}
     except Exception as e:
         if conn:
@@ -2179,9 +2316,7 @@ async def link_company_person(company_id: int, request: Request):
         # cessation; an unrelated re-link leaves the original recorder in place.
         recording_cessation = "cessation_reason" in body or "resigned_date" in body
         recorded_by = (
-            _nullable_text(admin.get("email"), 255)
-            if recording_cessation
-            else (stored[6] if stored else None)
+            _nullable_text(admin.get("email"), 255) if recording_cessation else (stored[6] if stored else None)
         )
 
         cur.execute(
@@ -2215,8 +2350,13 @@ async def link_company_person(company_id: int, request: Request):
         conn.commit()
         cur.close()
 
-        log_activity(admin.get("user_id"), admin.get("email"), "link_company_person",
-                     f"Linked person id={person_id} to company id={company_id} as {role}", "")
+        log_activity(
+            admin.get("user_id"),
+            admin.get("email"),
+            "link_company_person",
+            f"Linked person id={person_id} to company id={company_id} as {role}",
+            "",
+        )
         return {"success": True, "message": "Person linked to company", "id": link_id}
     except Exception as e:
         if conn:
@@ -2257,8 +2397,13 @@ async def unlink_company_person(company_id: int, person_id: int, request: Reques
 
         if not deleted:
             return {"success": False, "error": "Link not found"}
-        log_activity(admin.get("user_id"), admin.get("email"), "unlink_company_person",
-                     f"Unlinked person id={person_id} from company id={company_id}", "")
+        log_activity(
+            admin.get("user_id"),
+            admin.get("email"),
+            "unlink_company_person",
+            f"Unlinked person id={person_id} from company id={company_id}",
+            "",
+        )
         return {"success": True, "message": "Person unlinked from company", "deleted": deleted}
     except Exception as e:
         if conn:
@@ -2352,6 +2497,7 @@ def _file_response(path: Path, filename: str | None = None) -> FileResponse:
 async def serve_document_with_s3_fallback(subdir: str, filename: str):
     """Serve document files — local first, S3 fallback if missing."""
     from fastapi.responses import JSONResponse
+
     base_dir = (documents_dir / "legal" / subdir).resolve()
     local_path = (documents_dir / "legal" / subdir / filename).resolve()
     if not str(local_path).startswith(str(base_dir)):
@@ -2380,13 +2526,15 @@ if templates_dir.exists():
 # ---------------------------------------------------------------------------
 # Dashboard API Endpoints
 # ---------------------------------------------------------------------------
+import contextlib
+
 from scout.tools.document_tracker import (
     get_all_documents,
     get_document_stats,
 )
-from scout.tools.template_analyzer import list_analyzed_templates
 from scout.tools.smart_doc import analyze_template
-from scout.tools.template_analyzer import analyze_template as ai_analyze_template, save_template_knowledge
+from scout.tools.template_analyzer import analyze_template as ai_analyze_template
+from scout.tools.template_analyzer import list_analyzed_templates, save_template_knowledge
 
 
 @app.get("/api/dashboard/stats")
@@ -2394,8 +2542,6 @@ async def dashboard_stats():
     """Get dashboard statistics including template, company, and document counts."""
     stats = get_document_stats()
     try:
-        from psycopg import connect
-        import os
         conn = get_db_conn()
         cur = conn.cursor()
         cur.execute("SELECT COUNT(*) FROM templates")
@@ -2406,7 +2552,8 @@ async def dashboard_stats():
         stats["documents"] = cur.fetchone()[0]
         cur.execute("SELECT COUNT(*) FROM knowledge_vec WHERE embedding IS NOT NULL")
         stats["embeddings"] = cur.fetchone()[0]
-        cur.close(); conn.close()
+        cur.close()
+        conn.close()
     except Exception:
         stats.setdefault("templates", 0)
         stats.setdefault("companies", 0)
@@ -2511,6 +2658,7 @@ async def set_template_group_endpoint(request: Request, body: dict):
     if not name:
         return {"success": False, "error": "Template name required"}
     from scout.tools.template_analyzer import set_template_group
+
     ok = set_template_group(name, group or None)
     return {"success": ok, "template_name": name, "template_group": group or None}
 
@@ -2533,7 +2681,9 @@ async def upload_template(request: Request, file: UploadFile = File(...)):
                 break
             size += len(chunk)
             if size > MAX_SIZE:
-                return JSONResponse(status_code=413, content={"error": f"File too large (max {MAX_SIZE // 1024 // 1024}MB)"})
+                return JSONResponse(
+                    status_code=413, content={"error": f"File too large (max {MAX_SIZE // 1024 // 1024}MB)"}
+                )
             chunks.append(chunk)
         content = b"".join(chunks)
         filename = file.filename or "template.docx"
@@ -2576,7 +2726,7 @@ async def analyze_template_endpoint(request: Request, name: str = Form(...)):
 
 
 @app.delete("/api/templates/delete")
-async def delete_template(request: Request, name: str = None):
+async def delete_template(request: Request, name: str | None = None):
     """Delete a template file."""
     require_admin(request)
     if not name:
@@ -2595,9 +2745,6 @@ async def delete_template(request: Request, name: str = None):
 
         # Also delete from database
         try:
-            import os
-            from psycopg import connect
-
             conn = get_db_conn()
             conn.autocommit = True
             cur = conn.cursor()
@@ -2606,18 +2753,20 @@ async def delete_template(request: Request, name: str = None):
             # Clean up ALL knowledge data for this template
             cur.execute("DELETE FROM knowledge_vec WHERE source_file = %s", (f"template:{name}",))
             cur.execute("DELETE FROM knowledge_lookup WHERE source_file = %s", (f"template:{name}",))
-            try: cur.execute("DELETE FROM knowledge_raw WHERE source_file = %s", (f"template:{name}",))
-            except Exception: pass
+            with contextlib.suppress(Exception):
+                cur.execute("DELETE FROM knowledge_raw WHERE source_file = %s", (f"template:{name}",))
             # Clean agent memory/learnings about this template
             for mem_table in ["agno_memories", "agno_learnings", "scout_learnings"]:
-                try: cur.execute(f"DELETE FROM {mem_table} WHERE content ILIKE %s OR content ILIKE %s",
-                        (f"%{name}%", f"%{name.replace('.docx','')}%"))
-                except Exception: pass
+                with contextlib.suppress(Exception):
+                    cur.execute(
+                        f"DELETE FROM {mem_table} WHERE content ILIKE %s OR content ILIKE %s",
+                        (f"%{name}%", f"%{name.replace('.docx', '')}%"),
+                    )
             # Clean scout_knowledge entries
-            try: cur.execute("DELETE FROM scout_knowledge WHERE content ILIKE %s", (f"%{name}%",))
-            except Exception: pass
-            try: cur.execute("DELETE FROM scout_knowledge_contents WHERE content ILIKE %s", (f"%{name}%",))
-            except Exception: pass
+            with contextlib.suppress(Exception):
+                cur.execute("DELETE FROM scout_knowledge WHERE content ILIKE %s", (f"%{name}%",))
+            with contextlib.suppress(Exception):
+                cur.execute("DELETE FROM scout_knowledge_contents WHERE content ILIKE %s", (f"%{name}%",))
             cur.close()
             conn.close()
         except Exception as db_err:
@@ -2641,7 +2790,11 @@ async def delete_template(request: Request, name: str = None):
         if deleted_file:
             return {"success": True, "message": "Template deleted. Re-training required.", "training_invalidated": True}
         else:
-            return {"success": True, "message": "Template removed from database. Re-training required.", "training_invalidated": True}
+            return {
+                "success": True,
+                "message": "Template removed from database. Re-training required.",
+                "training_invalidated": True,
+            }
     except Exception as e:
         return {"success": False, "error": str(e)}
 
@@ -2712,11 +2865,11 @@ async def preview_template(request: Request, template_name: str):
 # Knowledge Base API Endpoints
 # ---------------------------------------------------------------------------
 from scout.tools.knowledge_base import (
-    process_file,
     get_knowledge_sources,
-    search_knowledge,
-    lookup_value,
     get_source_data,
+    lookup_value,
+    process_file,
+    search_knowledge,
 )
 
 knowledge_dir = Path("/documents/legal/knowledge")
@@ -2766,9 +2919,10 @@ async def sync_companies_to_knowledge(request: Request):
     """Sync companies from DB to knowledge base."""
     require_admin(request)
     try:
-        from scout.tools.knowledge_base import store_cleaned_data, get_db_connection
-        import os, json
-        from psycopg import connect
+        import json
+        import os
+
+        from scout.tools.knowledge_base import store_cleaned_data
 
         conn = get_db_conn()
         cur = conn.cursor()
@@ -2793,26 +2947,30 @@ async def sync_companies_to_knowledge(request: Request):
         cur2.execute("DELETE FROM knowledge_raw WHERE source_file LIKE '%compan%'")
         cur2.execute("DELETE FROM knowledge_lookup WHERE source_file LIKE '%compan%'")
         cur2.execute("DELETE FROM knowledge_sources WHERE filename LIKE '%compan%'")
-        conn2.commit(); cur2.close(); conn2.close()
+        conn2.commit()
+        cur2.close()
+        conn2.close()
 
         # Build records for knowledge base
         records = []
         for row in rows:
             dirs = row[3] if isinstance(row[3], list) else []
             mems = row[10] if isinstance(row[10], list) else []
-            records.append({
-                "company_name": row[0] or "",
-                "company_registration_number": row[1] or "",
-                "registered_office": row[2] or "",
-                "directors": ", ".join(d.get("name", "") for d in dirs) if dirs else "",
-                "status": row[4] or "",
-                "company_type": row[5] or "",
-                "principal_activity": row[6] or "",
-                "total_shares": row[7] or "",
-                "currency": row[8] or "",
-                "ultimate_holding_company": row[9] or "",
-                "shareholders": ", ".join(m.get("name", "") for m in mems) if mems else "",
-            })
+            records.append(
+                {
+                    "company_name": row[0] or "",
+                    "company_registration_number": row[1] or "",
+                    "registered_office": row[2] or "",
+                    "directors": ", ".join(d.get("name", "") for d in dirs) if dirs else "",
+                    "status": row[4] or "",
+                    "company_type": row[5] or "",
+                    "principal_activity": row[6] or "",
+                    "total_shares": row[7] or "",
+                    "currency": row[8] or "",
+                    "ultimate_holding_company": row[9] or "",
+                    "shareholders": ", ".join(m.get("name", "") for m in mems) if mems else "",
+                }
+            )
 
         store_cleaned_data("companies_db", records, "database")
 
@@ -2820,6 +2978,7 @@ async def sync_companies_to_knowledge(request: Request):
         openrouter_key = os.getenv("OPENROUTER_API_KEY")
         if openrouter_key:
             import httpx
+
             conn3 = get_db_conn()
             cur3 = conn3.cursor()
             cur3.execute("""
@@ -2870,49 +3029,66 @@ Return ONLY JSON."""
                     ai_res = httpx.post(
                         f"{OPENROUTER_BASE_URL}/chat/completions",
                         headers={"Authorization": f"Bearer {openrouter_key}", "Content-Type": "application/json"},
-                        json={"model": get_model("training"), "messages": [{"role": "user", "content": ai_prompt}], "temperature": 0},
+                        json={
+                            "model": get_model("training"),
+                            "messages": [{"role": "user", "content": ai_prompt}],
+                            "temperature": 0,
+                        },
                         timeout=60,
                     )
                     ai_res.raise_for_status()
                     ai_text = ai_res.json()["choices"][0]["message"]["content"].strip()
                     if ai_text.startswith("```"):
                         ai_text = ai_text.split("```")[1]
-                        if ai_text.startswith("json"): ai_text = ai_text[4:]
+                        ai_text = ai_text.removeprefix("json")
                         ai_text = ai_text.strip()
                     company_analysis = json.loads(ai_text)
 
                     # Store in knowledge_vec for semantic search
                     profile = company_analysis.get("profile_summary", "")
-                    knowledge_text = f"Company: {cname}\n{profile}\nDirectors: {', '.join(d.get('name','') for d in dirs)}\n{company_text}"
+                    knowledge_text = f"Company: {cname}\n{profile}\nDirectors: {', '.join(d.get('name', '') for d in dirs)}\n{company_text}"
 
                     cur3.execute("DELETE FROM knowledge_vec WHERE source_file = %s", (f"company:{cname}",))
-                    cur3.execute("INSERT INTO knowledge_vec (content, source_file, metadata) VALUES (%s, %s, %s)",
-                        (knowledge_text, f"company:{cname}", json.dumps(company_analysis)))
+                    cur3.execute(
+                        "INSERT INTO knowledge_vec (content, source_file, metadata) VALUES (%s, %s, %s)",
+                        (knowledge_text, f"company:{cname}", json.dumps(company_analysis)),
+                    )
                     cur3.execute("DELETE FROM knowledge_raw WHERE source_file = %s", (f"company:{cname}",))
-                    cur3.execute("INSERT INTO knowledge_raw (source_file, file_type, data) VALUES (%s, %s, %s)",
-                        (f"company:{cname}", "company_analysis", json.dumps(company_analysis)))
+                    cur3.execute(
+                        "INSERT INTO knowledge_raw (source_file, file_type, data) VALUES (%s, %s, %s)",
+                        (f"company:{cname}", "company_analysis", json.dumps(company_analysis)),
+                    )
                     conn3.commit()
 
                     # Generate vector embedding for company
                     _c_vec = generate_embedding(knowledge_text)
                     if _c_vec:
-                        cur3.execute("UPDATE knowledge_vec SET embedding = %s WHERE source_file = %s",
-                            (str(_c_vec), f"company:{cname}"))
+                        cur3.execute(
+                            "UPDATE knowledge_vec SET embedding = %s WHERE source_file = %s",
+                            (str(_c_vec), f"company:{cname}"),
+                        )
                         conn3.commit()
 
                     print(f"  ✓ Company: {cname} — {profile[:50]}")
                 except Exception as ce:
                     print(f"  Company analysis skip {crow[1]}: {ce}")
 
-            cur3.close(); conn3.close()
+            cur3.close()
+            conn3.close()
 
         # Save training timestamp
         try:
             conn2 = get_db_conn()
             cur2 = conn2.cursor()
-            cur2.execute("INSERT INTO training_status (training_type, last_trained, record_count) VALUES ('companies', NOW(), %s) ON CONFLICT (training_type) DO UPDATE SET last_trained = NOW(), record_count = %s", (len(records), len(records)))
-            conn2.commit(); cur2.close(); conn2.close()
-        except Exception: pass
+            cur2.execute(
+                "INSERT INTO training_status (training_type, last_trained, record_count) VALUES ('companies', NOW(), %s) ON CONFLICT (training_type) DO UPDATE SET last_trained = NOW(), record_count = %s",
+                (len(records), len(records)),
+            )
+            conn2.commit()
+            cur2.close()
+            conn2.close()
+        except Exception:
+            pass
 
         return {"success": True, "message": f"Synced {len(records)} companies to knowledge base"}
     except Exception as e:
@@ -2923,8 +3099,10 @@ Return ONLY JSON."""
 async def train_companies_stream(request: Request):
     """Stream company training progress via SSE — real per-company analysis."""
     require_admin(request)
+    import os
+
+    import httpx
     from starlette.responses import StreamingResponse
-    import httpx, os
 
     def _sse(step, msg, **kw):
         d = {"step": step, "msg": msg, **kw}
@@ -2946,7 +3124,9 @@ async def train_companies_stream(request: Request):
                 FROM companies ORDER BY company_name_english
             """)
             rows = cur.fetchall()
-            cur.close(); conn.close(); conn = None
+            cur.close()
+            conn.close()
+            conn = None
 
             if not rows:
                 yield _sse("error", "No companies in database")
@@ -2959,25 +3139,34 @@ async def train_companies_stream(request: Request):
             yield _sse("sync_start", "Syncing to knowledge lookup table...")
             try:
                 from scout.tools.knowledge_base import store_cleaned_data
+
                 records = []
                 for row in rows:
                     dirs = row[4] if isinstance(row[4], list) else []
                     mems = row[5] if isinstance(row[5], list) else []
-                    records.append({
-                        "company_name": row[1] or "", "company_registration_number": row[2] or "",
-                        "registered_office": row[3] or "",
-                        "directors": ", ".join(d.get("name","") for d in dirs) if dirs else "",
-                        "status": row[6] or "", "company_type": row[7] or "",
-                        "principal_activity": row[8] or "",
-                        "total_shares": row[9] or "", "currency": row[10] or "",
-                        "shareholders": ", ".join(m.get("name","") for m in mems) if mems else "",
-                    })
+                    records.append(
+                        {
+                            "company_name": row[1] or "",
+                            "company_registration_number": row[2] or "",
+                            "registered_office": row[3] or "",
+                            "directors": ", ".join(d.get("name", "") for d in dirs) if dirs else "",
+                            "status": row[6] or "",
+                            "company_type": row[7] or "",
+                            "principal_activity": row[8] or "",
+                            "total_shares": row[9] or "",
+                            "currency": row[10] or "",
+                            "shareholders": ", ".join(m.get("name", "") for m in mems) if mems else "",
+                        }
+                    )
                 # Clean old data
-                _c = get_db_conn(); _c.autocommit = True; _cc = _c.cursor()
+                _c = get_db_conn()
+                _c.autocommit = True
+                _cc = _c.cursor()
                 _cc.execute("DELETE FROM knowledge_vec WHERE source_file LIKE '%compan%'")
                 _cc.execute("DELETE FROM knowledge_raw WHERE source_file LIKE '%compan%'")
                 _cc.execute("DELETE FROM knowledge_lookup WHERE source_file LIKE '%compan%'")
-                _cc.close(); _c.close()
+                _cc.close()
+                _c.close()
                 store_cleaned_data("companies_db", records, "database")
                 yield _sse("sync", f"Synced {len(records)} companies to knowledge base")
             except Exception as e:
@@ -2992,12 +3181,14 @@ async def train_companies_stream(request: Request):
                 yield _sse("ai_start", f"Starting AI analysis for {total} companies...")
                 for idx, row in enumerate(rows):
                     cname = row[1] or "Unknown"
-                    yield _sse("company_start", f"[{idx+1}/{total}] Analyzing {cname}...", company=cname, index=idx+1)
+                    yield _sse(
+                        "company_start", f"[{idx + 1}/{total}] Analyzing {cname}...", company=cname, index=idx + 1
+                    )
 
                     try:
                         dirs = row[4] if isinstance(row[4], list) else []
                         mems = row[5] if isinstance(row[5], list) else []
-                        filings = row[14] if isinstance(row[14], list) else []
+                        row[14] if isinstance(row[14], list) else []
 
                         company_text = f"Company: {cname}\nReg: {row[2]}, Status: {row[6]}, Type: {row[7]}\nActivity: {row[8]}\nDirectors: {json.dumps(dirs)}\nMembers: {json.dumps(mems)}\nShares: {row[9]} {row[10]}"
 
@@ -3018,32 +3209,50 @@ Return ONLY JSON."""
                         ai_res = httpx.post(
                             f"{OPENROUTER_BASE_URL}/chat/completions",
                             headers={"Authorization": f"Bearer {openrouter_key}", "Content-Type": "application/json"},
-                            json={"model": training_model, "messages": [{"role": "user", "content": ai_prompt}], "temperature": 0},
-                            timeout=60)
+                            json={
+                                "model": training_model,
+                                "messages": [{"role": "user", "content": ai_prompt}],
+                                "temperature": 0,
+                            },
+                            timeout=60,
+                        )
                         ai_res.raise_for_status()
                         ai_text = ai_res.json()["choices"][0]["message"]["content"].strip()
                         if ai_text.startswith("```"):
                             ai_text = ai_text.split("```")[1]
-                            if ai_text.startswith("json"): ai_text = ai_text[4:]
+                            ai_text = ai_text.removeprefix("json")
                             ai_text = ai_text.strip()
                         analysis = json.loads(ai_text)
 
                         profile = analysis.get("profile_summary", "")
-                        knowledge_text = f"Company: {cname}\n{profile}\nDirectors: {', '.join(d.get('name','') for d in dirs)}"
+                        knowledge_text = (
+                            f"Company: {cname}\n{profile}\nDirectors: {', '.join(d.get('name', '') for d in dirs)}"
+                        )
 
-                        _ac = get_db_conn(); _ac.autocommit = True; _acc = _ac.cursor()
+                        _ac = get_db_conn()
+                        _ac.autocommit = True
+                        _acc = _ac.cursor()
                         _acc.execute("DELETE FROM knowledge_vec WHERE source_file = %s", (f"company:{cname}",))
-                        _acc.execute("INSERT INTO knowledge_vec (content, source_file, metadata) VALUES (%s, %s, %s)",
-                            (knowledge_text, f"company:{cname}", json.dumps(analysis)))
-                        _acc.close(); _ac.close()
+                        _acc.execute(
+                            "INSERT INTO knowledge_vec (content, source_file, metadata) VALUES (%s, %s, %s)",
+                            (knowledge_text, f"company:{cname}", json.dumps(analysis)),
+                        )
+                        _acc.close()
+                        _ac.close()
 
                         # Emit details
                         risks = analysis.get("risk_flags", [])
                         missing = analysis.get("missing_information", [])
                         compliance = analysis.get("compliance_status", {}).get("annual_return_status", "unknown")
-                        yield _sse("company_done", f"  ✓ {cname} — {profile[:60]}",
-                            company=cname, profile=profile[:80], compliance=compliance,
-                            risks=len(risks), missing=len(missing))
+                        yield _sse(
+                            "company_done",
+                            f"  ✓ {cname} — {profile[:60]}",
+                            company=cname,
+                            profile=profile[:80],
+                            compliance=compliance,
+                            risks=len(risks),
+                            missing=len(missing),
+                        )
                         analyzed += 1
 
                     except Exception as ce:
@@ -3057,37 +3266,50 @@ Return ONLY JSON."""
             yield _sse("embed_start", "Generating vector embeddings...")
             try:
                 embed_count = 0
-                _ec = get_db_conn(); _ecc = _ec.cursor()
-                _ecc.execute("SELECT source_file, content FROM knowledge_vec WHERE source_file LIKE 'company:%' AND (embedding IS NULL OR embedding = '')")
+                _ec = get_db_conn()
+                _ecc = _ec.cursor()
+                _ecc.execute(
+                    "SELECT source_file, content FROM knowledge_vec WHERE source_file LIKE 'company:%' AND (embedding IS NULL OR embedding = '')"
+                )
                 to_embed = _ecc.fetchall()
                 for sf, content in to_embed:
                     vec = generate_embedding(content)
                     if vec:
                         _ecc.execute("UPDATE knowledge_vec SET embedding = %s WHERE source_file = %s", (str(vec), sf))
                         embed_count += 1
-                _ec.commit(); _ecc.close(); _ec.close()
+                _ec.commit()
+                _ecc.close()
+                _ec.close()
                 yield _sse("embed", f"Generated {embed_count} embeddings")
             except Exception as ee:
                 yield _sse("embed_warn", f"Embedding warning: {ee}")
 
             # Step 4: Save training status
             try:
-                _tc = get_db_conn(); _tc.autocommit = True; _tcc = _tc.cursor()
-                _tcc.execute("INSERT INTO training_status (training_type, last_trained, record_count) VALUES ('companies', NOW(), %s) ON CONFLICT (training_type) DO UPDATE SET last_trained = NOW(), record_count = %s", (total, total))
-                _tcc.close(); _tc.close()
+                _tc = get_db_conn()
+                _tc.autocommit = True
+                _tcc = _tc.cursor()
+                _tcc.execute(
+                    "INSERT INTO training_status (training_type, last_trained, record_count) VALUES ('companies', NOW(), %s) ON CONFLICT (training_type) DO UPDATE SET last_trained = NOW(), record_count = %s",
+                    (total, total),
+                )
+                _tcc.close()
+                _tc.close()
             except Exception as e:
                 logging.getLogger("legalscout").warning(f"Training status save failed: {e}")
 
             # Summary
-            yield _sse("summary", f"Training complete: {total} companies, {analyzed} analyzed", total=total, analyzed=analyzed)
+            yield _sse(
+                "summary", f"Training complete: {total} companies, {analyzed} analyzed", total=total, analyzed=analyzed
+            )
             yield _sse("done", "Complete")
 
         except Exception as e:
             yield _sse("error", str(e))
         finally:
             if conn:
-                try: conn.close()
-                except: pass
+                with contextlib.suppress(BaseException):
+                    conn.close()
 
     return StreamingResponse(generate(), media_type="text/event-stream")
 
@@ -3096,23 +3318,24 @@ Return ONLY JSON."""
 async def get_training_status():
     """Get training status + persisted logs for all types."""
     try:
-        import os
-        from psycopg import connect
         conn = get_db_conn()
         cur = conn.cursor()
-        cur.execute("SELECT training_type, last_trained, record_count, status, logs FROM training_status ORDER BY training_type")
+        cur.execute(
+            "SELECT training_type, last_trained, record_count, status, logs FROM training_status ORDER BY training_type"
+        )
         rows = cur.fetchall()
-        cur.close(); conn.close()
+        cur.close()
+        conn.close()
         result = {}
         for row in rows:
             result[row[0]] = {
                 "last_trained": row[1].isoformat() if row[1] else None,
                 "record_count": row[2],
                 "status": row[3],
-                "logs": row[4] if row[4] else []
+                "logs": row[4] if row[4] else [],
             }
         return {"success": True, "data": result}
-    except Exception as e:
+    except Exception:
         return {"success": True, "data": {}}
 
 
@@ -3120,8 +3343,8 @@ async def get_training_status():
 async def save_training_logs(request: Request):
     """Save training logs to DB so they persist across page reloads."""
     try:
-        import os, json
-        from psycopg import connect
+        import json
+
         body = await request.json()
         training_type = body.get("type", "")  # "templates" or "companies"
         logs = body.get("logs", [])
@@ -3130,11 +3353,16 @@ async def save_training_logs(request: Request):
 
         conn = get_db_conn()
         cur = conn.cursor()
-        cur.execute("""
+        cur.execute(
+            """
             INSERT INTO training_status (training_type, logs, last_trained) VALUES (%s, %s, NOW())
             ON CONFLICT (training_type) DO UPDATE SET logs = %s, last_trained = NOW()
-        """, (training_type, json.dumps(logs), json.dumps(logs)))
-        conn.commit(); cur.close(); conn.close()
+        """,
+            (training_type, json.dumps(logs), json.dumps(logs)),
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
         return {"success": True}
     except Exception as e:
         return {"success": False, "error": str(e)}
@@ -3173,7 +3401,8 @@ async def delete_document(request: Request, doc_id: str):
     """Delete a generated document by ID, synthetic doc_<mtime>, or filename."""
     require_admin(request)
     try:
-        import urllib.parse, re
+        import re
+        import urllib.parse
 
         doc_id_str = urllib.parse.unquote(doc_id)
         conn = get_db_conn()
@@ -3207,7 +3436,8 @@ async def delete_document(request: Request, doc_id: str):
             file_name = doc_id_str
             cur.execute("DELETE FROM documents WHERE file_name = %s", (file_name,))
 
-        cur.close(); conn.close()
+        cur.close()
+        conn.close()
 
         # Delete file from disk
         deleted = False
@@ -3220,9 +3450,11 @@ async def delete_document(request: Request, doc_id: str):
         # Delete from S3 if enabled
         try:
             from app.s3_storage import s3_delete_async
+
             if file_name:
                 s3_delete_async(f"output/{file_name}")
-        except Exception: pass
+        except Exception:
+            pass
 
         clear_cache()
         if not deleted and not file_name:
@@ -3238,11 +3470,9 @@ async def delete_document(request: Request, doc_id: str):
 async def sync_existing_documents():
     """Sync all generated documents to database for tracking."""
     try:
-        from pathlib import Path
-        from datetime import datetime
         import re
-        import os
-        from psycopg import connect
+        from datetime import datetime
+        from pathlib import Path
 
         output_dir = Path("/documents/legal/output")
         if not output_dir.exists():
@@ -3257,7 +3487,7 @@ async def sync_existing_documents():
             # or: Template_Name_Company_Name_2026-03-06_08-15-58.docx
             try:
                 # Extract timestamp from end (always YYYY-MM-DD_HH-MM-SS.docx)
-                timestamp_match = re.search(r'(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})\.docx$', doc_file.name)
+                timestamp_match = re.search(r"(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})\.docx$", doc_file.name)
                 if not timestamp_match:
                     continue
 
@@ -3265,17 +3495,17 @@ async def sync_existing_documents():
                 timestamp = datetime.strptime(timestamp_str, "%Y-%m-%d_%H-%M-%S")
 
                 # Everything before timestamp is template_company
-                base_name = doc_file.name[:timestamp_match.start()].rstrip('_')
+                base_name = doc_file.name[: timestamp_match.start()].rstrip("_")
 
                 # Try to split into template and company (find last underscore)
-                parts = base_name.rsplit('_', 1)
+                parts = base_name.rsplit("_", 1)
                 if len(parts) == 2:
                     template_part, company_part = parts
-                    template_name = template_part.replace('_', ' ') + ".docx"
-                    company_name = company_part.replace('_', ' ')
+                    template_name = template_part.replace("_", " ") + ".docx"
+                    company_name = company_part.replace("_", " ")
                 else:
                     # Can't split - use whole name
-                    template_name = base_name.replace('_', ' ') + ".docx"
+                    template_name = base_name.replace("_", " ") + ".docx"
                     company_name = "Unknown"
 
                 # Check if already tracked
@@ -3289,7 +3519,7 @@ async def sync_existing_documents():
                     INSERT INTO documents (template_name, company_name, file_name, file_path, version, created_at)
                     VALUES (%s, %s, %s, %s, %s, %s)
                     """,
-                    (template_name, company_name, doc_file.name, str(doc_file), 1, timestamp)
+                    (template_name, company_name, doc_file.name, str(doc_file), 1, timestamp),
                 )
                 # Also insert into document_versions for audit trail
                 cur.execute(
@@ -3297,7 +3527,16 @@ async def sync_existing_documents():
                     INSERT INTO document_versions (document_name, company_name, template_name, version, file_name, file_path, generated_by_email, created_at)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                     """,
-                    (doc_file.name, company_name, template_name, 1, doc_file.name, str(doc_file), "system@sync", timestamp)
+                    (
+                        doc_file.name,
+                        company_name,
+                        template_name,
+                        1,
+                        doc_file.name,
+                        str(doc_file),
+                        "system@sync",
+                        timestamp,
+                    ),
                 )
                 count += 1
 
@@ -3318,8 +3557,12 @@ async def sync_existing_documents():
 async def train_single_template_stream(request: Request, template_name: str):
     """Train a single template with SSE streaming — sends each step as it happens."""
     require_admin(request)
-    import urllib.parse, subprocess, json as _sj
+    import json as _sj
+    import subprocess
+    import urllib.parse
+
     from starlette.responses import StreamingResponse
+
     template_name = urllib.parse.unquote(template_name)
 
     # Path traversal protection
@@ -3327,6 +3570,7 @@ async def train_single_template_stream(request: Request, template_name: str):
     _tmpl_safe = (_tmpl_base / template_name).resolve()
     if not str(_tmpl_safe).startswith(str(_tmpl_base)):
         from fastapi.responses import JSONResponse
+
         return JSONResponse(status_code=400, content={"error": "Invalid filename"})
 
     def _sse(step: str, msg: str, **extra):
@@ -3336,10 +3580,12 @@ async def train_single_template_stream(request: Request, template_name: str):
     def generate():
         conn = None
         try:
-            from scout.tools.template_analyzer import analyze_template, classify_template_fields, get_db_connection
-            from scout.tools.knowledge_base import get_db_connection as get_kb_conn
-            from docx import Document
             import os
+
+            from docx import Document
+
+            from scout.tools.knowledge_base import get_db_connection as get_kb_conn
+            from scout.tools.template_analyzer import analyze_template, classify_template_fields, get_db_connection
 
             template_path = _tmpl_safe
             if not template_path.exists():
@@ -3370,10 +3616,21 @@ async def train_single_template_stream(request: Request, template_name: str):
             # Step 3: AI Analysis
             openrouter_key = os.getenv("OPENROUTER_API_KEY")
             from app.model_config import get_model
+
             training_model = get_model("training")
 
             # Fallback defaults
-            from app.main import _infer_category, _get_when_to_use, _get_how_to_use, _get_prerequisites, _get_filing_deadline, _get_fees, _get_validity_period, _get_approval_chain, _get_required_attachments, _get_common_mistakes, _get_industry_tags, _get_complexity, _get_estimated_time
+            from app.main import (
+                _get_common_mistakes,
+                _get_complexity,
+                _get_estimated_time,
+                _get_fees,
+                _get_filing_deadline,
+                _get_how_to_use,
+                _get_prerequisites,
+                _get_when_to_use,
+                _infer_category,
+            )
 
             category = _infer_category(template_name)
             purpose = "Legal document template"
@@ -3384,29 +3641,18 @@ async def train_single_template_stream(request: Request, template_name: str):
             fees = _get_fees(template_name)
             common_mistakes = _get_common_mistakes(template_name)
             legal_refs = []
-            static_warnings = []
-            related_templates = []
-            workflow = {}
-            field_details = {}
             required_fields = []
             optional_fields = []
-            company_specific = []
-            language_notes = ""
-            agent_summary = ""
-            signatures = {}
-            regulatory = {}
-            copies = {}
-            quorum = {}
-            stamp = {}
 
             ai_analysis = None
             if openrouter_key:
                 yield _sse("ai_start", f"Sending to {training_model}...")
                 try:
                     import httpx
+
                     ai_prompt = f"""You are a legal document analyst. Analyze this Myanmar legal document template.
 TEMPLATE NAME: {template_name}
-PLACEHOLDER FIELDS: {', '.join(fields)}
+PLACEHOLDER FIELDS: {", ".join(fields)}
 FULL TEMPLATE TEXT:
 {content[:6000]}
 
@@ -3415,17 +3661,21 @@ Return ONLY a JSON object with: purpose, when_to_use, how_to_use (array), catego
                     ai_res = httpx.post(
                         f"{OPENROUTER_BASE_URL}/chat/completions",
                         headers={"Authorization": f"Bearer {openrouter_key}", "Content-Type": "application/json"},
-                        json={"model": training_model, "messages": [{"role": "user", "content": ai_prompt}], "temperature": 0},
+                        json={
+                            "model": training_model,
+                            "messages": [{"role": "user", "content": ai_prompt}],
+                            "temperature": 0,
+                        },
                         timeout=60,
                     )
                     ai_res.raise_for_status()
                     ai_text = ai_res.json()["choices"][0]["message"]["content"].strip()
                     if ai_text.startswith("```"):
                         ai_text = ai_text.split("```")[1]
-                        if ai_text.startswith("json"): ai_text = ai_text[4:]
+                        ai_text = ai_text.removeprefix("json")
                         ai_text = ai_text.strip()
                     ai_analysis = _sj.loads(ai_text)
-                    yield _sse("ai_done", f"AI analyzed successfully")
+                    yield _sse("ai_done", "AI analyzed successfully")
                 except Exception as ai_err:
                     yield _sse("ai_warn", f"AI analysis warning: {ai_err}")
 
@@ -3439,34 +3689,54 @@ Return ONLY a JSON object with: purpose, when_to_use, how_to_use (array), catego
                 fees = ai_analysis.get("fees", fees) if ai_analysis.get("fees") else fees
                 common_mistakes = ai_analysis.get("common_mistakes", common_mistakes)
                 legal_refs = ai_analysis.get("legal_references", [])
-                static_warnings = ai_analysis.get("static_text_warnings", [])
-                related_templates = ai_analysis.get("related_templates", [])
+                ai_analysis.get("static_text_warnings", [])
+                ai_analysis.get("related_templates", [])
                 required_fields = ai_analysis.get("required_fields", [])
                 optional_fields = ai_analysis.get("optional_fields", [])
-                agent_summary = ai_analysis.get("summary_for_agent", "")
-                language_notes = ai_analysis.get("language_notes", "")
-                signatures = ai_analysis.get("signatures_required", {})
+                ai_analysis.get("summary_for_agent", "")
+                ai_analysis.get("language_notes", "")
+                ai_analysis.get("signatures_required", {})
 
-            yield _sse("ai_analysis", f"Category: {category}", purpose=purpose[:80],
-                        legal_refs=legal_refs[:3], required=len(required_fields), optional=len(optional_fields))
+            yield _sse(
+                "ai_analysis",
+                f"Category: {category}",
+                purpose=purpose[:80],
+                legal_refs=legal_refs[:3],
+                required=len(required_fields),
+                optional=len(optional_fields),
+            )
 
             # Step 4: Save metadata
             yield _sse("save_start", "Saving metadata to database...")
             try:
                 conn = get_db_connection()
                 cur = conn.cursor()
-                cur.execute("""
+                cur.execute(
+                    """
                     UPDATE templates SET category=%s, purpose=%s, when_to_use=%s, how_to_use=%s,
                     prerequisites=%s, filing_deadline=%s, fees=%s, common_mistakes=%s,
                     ai_trained=TRUE, ai_analyzed=TRUE, jurisdiction=%s, complexity=%s, estimated_time=%s
                     WHERE name=%s
-                """, (category, purpose, when_to_use, _sj.dumps(how_to_use) if isinstance(how_to_use, list) else how_to_use,
-                      _sj.dumps(prerequisites) if isinstance(prerequisites, list) else prerequisites,
-                      filing_deadline, fees,
-                      _sj.dumps(common_mistakes) if isinstance(common_mistakes, list) else common_mistakes,
-                      "Myanmar", _get_complexity(template_name), _get_estimated_time(template_name),
-                      template_name))
-                conn.commit(); cur.close(); conn.close(); conn = None
+                """,
+                    (
+                        category,
+                        purpose,
+                        when_to_use,
+                        _sj.dumps(how_to_use) if isinstance(how_to_use, list) else how_to_use,
+                        _sj.dumps(prerequisites) if isinstance(prerequisites, list) else prerequisites,
+                        filing_deadline,
+                        fees,
+                        _sj.dumps(common_mistakes) if isinstance(common_mistakes, list) else common_mistakes,
+                        "Myanmar",
+                        _get_complexity(template_name),
+                        _get_estimated_time(template_name),
+                        template_name,
+                    ),
+                )
+                conn.commit()
+                cur.close()
+                conn.close()
+                conn = None
             except Exception as e:
                 yield _sse("save_warn", f"Metadata save warning: {e}")
             yield _sse("metadata", f"Saved: {category}")
@@ -3479,14 +3749,20 @@ Return ONLY a JSON object with: purpose, when_to_use, how_to_use (array), catego
                 if classification:
                     conn2 = get_db_connection()
                     cur2 = conn2.cursor()
-                    cur2.execute("UPDATE templates SET fields = %s WHERE name = %s",
-                        (_sj.dumps(classification), template_name))
-                    conn2.commit(); cur2.close(); conn2.close()
+                    cur2.execute(
+                        "UPDATE templates SET fields = %s WHERE name = %s", (_sj.dumps(classification), template_name)
+                    )
+                    conn2.commit()
+                    cur2.close()
+                    conn2.close()
                     db_count = len(classification.get("db_fields", []))
                     user_count = len(classification.get("user_input_fields", []))
-                    yield _sse("classify", f"DB fields: {db_count}, User input: {user_count}",
-                              db_fields=classification.get("db_fields", []),
-                              user_input_fields=classification.get("user_input_fields", []))
+                    yield _sse(
+                        "classify",
+                        f"DB fields: {db_count}, User input: {user_count}",
+                        db_fields=classification.get("db_fields", []),
+                        user_input_fields=classification.get("user_input_fields", []),
+                    )
                 else:
                     yield _sse("classify", "Classification returned empty")
             except Exception as e:
@@ -3498,7 +3774,7 @@ Return ONLY a JSON object with: purpose, when_to_use, how_to_use (array), catego
                 mapping_prompt = f"""You are a database mapping expert for a Myanmar corporate law document system. Map each template placeholder to the correct data source.
 
 TEMPLATE: {template_name}
-PLACEHOLDERS: {', '.join(fields)}
+PLACEHOLDERS: {", ".join(fields)}
 
 AVAILABLE DATABASE COLUMNS on the companies table (these describe the COMPANY, never a person):
 - company_name_english (registered English name)
@@ -3582,44 +3858,68 @@ multi attendee slot:
 Return ONLY a JSON object where keys are placeholder names."""
 
                 import httpx as _mhx
+
                 _m_res = _mhx.post(
                     f"{OPENROUTER_BASE_URL}/chat/completions",
-                    headers={"Authorization": f"Bearer {os.getenv('OPENROUTER_API_KEY','')}", "Content-Type": "application/json"},
-                    json={"model": classification_model, "messages": [{"role": "user", "content": mapping_prompt}], "temperature": 0},
+                    headers={
+                        "Authorization": f"Bearer {os.getenv('OPENROUTER_API_KEY', '')}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": classification_model,
+                        "messages": [{"role": "user", "content": mapping_prompt}],
+                        "temperature": 0,
+                    },
                     timeout=60,
                 )
                 _m_res.raise_for_status()
                 _m_text = _m_res.json()["choices"][0]["message"]["content"].strip()
                 if _m_text.startswith("```"):
                     _m_text = _m_text.split("```")[1]
-                    if _m_text.startswith("json"): _m_text = _m_text[4:]
+                    _m_text = _m_text.removeprefix("json")
                     _m_text = _m_text.strip()
                 field_mapping, _m_rejected, _m_repaired = sanitise_mapping(_sj.loads(_m_text))
                 if _m_repaired:
                     logging.getLogger("legalscout").warning(
                         f"Field mapping for '{template_name}' repaired {len(_m_repaired)} entries: "
-                        + "; ".join(_m_repaired))
-                    yield _sse("mapping_repair", f"Repaired {len(_m_repaired)} off-contract mapping entries",
-                              repaired=_m_repaired[:10])
+                        + "; ".join(_m_repaired)
+                    )
+                    yield _sse(
+                        "mapping_repair",
+                        f"Repaired {len(_m_repaired)} off-contract mapping entries",
+                        repaired=_m_repaired[:10],
+                    )
                 if _m_rejected:
                     logging.getLogger("legalscout").warning(
                         f"Field mapping for '{template_name}' dropped {len(_m_rejected)} invalid entries: "
-                        + "; ".join(_m_rejected))
-                    yield _sse("mapping_reject", f"Rejected {len(_m_rejected)} invalid mapping entries",
-                              rejected=_m_rejected[:10])
+                        + "; ".join(_m_rejected)
+                    )
+                    yield _sse(
+                        "mapping_reject",
+                        f"Rejected {len(_m_rejected)} invalid mapping entries",
+                        rejected=_m_rejected[:10],
+                    )
 
                 # Save to DB
                 _mc = get_db_connection()
                 _mcur = _mc.cursor()
-                _mcur.execute("UPDATE templates SET field_mapping = %s WHERE name = %s",
-                    (_sj.dumps(field_mapping), template_name))
-                _mc.commit(); _mcur.close(); _mc.close()
+                _mcur.execute(
+                    "UPDATE templates SET field_mapping = %s WHERE name = %s", (_sj.dumps(field_mapping), template_name)
+                )
+                _mc.commit()
+                _mcur.close()
+                _mc.close()
 
                 db_mapped = sum(1 for v in field_mapping.values() if v.get("source") == "db")
                 user_mapped = sum(1 for v in field_mapping.values() if v.get("source") == "user_input")
                 slot_mapped = sum(1 for v in field_mapping.values() if v.get("source") == "slot")
-                yield _sse("mapping", f"Mapped {db_mapped} fields to DB, {slot_mapped} slots, {user_mapped} need user input",
-                          db_mapped=db_mapped, user_mapped=user_mapped, slot_mapped=slot_mapped)
+                yield _sse(
+                    "mapping",
+                    f"Mapped {db_mapped} fields to DB, {slot_mapped} slots, {user_mapped} need user input",
+                    db_mapped=db_mapped,
+                    user_mapped=user_mapped,
+                    slot_mapped=slot_mapped,
+                )
             except Exception as _me:
                 yield _sse("mapping_warn", f"Field mapping warning: {_me}")
 
@@ -3631,14 +3931,28 @@ Return ONLY a JSON object where keys are placeholder names."""
                 cur3 = conn3.cursor()
                 cur3.execute("DELETE FROM knowledge_vec WHERE source_file = %s", (f"template:{template_name}",))
                 cur3.execute("DELETE FROM knowledge_lookup WHERE source_file = %s", (f"template:{template_name}",))
-                cur3.execute("INSERT INTO knowledge_vec (content, source_file, metadata) VALUES (%s, %s, %s)",
-                    (knowledge_text, f"template:{template_name}", _sj.dumps({"type": "template", "name": template_name, "category": category})))
-                for kk, kv in [("template_name", template_name), ("template_category", category),
-                               ("template_purpose", purpose), ("template_when_to_use", when_to_use)]:
+                cur3.execute(
+                    "INSERT INTO knowledge_vec (content, source_file, metadata) VALUES (%s, %s, %s)",
+                    (
+                        knowledge_text,
+                        f"template:{template_name}",
+                        _sj.dumps({"type": "template", "name": template_name, "category": category}),
+                    ),
+                )
+                for kk, kv in [
+                    ("template_name", template_name),
+                    ("template_category", category),
+                    ("template_purpose", purpose),
+                    ("template_when_to_use", when_to_use),
+                ]:
                     if kv:
-                        cur3.execute("INSERT INTO knowledge_lookup (key_name, key_value, source_file) VALUES (%s, %s, %s)",
-                            (kk, kv, f"template:{template_name}"))
-                conn3.commit(); cur3.close(); conn3.close()
+                        cur3.execute(
+                            "INSERT INTO knowledge_lookup (key_name, key_value, source_file) VALUES (%s, %s, %s)",
+                            (kk, kv, f"template:{template_name}"),
+                        )
+                conn3.commit()
+                cur3.close()
+                conn3.close()
                 yield _sse("knowledge", "Stored in knowledge base (vector + lookup)")
             except Exception as e:
                 yield _sse("kb_warn", f"Knowledge storage warning: {e}")
@@ -3650,9 +3964,13 @@ Return ONLY a JSON object where keys are placeholder names."""
                 if embedding:
                     conn4 = get_kb_conn()
                     cur4 = conn4.cursor()
-                    cur4.execute("UPDATE knowledge_vec SET embedding = %s WHERE source_file = %s",
-                        (str(embedding), f"template:{template_name}"))
-                    conn4.commit(); cur4.close(); conn4.close()
+                    cur4.execute(
+                        "UPDATE knowledge_vec SET embedding = %s WHERE source_file = %s",
+                        (str(embedding), f"template:{template_name}"),
+                    )
+                    conn4.commit()
+                    cur4.close()
+                    conn4.close()
                     yield _sse("embedding", f"Vector embedding generated ({len(embedding)} dimensions)")
                 else:
                     yield _sse("embed_skip", "Embedding skipped: no API key")
@@ -3674,8 +3992,12 @@ Return ONLY a JSON object where keys are placeholder names."""
                     _conv_src = _hl_path
                 except Exception:
                     _conv_src = template_path
-                subprocess.run(["libreoffice", "--headless", "--convert-to", "pdf", "--outdir", str(pdf_dir), str(_conv_src)],
-                    capture_output=True, text=True, timeout=30)
+                subprocess.run(
+                    ["libreoffice", "--headless", "--convert-to", "pdf", "--outdir", str(pdf_dir), str(_conv_src)],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
                 _hl_pdf = pdf_dir / (_conv_src.stem + ".pdf")
                 _expected_pdf = pdf_dir / (template_path.stem + ".pdf")
                 if _hl_pdf.exists() and _hl_pdf != _expected_pdf:
@@ -3689,7 +4011,7 @@ Return ONLY a JSON object where keys are placeholder names."""
             # ── Deep Training Steps 9–15 ──────────────────────────
 
             _openrouter_key = getenv("OPENROUTER_API_KEY", "")
-            _training_model = get_model("training") if 'get_model' in dir() else "google/gemini-3.6-flash"
+            _training_model = get_model("training") if "get_model" in dir() else "google/gemini-3.6-flash"
 
             # Step 9: Field-level deep analysis
             yield _sse("field_deep_start", "Analyzing each field in detail...")
@@ -3697,6 +4019,7 @@ Return ONLY a JSON object where keys are placeholder names."""
             try:
                 if _openrouter_key and fields:
                     import httpx as _fd_httpx
+
                     _fd_prompt = f"""You are a Myanmar corporate law document expert. Analyze each placeholder field in this template.
 
 Template: {template_name}
@@ -3715,10 +4038,16 @@ For EACH placeholder, return a JSON object keyed by field name:
   }}
 }}
 Return ONLY the JSON object, no markdown."""
-                    _fd_res = _fd_httpx.post(f"{OPENROUTER_BASE_URL}/chat/completions",
+                    _fd_res = _fd_httpx.post(
+                        f"{OPENROUTER_BASE_URL}/chat/completions",
                         headers={"Authorization": f"Bearer {_openrouter_key}", "Content-Type": "application/json"},
-                        json={"model": _training_model, "messages": [{"role": "user", "content": _fd_prompt}], "temperature": 0},
-                        timeout=60)
+                        json={
+                            "model": _training_model,
+                            "messages": [{"role": "user", "content": _fd_prompt}],
+                            "temperature": 0,
+                        },
+                        timeout=60,
+                    )
                     _fd_res.raise_for_status()
                     _fd_text = _fd_res.json().get("choices", [{}])[0].get("message", {}).get("content", "{}")
                     _fd_text = _fd_text.strip().strip("`").strip()
@@ -3727,15 +4056,28 @@ Return ONLY the JSON object, no markdown."""
                     _field_deep = json.loads(_fd_text)
 
                     # Save to DB
-                    _fd_conn = get_db_conn(); _fd_conn.autocommit = True; _fd_cur = _fd_conn.cursor()
-                    _fd_cur.execute("UPDATE templates SET field_deep_analysis = %s WHERE name = %s", (json.dumps(_field_deep), template_name))
-                    _fd_cur.close(); _fd_conn.close()
+                    _fd_conn = get_db_conn()
+                    _fd_conn.autocommit = True
+                    _fd_cur = _fd_conn.cursor()
+                    _fd_cur.execute(
+                        "UPDATE templates SET field_deep_analysis = %s WHERE name = %s",
+                        (json.dumps(_field_deep), template_name),
+                    )
+                    _fd_cur.close()
+                    _fd_conn.close()
 
                     # Emit per-field details
-                    _db_fields_set = set(classification.get("db_fields", [])) if isinstance(classification, dict) else set()
+                    _db_fields_set = (
+                        set(classification.get("db_fields", [])) if isinstance(classification, dict) else set()
+                    )
                     for _fn, _fd in _field_deep.items():
                         _src = "DB auto-fill" if _fn in _db_fields_set else "user input"
-                        yield _sse("field_detail", f"  → {_fn} ({_src}) — {_fd.get('data_type','text')}, {'required' if _fd.get('required') else 'optional'}", field=_fn, detail=_fd)
+                        yield _sse(
+                            "field_detail",
+                            f"  → {_fn} ({_src}) — {_fd.get('data_type', 'text')}, {'required' if _fd.get('required') else 'optional'}",
+                            field=_fn,
+                            detail=_fd,
+                        )
                     yield _sse("field_deep", f"Deep analysis complete for {len(_field_deep)} fields")
                 else:
                     yield _sse("field_deep_warn", "Skipped: no API key or no fields")
@@ -3747,6 +4089,7 @@ Return ONLY the JSON object, no markdown."""
             try:
                 if _openrouter_key:
                     import httpx as _lr_httpx
+
                     _lr_prompt = f"""You are a Myanmar Companies Law 2017 expert. For this legal template, identify applicable law sections.
 
 Template: {template_name}
@@ -3763,10 +4106,16 @@ Return JSON:
   "filing_obligations": ["File with DICA via MyCO portal"]
 }}
 Return ONLY the JSON object."""
-                    _lr_res = _lr_httpx.post(f"{OPENROUTER_BASE_URL}/chat/completions",
+                    _lr_res = _lr_httpx.post(
+                        f"{OPENROUTER_BASE_URL}/chat/completions",
                         headers={"Authorization": f"Bearer {_openrouter_key}", "Content-Type": "application/json"},
-                        json={"model": _training_model, "messages": [{"role": "user", "content": _lr_prompt}], "temperature": 0},
-                        timeout=60)
+                        json={
+                            "model": _training_model,
+                            "messages": [{"role": "user", "content": _lr_prompt}],
+                            "temperature": 0,
+                        },
+                        timeout=60,
+                    )
                     _lr_res.raise_for_status()
                     _lr_text = _lr_res.json().get("choices", [{}])[0].get("message", {}).get("content", "{}")
                     _lr_text = _lr_text.strip().strip("`").strip()
@@ -3774,9 +4123,15 @@ Return ONLY the JSON object."""
                         _lr_text = _lr_text[4:].strip()
                     _legal_data = json.loads(_lr_text)
 
-                    _lr_conn = get_db_conn(); _lr_conn.autocommit = True; _lr_cur = _lr_conn.cursor()
-                    _lr_cur.execute("UPDATE templates SET legal_references = %s WHERE name = %s", (json.dumps(_legal_data), template_name))
-                    _lr_cur.close(); _lr_conn.close()
+                    _lr_conn = get_db_conn()
+                    _lr_conn.autocommit = True
+                    _lr_cur = _lr_conn.cursor()
+                    _lr_cur.execute(
+                        "UPDATE templates SET legal_references = %s WHERE name = %s",
+                        (json.dumps(_legal_data), template_name),
+                    )
+                    _lr_cur.close()
+                    _lr_conn.close()
 
                     _sec_count = len(_legal_data.get("sections", []))
                     yield _sse("legal_ref", f"Found {_sec_count} legal sections from Myanmar Companies Law 2017")
@@ -3790,6 +4145,7 @@ Return ONLY the JSON object."""
             try:
                 if _openrouter_key and fields:
                     import httpx as _sf_httpx
+
                     _sf_prompt = f"""Generate realistic sample values for a Myanmar legal document template.
 
 Template: {template_name}
@@ -3800,10 +4156,16 @@ Return a JSON object mapping each placeholder to a realistic sample value.
 Use Myanmar company names, addresses, director names, dates in DD/MM/YYYY format.
 Example: {{"company_name": "City Holdings Limited", "meeting_date": "15/03/2026", "director_name": "U Aung Kyaw"}}
 Return ONLY the JSON object."""
-                    _sf_res = _sf_httpx.post(f"{OPENROUTER_BASE_URL}/chat/completions",
+                    _sf_res = _sf_httpx.post(
+                        f"{OPENROUTER_BASE_URL}/chat/completions",
                         headers={"Authorization": f"Bearer {_openrouter_key}", "Content-Type": "application/json"},
-                        json={"model": _training_model, "messages": [{"role": "user", "content": _sf_prompt}], "temperature": 0.3},
-                        timeout=60)
+                        json={
+                            "model": _training_model,
+                            "messages": [{"role": "user", "content": _sf_prompt}],
+                            "temperature": 0.3,
+                        },
+                        timeout=60,
+                    )
                     _sf_res.raise_for_status()
                     _sf_text = _sf_res.json().get("choices", [{}])[0].get("message", {}).get("content", "{}")
                     _sf_text = _sf_text.strip().strip("`").strip()
@@ -3811,9 +4173,15 @@ Return ONLY the JSON object."""
                         _sf_text = _sf_text[4:].strip()
                     _sample = json.loads(_sf_text)
 
-                    _sf_conn = get_db_conn(); _sf_conn.autocommit = True; _sf_cur = _sf_conn.cursor()
-                    _sf_cur.execute("UPDATE templates SET sample_filled_document = %s WHERE name = %s", (json.dumps(_sample), template_name))
-                    _sf_cur.close(); _sf_conn.close()
+                    _sf_conn = get_db_conn()
+                    _sf_conn.autocommit = True
+                    _sf_cur = _sf_conn.cursor()
+                    _sf_cur.execute(
+                        "UPDATE templates SET sample_filled_document = %s WHERE name = %s",
+                        (json.dumps(_sample), template_name),
+                    )
+                    _sf_cur.close()
+                    _sf_conn.close()
                     yield _sse("sample", f"Generated sample values for {len(_sample)} fields")
                 else:
                     yield _sse("sample_warn", "Skipped: no API key or no fields")
@@ -3825,6 +4193,7 @@ Return ONLY the JSON object."""
             try:
                 if _openrouter_key:
                     import httpx as _wf_httpx
+
                     _wf_prompt = f"""For this Myanmar corporate legal template, determine the document workflow.
 
 Template: {template_name}
@@ -3839,10 +4208,16 @@ Return JSON:
   "notes": "Any important workflow notes"
 }}
 Return ONLY the JSON object."""
-                    _wf_res = _wf_httpx.post(f"{OPENROUTER_BASE_URL}/chat/completions",
+                    _wf_res = _wf_httpx.post(
+                        f"{OPENROUTER_BASE_URL}/chat/completions",
                         headers={"Authorization": f"Bearer {_openrouter_key}", "Content-Type": "application/json"},
-                        json={"model": _training_model, "messages": [{"role": "user", "content": _wf_prompt}], "temperature": 0},
-                        timeout=60)
+                        json={
+                            "model": _training_model,
+                            "messages": [{"role": "user", "content": _wf_prompt}],
+                            "temperature": 0,
+                        },
+                        timeout=60,
+                    )
                     _wf_res.raise_for_status()
                     _wf_text = _wf_res.json().get("choices", [{}])[0].get("message", {}).get("content", "{}")
                     _wf_text = _wf_text.strip().strip("`").strip()
@@ -3850,9 +4225,15 @@ Return ONLY the JSON object."""
                         _wf_text = _wf_text[4:].strip()
                     _workflow = json.loads(_wf_text)
 
-                    _wf_conn = get_db_conn(); _wf_conn.autocommit = True; _wf_cur = _wf_conn.cursor()
-                    _wf_cur.execute("UPDATE templates SET document_workflow = %s WHERE name = %s", (json.dumps(_workflow), template_name))
-                    _wf_cur.close(); _wf_conn.close()
+                    _wf_conn = get_db_conn()
+                    _wf_conn.autocommit = True
+                    _wf_cur = _wf_conn.cursor()
+                    _wf_cur.execute(
+                        "UPDATE templates SET document_workflow = %s WHERE name = %s",
+                        (json.dumps(_workflow), template_name),
+                    )
+                    _wf_cur.close()
+                    _wf_conn.close()
                     _before = len(_workflow.get("before", []))
                     _after = len(_workflow.get("after", []))
                     yield _sse("workflow", f"Workflow mapped: {_before} prerequisite(s), {_after} follow-up(s)")
@@ -3866,6 +4247,7 @@ Return ONLY the JSON object."""
             try:
                 if _openrouter_key:
                     import httpx as _qa_httpx
+
                     _qa_prompt = f"""Generate 10 practical Q&A pairs about this Myanmar legal document template.
 These will be used by an AI assistant to answer user questions.
 
@@ -3881,10 +4263,16 @@ Return a JSON array:
 ]
 Make questions practical — what users would actually ask. Include questions about requirements, deadlines, common issues.
 Return ONLY the JSON array."""
-                    _qa_res = _qa_httpx.post(f"{OPENROUTER_BASE_URL}/chat/completions",
+                    _qa_res = _qa_httpx.post(
+                        f"{OPENROUTER_BASE_URL}/chat/completions",
                         headers={"Authorization": f"Bearer {_openrouter_key}", "Content-Type": "application/json"},
-                        json={"model": _training_model, "messages": [{"role": "user", "content": _qa_prompt}], "temperature": 0.3},
-                        timeout=60)
+                        json={
+                            "model": _training_model,
+                            "messages": [{"role": "user", "content": _qa_prompt}],
+                            "temperature": 0.3,
+                        },
+                        timeout=60,
+                    )
                     _qa_res.raise_for_status()
                     _qa_text = _qa_res.json().get("choices", [{}])[0].get("message", {}).get("content", "[]")
                     _qa_text = _qa_text.strip().strip("`").strip()
@@ -3893,14 +4281,25 @@ Return ONLY the JSON array."""
                     _qa_pairs = json.loads(_qa_text)
 
                     if isinstance(_qa_pairs, list) and _qa_pairs:
-                        _qa_conn = get_db_conn(); _qa_conn.autocommit = True; _qa_cur = _qa_conn.cursor()
+                        _qa_conn = get_db_conn()
+                        _qa_conn.autocommit = True
+                        _qa_cur = _qa_conn.cursor()
                         # Clean old Q&A for this template
-                        _qa_cur.execute("DELETE FROM knowledge_vec WHERE source_file = %s", (f"template_qa:{template_name}",))
+                        _qa_cur.execute(
+                            "DELETE FROM knowledge_vec WHERE source_file = %s", (f"template_qa:{template_name}",)
+                        )
                         for _qa in _qa_pairs:
-                            _qa_content = f"Q: {_qa.get('question','')}\nA: {_qa.get('answer','')}"
-                            _qa_cur.execute("INSERT INTO knowledge_vec (content, source_file, metadata) VALUES (%s, %s, %s)",
-                                (_qa_content, f"template_qa:{template_name}", json.dumps({"type": "template_qa", "template": template_name})))
-                        _qa_cur.close(); _qa_conn.close()
+                            _qa_content = f"Q: {_qa.get('question', '')}\nA: {_qa.get('answer', '')}"
+                            _qa_cur.execute(
+                                "INSERT INTO knowledge_vec (content, source_file, metadata) VALUES (%s, %s, %s)",
+                                (
+                                    _qa_content,
+                                    f"template_qa:{template_name}",
+                                    json.dumps({"type": "template_qa", "template": template_name}),
+                                ),
+                            )
+                        _qa_cur.close()
+                        _qa_conn.close()
                         yield _sse("qa", f"Generated {len(_qa_pairs)} Q&A pairs for knowledge base")
                     else:
                         yield _sse("qa_warn", "No Q&A pairs generated")
@@ -3914,10 +4313,15 @@ Return ONLY the JSON array."""
             try:
                 if _openrouter_key:
                     import httpx as _cr_httpx
-                    _cr_conn = get_db_conn(); _cr_cur = _cr_conn.cursor()
+
+                    _cr_conn = get_db_conn()
+                    _cr_cur = _cr_conn.cursor()
                     _cr_cur.execute("SELECT name, category, purpose FROM templates WHERE name != %s", (template_name,))
-                    _other_templates = [{"name": r[0], "category": r[1] or "", "purpose": (r[2] or "")[:80]} for r in _cr_cur.fetchall()]
-                    _cr_cur.close(); _cr_conn.close()
+                    _other_templates = [
+                        {"name": r[0], "category": r[1] or "", "purpose": (r[2] or "")[:80]} for r in _cr_cur.fetchall()
+                    ]
+                    _cr_cur.close()
+                    _cr_conn.close()
 
                     if _other_templates:
                         _cr_prompt = f"""Identify relationships between this template and others.
@@ -3932,10 +4336,16 @@ Return a JSON array of relationships:
   {{"template": "Board_Resolution.docx", "relationship": "prerequisite|follow_up|related|alternative", "description": "Board resolution authorizing this action"}}
 ]
 Only include templates that have a real relationship. Return ONLY the JSON array."""
-                        _cr_res = _cr_httpx.post(f"{OPENROUTER_BASE_URL}/chat/completions",
+                        _cr_res = _cr_httpx.post(
+                            f"{OPENROUTER_BASE_URL}/chat/completions",
                             headers={"Authorization": f"Bearer {_openrouter_key}", "Content-Type": "application/json"},
-                            json={"model": _training_model, "messages": [{"role": "user", "content": _cr_prompt}], "temperature": 0},
-                            timeout=60)
+                            json={
+                                "model": _training_model,
+                                "messages": [{"role": "user", "content": _cr_prompt}],
+                                "temperature": 0,
+                            },
+                            timeout=60,
+                        )
                         _cr_res.raise_for_status()
                         _cr_text = _cr_res.json().get("choices", [{}])[0].get("message", {}).get("content", "[]")
                         _cr_text = _cr_text.strip().strip("`").strip()
@@ -3943,9 +4353,15 @@ Only include templates that have a real relationship. Return ONLY the JSON array
                             _cr_text = _cr_text[4:].strip()
                         _cross_refs = json.loads(_cr_text)
 
-                        _cr_conn2 = get_db_conn(); _cr_conn2.autocommit = True; _cr_cur2 = _cr_conn2.cursor()
-                        _cr_cur2.execute("UPDATE templates SET cross_template_relationships = %s WHERE name = %s", (json.dumps(_cross_refs), template_name))
-                        _cr_cur2.close(); _cr_conn2.close()
+                        _cr_conn2 = get_db_conn()
+                        _cr_conn2.autocommit = True
+                        _cr_cur2 = _cr_conn2.cursor()
+                        _cr_cur2.execute(
+                            "UPDATE templates SET cross_template_relationships = %s WHERE name = %s",
+                            (json.dumps(_cross_refs), template_name),
+                        )
+                        _cr_cur2.close()
+                        _cr_conn2.close()
                         yield _sse("cross_ref", f"Found {len(_cross_refs)} related template(s)")
                     else:
                         yield _sse("cross_ref_warn", "No other templates to compare")
@@ -3963,22 +4379,35 @@ Only include templates that have a real relationship. Return ONLY the JSON array
                     (bool(when_to_use), 5, "when_to_use"),
                     (bool(category and category != "General"), 5, "category"),
                     (bool(fields), 10, "placeholders"),
-                    (bool(isinstance(classification, dict) and classification.get("db_fields")), 10, "field_classification"),
+                    (
+                        bool(isinstance(classification, dict) and classification.get("db_fields")),
+                        10,
+                        "field_classification",
+                    ),
                     (bool(_field_deep), 10, "field_deep_analysis"),
-                    (bool(_legal_data if '_legal_data' in dir() else None), 10, "legal_references"),
-                    (bool(_sample if '_sample' in dir() else None), 10, "sample_document"),
-                    (bool(_workflow if '_workflow' in dir() else None), 10, "workflow"),
-                    (bool(_qa_pairs if '_qa_pairs' in dir() else None), 10, "qa_pairs"),
-                    (bool(_cross_refs if '_cross_refs' in dir() else None), 5, "cross_references"),
+                    (bool(_legal_data if "_legal_data" in dir() else None), 10, "legal_references"),
+                    (bool(_sample if "_sample" in dir() else None), 10, "sample_document"),
+                    (bool(_workflow if "_workflow" in dir() else None), 10, "workflow"),
+                    (bool(_qa_pairs if "_qa_pairs" in dir() else None), 10, "qa_pairs"),
+                    (bool(_cross_refs if "_cross_refs" in dir() else None), 5, "cross_references"),
                     (True, 5, "base"),  # Always get base points for having the template
                 ]
                 _score = sum(w for c, w, _ in _checks if c)
                 _passed = [n for c, _, n in _checks if c]
 
-                _sc_conn = get_db_conn(); _sc_conn.autocommit = True; _sc_cur = _sc_conn.cursor()
-                _sc_cur.execute("UPDATE templates SET training_confidence = %s WHERE name = %s", (_score, template_name))
-                _sc_cur.close(); _sc_conn.close()
-                yield _sse("confidence", f"Training confidence: {_score}% ({len(_passed)}/{len(_checks)} checks passed)", score=_score)
+                _sc_conn = get_db_conn()
+                _sc_conn.autocommit = True
+                _sc_cur = _sc_conn.cursor()
+                _sc_cur.execute(
+                    "UPDATE templates SET training_confidence = %s WHERE name = %s", (_score, template_name)
+                )
+                _sc_cur.close()
+                _sc_conn.close()
+                yield _sse(
+                    "confidence",
+                    f"Training confidence: {_score}% ({len(_passed)}/{len(_checks)} checks passed)",
+                    score=_score,
+                )
             except Exception as _sce:
                 yield _sse("confidence_warn", f"Confidence scoring warning: {_sce}")
 
@@ -3994,12 +4423,12 @@ Only include templates that have a real relationship. Return ONLY the JSON array
             yield _sse("error", str(e))
         finally:
             if conn:
-                try: conn.close()
-                except: pass
+                with contextlib.suppress(BaseException):
+                    conn.close()
 
-    return StreamingResponse(generate(), media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
-
+    return StreamingResponse(
+        generate(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+    )
 
 
 @app.post("/api/knowledge/deep-train")
@@ -4024,9 +4453,9 @@ async def deep_train_templates(request: Request):
                     only = {str(x) for x in _want}
         except Exception:
             only = None  # no body / not JSON — fall back to the whole directory
+        from scout.agent import scout
         from scout.tools.knowledge_base import get_db_connection
         from scout.tools.template_analyzer import analyze_template
-        from scout.agent import scout
 
         templates_dir = Path("/documents/legal/templates")
         if not templates_dir.exists():
@@ -4104,8 +4533,8 @@ Provide your response in this EXACT JSON format (no other text):
 
                 if not skip_ai:
 
-                    def run_agent():
-                        return asyncio.run(scout.arun(analysis_prompt))
+                    def run_agent(_prompt=analysis_prompt):
+                        return asyncio.run(scout.arun(_prompt))
 
                     try:
                         with concurrent.futures.ThreadPoolExecutor() as pool:
@@ -4201,7 +4630,9 @@ Provide your response in this EXACT JSON format (no other text):
                         logging.getLogger("legalscout").error(
                             "TEMPLATE ANALYSIS FELL BACK for %r — the AI response "
                             "did not parse (%s). Every analysed field below is "
-                            "inferred from the filename.", template_name, parse_err
+                            "inferred from the filename.",
+                            template_name,
+                            parse_err,
                         )
                         category = _infer_category(template_name)
                         keywords = _generate_keywords(template_name, fields)
@@ -4235,7 +4666,8 @@ Provide your response in this EXACT JSON format (no other text):
                     logging.getLogger("legalscout").error(
                         "TEMPLATE ANALYSIS FELL BACK for %r — no JSON object in the "
                         "AI response. Every analysed field below is inferred from "
-                        "the filename.", template_name
+                        "the filename.",
+                        template_name,
                     )
                     category = _infer_category(template_name)
                     keywords = ", ".join(fields[:10]) if fields else ""
@@ -4270,7 +4702,10 @@ Provide your response in this EXACT JSON format (no other text):
                 logging.getLogger("legalscout").error(
                     "TEMPLATE ANALYSIS FAILED for %r (%s: %s) — falling back to "
                     "filename inference for every analysed field. Fields seen: %s",
-                    template_name, type(e).__name__, e, fields
+                    template_name,
+                    type(e).__name__,
+                    e,
+                    fields,
                 )
                 category = _infer_category(template_name)
                 keywords = ", ".join(fields[:10]) if fields else ""
@@ -4356,6 +4791,7 @@ Provide your response in this EXACT JSON format (no other text):
             # ── Knowledge Base Storage (knowledge_vec + knowledge_lookup) ──
             try:
                 from scout.tools.knowledge_base import get_db_connection as _get_kb_conn
+
                 _kb_conn = _get_kb_conn()
                 _kb_cur = _kb_conn.cursor()
 
@@ -4369,19 +4805,33 @@ Provide your response in this EXACT JSON format (no other text):
                 # Insert into knowledge_vec (semantic search)
                 _kb_cur.execute(
                     "INSERT INTO knowledge_vec (content, source_file, metadata) VALUES (%s, %s, %s)",
-                    (_kb_text, f"template:{template_name}", json.dumps({
-                        "type": "template", "name": template_name, "category": category,
-                        "purpose": purpose, "fields": fields,
-                    }))
+                    (
+                        _kb_text,
+                        f"template:{template_name}",
+                        json.dumps(
+                            {
+                                "type": "template",
+                                "name": template_name,
+                                "category": category,
+                                "purpose": purpose,
+                                "fields": fields,
+                            }
+                        ),
+                    ),
                 )
 
                 # Insert into knowledge_lookup (key-value search)
-                for _kk, _kv in [("template_name", template_name), ("template_category", category),
-                                  ("template_purpose", purpose), ("template_when_to_use", when_to_use)]:
+                for _kk, _kv in [
+                    ("template_name", template_name),
+                    ("template_category", category),
+                    ("template_purpose", purpose),
+                    ("template_when_to_use", when_to_use),
+                ]:
                     if _kv:
                         _kb_cur.execute(
                             "INSERT INTO knowledge_lookup (key_name, key_value, source_file) VALUES (%s, %s, %s)",
-                            (_kk, _kv, f"template:{template_name}"))
+                            (_kk, _kv, f"template:{template_name}"),
+                        )
 
                 _kb_conn.commit()
 
@@ -4391,12 +4841,14 @@ Provide your response in this EXACT JSON format (no other text):
                     _kb_cur2 = _kb_conn.cursor()
                     _kb_cur2.execute(
                         "UPDATE knowledge_vec SET embedding = %s WHERE source_file = %s",
-                        (str(_embedding), f"template:{template_name}"))
+                        (str(_embedding), f"template:{template_name}"),
+                    )
                     _kb_conn.commit()
                     _kb_cur2.close()
                     print(f"  ✓ KB + embedding: {template_name}")
 
-                _kb_cur.close(); _kb_conn.close()
+                _kb_cur.close()
+                _kb_conn.close()
             except Exception as _kb_err:
                 print(f"  ⚠ Knowledge storage error for {template_name}: {_kb_err}")
 
@@ -4414,8 +4866,11 @@ Provide your response in this EXACT JSON format (no other text):
 
         # AI field classification — run AFTER all templates are saved
         try:
-            from scout.tools.template_analyzer import classify_template_fields, get_db_connection as _get_class_db
             from docx import Document as _ClassDoc
+
+            from scout.tools.template_analyzer import classify_template_fields
+            from scout.tools.template_analyzer import get_db_connection as _get_class_db
+
             _cconn = _get_class_db()
             _ccur = _cconn.cursor()
             for template_file in templates:
@@ -4436,18 +4891,27 @@ Provide your response in this EXACT JSON format (no other text):
                     elif isinstance(_cfields_raw, dict):
                         if _cfields_raw.get("all_fields"):
                             _cfields = _cfields_raw["all_fields"]
-                        elif _cfields_raw.get("db_fields") is not None or _cfields_raw.get("user_input_fields") is not None:
-                            _cfields = list(_cfields_raw.get("db_fields") or []) + list(_cfields_raw.get("user_input_fields") or [])
+                        elif (
+                            _cfields_raw.get("db_fields") is not None
+                            or _cfields_raw.get("user_input_fields") is not None
+                        ):
+                            _cfields = list(_cfields_raw.get("db_fields") or []) + list(
+                                _cfields_raw.get("user_input_fields") or []
+                            )
                         else:
                             _cfields = list(_cfields_raw.keys())
                     else:
                         _cfields = []
                     _classification = classify_template_fields(_ccontent, _cfields)
                     if _classification:
-                        _ccur.execute("UPDATE templates SET fields = %s WHERE name = %s",
-                            (json.dumps(_classification), template_file.name))
+                        _ccur.execute(
+                            "UPDATE templates SET fields = %s WHERE name = %s",
+                            (json.dumps(_classification), template_file.name),
+                        )
                         _cconn.commit()
-                        print(f"  Classified {template_file.name}: {len(_classification.get('db_fields',[]))} DB, {len(_classification.get('user_input_fields',[]))} user")
+                        print(
+                            f"  Classified {template_file.name}: {len(_classification.get('db_fields', []))} DB, {len(_classification.get('user_input_fields', []))} user"
+                        )
                 except Exception as _ce:
                     print(f"  Classification skip {template_file.name}: {_ce}")
             _ccur.close()
@@ -4458,13 +4922,24 @@ Provide your response in this EXACT JSON format (no other text):
         # Convert all templates to PDF for preview
         try:
             import subprocess
+
             pdf_dir = Path("/documents/legal/previews")
             pdf_dir.mkdir(parents=True, exist_ok=True)
             for template_file in templates:
                 try:
                     subprocess.run(
-                        ["libreoffice", "--headless", "--convert-to", "pdf", "--outdir", str(pdf_dir), str(template_file)],
-                        capture_output=True, text=True, timeout=30
+                        [
+                            "libreoffice",
+                            "--headless",
+                            "--convert-to",
+                            "pdf",
+                            "--outdir",
+                            str(pdf_dir),
+                            str(template_file),
+                        ],
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
                     )
                     print(f"  PDF: {template_file.name}")
                 except Exception:
@@ -4480,13 +4955,17 @@ Provide your response in this EXACT JSON format (no other text):
 
         # Save training timestamp
         try:
-            from psycopg import connect as _tc2
-            import os as _to2
             _tconn2 = get_db_conn()
             _tcur2 = _tconn2.cursor()
-            _tcur2.execute("INSERT INTO training_status (training_type, last_trained, record_count) VALUES ('templates', NOW(), %s) ON CONFLICT (training_type) DO UPDATE SET last_trained = NOW(), record_count = %s", (len(results), len(results)))
-            _tconn2.commit(); _tcur2.close(); _tconn2.close()
-        except Exception: pass
+            _tcur2.execute(
+                "INSERT INTO training_status (training_type, last_trained, record_count) VALUES ('templates', NOW(), %s) ON CONFLICT (training_type) DO UPDATE SET last_trained = NOW(), record_count = %s",
+                (len(results), len(results)),
+            )
+            _tconn2.commit()
+            _tcur2.close()
+            _tconn2.close()
+        except Exception:
+            pass
         return {"success": True, "message": f"Deep trained {len(results)} templates with AI Agent", "results": results}
     except Exception as e:
         return {"success": False, "error": str(e)}
@@ -4515,6 +4994,7 @@ async def train_start(request: Request):
     if not names:
         retrain_all = bool(body.get("retrain_all"))
         from scout.tools.template_analyzer import get_db_connection as _gdb
+
         conn = _gdb()
         try:
             cur = conn.cursor()
@@ -4522,10 +5002,7 @@ async def train_start(request: Request):
             rows = cur.fetchall()
         finally:
             conn.close()
-        if retrain_all:
-            names = [r[0] for r in rows]
-        else:
-            names = [r[0] for r in rows if not r[1]]
+        names = [r[0] for r in rows] if retrain_all else [r[0] for r in rows if not r[1]]
 
     names = [n for n in (names or []) if n]
     if not names:
@@ -4830,7 +5307,7 @@ async def search_knowledge_base(request: Request, q: str = "", limit: int = 20):
 
 
 @app.get("/api/knowledge/lookup")
-async def lookup_knowledge(key: str = None, value: str = None):
+async def lookup_knowledge(key: str | None = None, value: str | None = None):
     """Exact lookup in knowledge base."""
     if not key or not value:
         return {"results": []}
@@ -4871,7 +5348,7 @@ async def get_table_data(table_name: str, limit: int = 50):
 
         data = []
         for row in rows:
-            data.append(dict(zip(columns, row)))
+            data.append(dict(zip(columns, row, strict=False)))
 
         cur.close()
         conn.close()
@@ -4891,9 +5368,6 @@ async def get_knowledge_data(filename: str, limit: int = 50):
 # ---------------------------------------------------------------------------
 # Chat File Upload Endpoint
 # ---------------------------------------------------------------------------
-import base64
-from db.connection import get_db_conn
-
 
 
 # ---------------------------------------------------------------------------
@@ -4914,9 +5388,6 @@ async def get_dashboard_data():
         # Get companies from DB
         companies = []
         try:
-            import os as _os
-            from psycopg import connect as _connect
-
             _conn = get_db_conn()
             _cur = _conn.cursor()
             _cur.execute("""
@@ -4934,25 +5405,27 @@ async def get_dashboard_data():
                 total_shares = row[9] or ""
                 currency = row[10] or ""
                 shares_display = f"{total_shares} {currency}".strip() if total_shares else ""
-                companies.append({
-                    "id": row[14],
-                    "company_name": row[0] or "",
-                    "company_registration_number": row[1] or "",
-                    "registered_office": row[2] or "",
-                    "directors": director_names,
-                    "shareholders": shareholder_names,
-                    "total_shares": shares_display,
-                    "principal_place_of_business": row[4] or "",
-                    "status": row[5] or "",
-                    "company_type": row[6] or "",
-                    "registration_date": row[7].isoformat() if row[7] else "",
-                    "principal_activity": row[8] or "",
-                    "total_shares_issued": row[9] or "",
-                    "currency_of_share_capital": row[10] or "",
-                    "ultimate_holding_company": row[11] or "",
-                    "date_of_last_annual_return": row[12].isoformat() if row[12] else "",
-                    "members": mems,
-                })
+                companies.append(
+                    {
+                        "id": row[14],
+                        "company_name": row[0] or "",
+                        "company_registration_number": row[1] or "",
+                        "registered_office": row[2] or "",
+                        "directors": director_names,
+                        "shareholders": shareholder_names,
+                        "total_shares": shares_display,
+                        "principal_place_of_business": row[4] or "",
+                        "status": row[5] or "",
+                        "company_type": row[6] or "",
+                        "registration_date": row[7].isoformat() if row[7] else "",
+                        "principal_activity": row[8] or "",
+                        "total_shares_issued": row[9] or "",
+                        "currency_of_share_capital": row[10] or "",
+                        "ultimate_holding_company": row[11] or "",
+                        "date_of_last_annual_return": row[12].isoformat() if row[12] else "",
+                        "members": mems,
+                    }
+                )
             _cur.close()
             _conn.close()
         except Exception as _e:
@@ -4965,9 +5438,6 @@ async def get_dashboard_data():
         # Get documents from PostgreSQL
         documents = []
         try:
-            import os
-            from psycopg import connect
-
             conn = get_db_conn()
             cur = conn.cursor()
             cur.execute("""
@@ -4996,7 +5466,7 @@ async def get_dashboard_data():
         # Also scan output directory for any files not in DB
         output_dir = Path("/documents/legal/output")
         if output_dir.exists():
-            existing_files = set(d.get("file_name", "") for d in documents)
+            existing_files = {d.get("file_name", "") for d in documents}
             for f in sorted(output_dir.glob("*.docx"), key=lambda x: x.stat().st_mtime, reverse=True):
                 if f.name not in existing_files:
                     stat = f.stat()
@@ -5037,20 +5507,24 @@ async def search_documents(request: Request, q: str = ""):
     if not q or len(q) < 2:
         return {"success": False, "error": "Search query must be at least 2 characters"}
     try:
-        import os
-        from psycopg import connect
         conn = get_db_conn()
         cur = conn.cursor()
-        cur.execute("""
+        cur.execute(
+            """
             SELECT id, template_name, company_name, file_name, created_at
             FROM documents
             WHERE file_name ILIKE %s OR company_name ILIKE %s OR template_name ILIKE %s
             ORDER BY created_at DESC LIMIT 50
-        """, (f"%{q}%", f"%{q}%", f"%{q}%"))
+        """,
+            (f"%{q}%", f"%{q}%", f"%{q}%"),
+        )
         rows = cur.fetchall()
-        cur.close(); conn.close()
-        results = [{"id": r[0], "template": r[1], "company": r[2], "file": r[3],
-                   "created": r[4].isoformat() if r[4] else None} for r in rows]
+        cur.close()
+        conn.close()
+        results = [
+            {"id": r[0], "template": r[1], "company": r[2], "file": r[3], "created": r[4].isoformat() if r[4] else None}
+            for r in rows
+        ]
         return {"success": True, "results": results, "count": len(results)}
     except Exception as e:
         return {"success": False, "error": str(e)}
@@ -5060,8 +5534,6 @@ async def search_documents(request: Request, q: str = ""):
 async def dashboard_analytics(request: Request):
     """Get analytics data for dashboard charts."""
     try:
-        import os
-        from psycopg import connect
         conn = get_db_conn()
         cur = conn.cursor()
 
@@ -5085,7 +5557,7 @@ async def dashboard_analytics(request: Request):
             SELECT company_name, COUNT(*) as count FROM documents
             GROUP BY company_name ORDER BY count DESC LIMIT 10
         """)
-        by_company = [{"name": (r[0] or "Unknown").split('\n')[0], "count": r[1]} for r in cur.fetchall()]
+        by_company = [{"name": (r[0] or "Unknown").split("\n")[0], "count": r[1]} for r in cur.fetchall()]
 
         # User activity (last 30 days)
         cur.execute("""
@@ -5105,7 +5577,8 @@ async def dashboard_analytics(request: Request):
         cur.execute("SELECT COUNT(*) FROM users")
         total_users = cur.fetchone()[0]
 
-        cur.close(); conn.close()
+        cur.close()
+        conn.close()
 
         return {
             "success": True,
@@ -5113,8 +5586,12 @@ async def dashboard_analytics(request: Request):
             "by_template": by_template,
             "by_company": by_company,
             "user_activity": user_activity,
-            "totals": {"documents": total_docs, "templates": total_templates,
-                      "companies": total_companies, "users": total_users}
+            "totals": {
+                "documents": total_docs,
+                "templates": total_templates,
+                "companies": total_companies,
+                "users": total_users,
+            },
         }
     except Exception as e:
         return {"success": False, "error": str(e)}
@@ -5124,9 +5601,8 @@ async def dashboard_analytics(request: Request):
 async def dashboard_key_dates(request: Request):
     """Get key dates and upcoming deadlines for all companies."""
     try:
-        import os
-        from psycopg import connect
         from datetime import timedelta
+
         conn = get_db_conn()
         cur = conn.cursor()
         cur.execute("""
@@ -5135,7 +5611,8 @@ async def dashboard_key_dates(request: Request):
             FROM companies WHERE company_name_english IS NOT NULL
         """)
         rows = cur.fetchall()
-        cur.close(); conn.close()
+        cur.close()
+        conn.close()
 
         dates = []
         today = datetime.now().date()
@@ -5150,9 +5627,15 @@ async def dashboard_key_dates(request: Request):
                 if next_anniv < today:
                     next_anniv = next_anniv.replace(year=today.year + 1)
                 days_until = (next_anniv - today).days
-                dates.append({"company": name, "event": "Incorporation Anniversary",
-                    "date": next_anniv.isoformat(), "days_until": days_until,
-                    "urgency": "info" if days_until > 30 else "warning" if days_until > 7 else "urgent"})
+                dates.append(
+                    {
+                        "company": name,
+                        "event": "Incorporation Anniversary",
+                        "date": next_anniv.isoformat(),
+                        "days_until": days_until,
+                        "urgency": "info" if days_until > 30 else "warning" if days_until > 7 else "urgent",
+                    }
+                )
 
             # Annual Return deadline (within 30 days of AR anniversary)
             if last_ar:
@@ -5161,9 +5644,15 @@ async def dashboard_key_dates(request: Request):
                     next_ar = next_ar.replace(year=today.year + 1)
                 ar_deadline = next_ar + timedelta(days=30)
                 days_until = (ar_deadline - today).days
-                dates.append({"company": name, "event": "Annual Return Deadline",
-                    "date": ar_deadline.isoformat(), "days_until": days_until,
-                    "urgency": "info" if days_until > 30 else "warning" if days_until > 14 else "urgent"})
+                dates.append(
+                    {
+                        "company": name,
+                        "event": "Annual Return Deadline",
+                        "date": ar_deadline.isoformat(),
+                        "days_until": days_until,
+                        "urgency": "info" if days_until > 30 else "warning" if days_until > 14 else "urgent",
+                    }
+                )
 
             # AGM deadline (18 months from incorporation or last AGM)
             if reg_date:
@@ -5171,9 +5660,15 @@ async def dashboard_key_dates(request: Request):
                 if agm_deadline < today:
                     agm_deadline = agm_deadline.replace(year=today.year + 1)
                 days_until = (agm_deadline - today).days
-                dates.append({"company": name, "event": "AGM Deadline",
-                    "date": agm_deadline.isoformat(), "days_until": days_until,
-                    "urgency": "info" if days_until > 60 else "warning" if days_until > 30 else "urgent"})
+                dates.append(
+                    {
+                        "company": name,
+                        "event": "AGM Deadline",
+                        "date": agm_deadline.isoformat(),
+                        "days_until": days_until,
+                        "urgency": "info" if days_until > 60 else "warning" if days_until > 30 else "urgent",
+                    }
+                )
 
         # Sort by urgency
         dates.sort(key=lambda x: x["days_until"])
@@ -5193,7 +5688,9 @@ async def export_companies_excel(request: Request):
         # Read companies from DB
         conn = get_db_conn()
         cur = conn.cursor()
-        cur.execute("SELECT company_name_english, company_registration_number, registered_office_address, company_type, status, directors, members, total_shares_issued, currency_of_share_capital, principal_activity FROM companies ORDER BY company_name_english LIMIT 10000")
+        cur.execute(
+            "SELECT company_name_english, company_registration_number, registered_office_address, company_type, status, directors, members, total_shares_issued, currency_of_share_capital, principal_activity FROM companies ORDER BY company_name_english LIMIT 10000"
+        )
         rows = cur.fetchall()
         cols = [desc[0] for desc in cur.description]
         companies = []
@@ -5205,7 +5702,8 @@ async def export_companies_excel(request: Request):
                     val = ", ".join(d.get("name", "") for d in val if isinstance(d, dict))
                 company[col] = str(val) if val else ""
             companies.append(company)
-        cur.close(); conn.close()
+        cur.close()
+        conn.close()
 
         if not companies:
             return {"error": "No companies to export"}
@@ -5323,18 +5821,32 @@ async def admin_backup(request: Request):
     """Export all data as JSON backup."""
     require_admin(request)
     try:
-        import os, json
-        from psycopg import connect
+        import json
+
         conn = get_db_conn()
         cur = conn.cursor()
 
         backup = {"exported_at": datetime.now().isoformat(), "version": "1.0"}
 
         # Export each table
-        for table in ["templates", "companies", "documents", "users", "knowledge_lookup", "knowledge_raw",
-                       "training_status", "document_versions", "app_settings", "activity_logs",
-                       "agno_sessions", "agno_memories", "agno_learnings",
-                       "scout_knowledge", "scout_learnings", "scout_knowledge_contents"]:
+        for table in [
+            "templates",
+            "companies",
+            "documents",
+            "users",
+            "knowledge_lookup",
+            "knowledge_raw",
+            "training_status",
+            "document_versions",
+            "app_settings",
+            "activity_logs",
+            "agno_sessions",
+            "agno_memories",
+            "agno_learnings",
+            "scout_knowledge",
+            "scout_learnings",
+            "scout_knowledge_contents",
+        ]:
             try:
                 cur.execute(f"SELECT * FROM {table}")
                 cols = [desc[0] for desc in cur.description]
@@ -5343,22 +5855,29 @@ async def admin_backup(request: Request):
                     r = {}
                     for i, col in enumerate(cols):
                         val = row[i]
-                        if hasattr(val, 'isoformat'): val = val.isoformat()
-                        elif isinstance(val, (dict, list)): pass  # JSONB is fine
-                        else: val = str(val) if val is not None else None
+                        if hasattr(val, "isoformat"):
+                            val = val.isoformat()
+                        elif isinstance(val, (dict, list)):
+                            pass  # JSONB is fine
+                        else:
+                            val = str(val) if val is not None else None
                         r[col] = val
                     rows.append(r)
                 backup[table] = rows
             except Exception:
                 backup[table] = []
 
-        cur.close(); conn.close()
+        cur.close()
+        conn.close()
 
         from starlette.responses import Response
+
         return Response(
             content=json.dumps(backup, indent=2, default=str),
             media_type="application/json",
-            headers={"Content-Disposition": f"attachment; filename=legal_scout_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"}
+            headers={
+                "Content-Disposition": f"attachment; filename=legal_scout_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            },
         )
     except Exception as e:
         return {"success": False, "error": str(e)}
@@ -5372,17 +5891,26 @@ async def get_field_registry(request: Request):
     """Return all registered company-level user_input fields with metadata."""
     get_current_user(request)
     try:
-        conn = get_db_conn(); cur = conn.cursor()
+        conn = get_db_conn()
+        cur = conn.cursor()
         cur.execute("""
             SELECT field_key, label, description, field_type, used_by_templates
             FROM company_field_registry
             ORDER BY field_key
         """)
         rows = cur.fetchall()
-        cur.close(); conn.close()
-        fields = [{"field_key": r[0], "label": r[1] or r[0].replace("_", " ").title(),
-                   "description": r[2] or "", "field_type": r[3] or "text",
-                   "used_by_templates": r[4] or []} for r in rows]
+        cur.close()
+        conn.close()
+        fields = [
+            {
+                "field_key": r[0],
+                "label": r[1] or r[0].replace("_", " ").title(),
+                "description": r[2] or "",
+                "field_type": r[3] or "text",
+                "used_by_templates": r[4] or [],
+            }
+            for r in rows
+        ]
         return {"success": True, "fields": fields}
     except Exception as e:
         return {"success": False, "error": str(e), "fields": []}
@@ -5390,41 +5918,73 @@ async def get_field_registry(request: Request):
 
 def _refresh_field_registry_internal() -> int:
     """Rebuild company_field_registry from templates table. Returns row count."""
-    SKIP = {"company", "company_name", "company_name_english", "company_registration_number",
-            "directors", "members", "shareholders", "registered_office", "registered_office_address",
-            "principal_activity", "status", "company_type",
-            "individual_shareholder_1_name", "individual_shareholder_2_name",
-            "corporate_shareholder_3_name", "shareholder_1_name", "shareholder_2_name",
-            "authorized_director_name", "director_name", "pronoun", "date", "meeting_location",
-            "financial_year_end_date", "next_financial_year_end_date",
-            "auditor_name", "auditor_fee"}
-    conn = get_db_conn(); conn.autocommit = True; cur = conn.cursor()
+    SKIP = {
+        "company",
+        "company_name",
+        "company_name_english",
+        "company_registration_number",
+        "directors",
+        "members",
+        "shareholders",
+        "registered_office",
+        "registered_office_address",
+        "principal_activity",
+        "status",
+        "company_type",
+        "individual_shareholder_1_name",
+        "individual_shareholder_2_name",
+        "corporate_shareholder_3_name",
+        "shareholder_1_name",
+        "shareholder_2_name",
+        "authorized_director_name",
+        "director_name",
+        "pronoun",
+        "date",
+        "meeting_location",
+        "financial_year_end_date",
+        "next_financial_year_end_date",
+        "auditor_name",
+        "auditor_fee",
+    }
+    conn = get_db_conn()
+    conn.autocommit = True
+    cur = conn.cursor()
     cur.execute("SELECT name, fields FROM templates WHERE fields IS NOT NULL")
     rows = cur.fetchall()
     registry: dict = {}
     for tname, fields in rows:
-        if not isinstance(fields, dict): continue
+        if not isinstance(fields, dict):
+            continue
         user_inputs = fields.get("user_input_fields") or []
         descs = fields.get("field_descriptions") or {}
         for f in user_inputs:
             fk = str(f).lower().replace(" ", "_").replace("-", "_")
-            if fk in SKIP: continue
+            if fk in SKIP:
+                continue
             desc = descs.get(f, "")
-            ft = "date" if "date" in fk else ("number" if any(x in fk for x in ("fee","amount","number","capital","share")) else "text")
+            ft = (
+                "date"
+                if "date" in fk
+                else ("number" if any(x in fk for x in ("fee", "amount", "number", "capital", "share")) else "text")
+            )
             if fk not in registry:
                 registry[fk] = {"label": f.replace("_", " ").title(), "desc": desc, "type": ft, "tpls": []}
             if tname not in registry[fk]["tpls"]:
                 registry[fk]["tpls"].append(tname)
     for fk, meta in registry.items():
-        cur.execute("""
+        cur.execute(
+            """
             INSERT INTO company_field_registry (field_key, label, description, field_type, used_by_templates, updated_at)
             VALUES (%s, %s, %s, %s, %s, NOW())
             ON CONFLICT (field_key) DO UPDATE SET
                 label = EXCLUDED.label, description = EXCLUDED.description,
                 field_type = EXCLUDED.field_type, used_by_templates = EXCLUDED.used_by_templates,
                 updated_at = NOW()
-        """, (fk, meta["label"], meta["desc"], meta["type"], meta["tpls"]))
-    cur.close(); conn.close()
+        """,
+            (fk, meta["label"], meta["desc"], meta["type"], meta["tpls"]),
+        )
+    cur.close()
+    conn.close()
     return len(registry)
 
 
@@ -5445,25 +6005,39 @@ async def refresh_field_registry(request: Request):
 @app.get("/api/dashboard/document-detail/{doc_id}")
 async def get_document_detail(doc_id: str, request: Request):
     """Return full document record incl custom_data + validation_result."""
-    user = get_current_user(request)
+    get_current_user(request)
     try:
         conn = get_db_conn()
         cur = conn.cursor()
-        cur.execute("""
+        cur.execute(
+            """
             SELECT id, template_name, company_name, file_name, file_path, download_url,
                    preview_url, validation_result, custom_data, version, created_at
             FROM documents WHERE id = %s
-        """, (int(doc_id),))
+        """,
+            (int(doc_id),),
+        )
         r = cur.fetchone()
-        cur.close(); conn.close()
+        cur.close()
+        conn.close()
         if not r:
             return {"success": False, "error": "Not found"}
-        return {"success": True, "data": {
-            "id": r[0], "template_name": r[1], "company_name": r[2],
-            "file_name": r[3], "file_path": r[4], "download_url": r[5],
-            "preview_url": r[6], "validation_result": r[7], "custom_data": r[8],
-            "version": r[9], "created_at": r[10].isoformat() if r[10] else None,
-        }}
+        return {
+            "success": True,
+            "data": {
+                "id": r[0],
+                "template_name": r[1],
+                "company_name": r[2],
+                "file_name": r[3],
+                "file_path": r[4],
+                "download_url": r[5],
+                "preview_url": r[6],
+                "validation_result": r[7],
+                "custom_data": r[8],
+                "version": r[9],
+                "created_at": r[10].isoformat() if r[10] else None,
+            },
+        }
     except Exception as e:
         return {"success": False, "error": str(e)}
 
@@ -5474,23 +6048,35 @@ async def get_document_detail(doc_id: str, request: Request):
 @app.get("/api/dashboard/document-history/{doc_name}")
 async def get_document_history(doc_name: str, request: Request):
     """Get version history for a document."""
-    import urllib.parse, os
-    from psycopg import connect
+    import urllib.parse
+
     doc_name = urllib.parse.unquote(doc_name)
-    user = get_current_user(request)
+    get_current_user(request)
     try:
         conn = get_db_conn()
         cur = conn.cursor()
-        cur.execute("""
+        cur.execute(
+            """
             SELECT version, file_name, generated_by_email, custom_data, created_at
             FROM document_versions
             WHERE document_name ILIKE %s OR template_name ILIKE %s
             ORDER BY created_at DESC LIMIT 20
-        """, (f"%{doc_name}%", f"%{doc_name}%"))
+        """,
+            (f"%{doc_name}%", f"%{doc_name}%"),
+        )
         rows = cur.fetchall()
-        cur.close(); conn.close()
-        versions = [{"version": r[0], "file_name": r[1], "generated_by": r[2],
-                     "custom_data": r[3], "created_at": r[4].isoformat() if r[4] else None} for r in rows]
+        cur.close()
+        conn.close()
+        versions = [
+            {
+                "version": r[0],
+                "file_name": r[1],
+                "generated_by": r[2],
+                "custom_data": r[3],
+                "created_at": r[4].isoformat() if r[4] else None,
+            }
+            for r in rows
+        ]
         return {"success": True, "versions": versions}
     except Exception as e:
         return {"success": False, "error": str(e)}
@@ -5511,15 +6097,14 @@ async def bulk_generate_documents(request: Request):
         if not template_name:
             return {"success": False, "error": "template_name required"}
 
-        import os
-        from psycopg import connect
         from scout.tools.smart_doc import create_smart_document_tool
 
         conn = get_db_conn()
         cur = conn.cursor()
         cur.execute("SELECT company_name_english FROM companies WHERE company_name_english IS NOT NULL")
         companies = [row[0] for row in cur.fetchall()]
-        cur.close(); conn.close()
+        cur.close()
+        conn.close()
 
         if not companies:
             return {"success": False, "error": "No companies in database"}
@@ -5531,10 +6116,21 @@ async def bulk_generate_documents(request: Request):
         for company in companies:
             try:
                 result = generate(template_name=template_name, company_name=company, custom_data={})
-                results.append({"company": company, "success": result.get("success", False),
-                               "file": result.get("file_name", ""), "error": result.get("error", "")})
-                log_activity(user.get("user_id"), user.get("email"), "bulk_generate",
-                           f"Generated {template_name} for {company}", "")
+                results.append(
+                    {
+                        "company": company,
+                        "success": result.get("success", False),
+                        "file": result.get("file_name", ""),
+                        "error": result.get("error", ""),
+                    }
+                )
+                log_activity(
+                    user.get("user_id"),
+                    user.get("email"),
+                    "bulk_generate",
+                    f"Generated {template_name} for {company}",
+                    "",
+                )
             except Exception as e:
                 results.append({"company": company, "success": False, "error": str(e)})
 
@@ -5542,9 +6138,6 @@ async def bulk_generate_documents(request: Request):
         return {"success": True, "message": f"Generated {success_count}/{len(companies)} documents", "results": results}
     except Exception as e:
         return {"success": False, "error": str(e)}
-
-
-
 
 
 @app.get("/api/documents/fill-view")
@@ -5556,6 +6149,7 @@ async def documents_fill_view(request: Request, template: str, company: str):
         raise HTTPException(status_code=401, detail="Not authenticated")
     try:
         from scout.tools.fill_view import build_fill_view
+
         return build_fill_view(template, company, "/documents")
     except Exception as e:
         logging.getLogger("legalscout").warning(f"fill-view failed: {e}")
@@ -5578,13 +6172,19 @@ async def documents_fill_generate(request: Request):
         if not isinstance(custom_data, dict):
             return {"success": False, "error": "custom_data must be an object"}
         from scout.tools.smart_doc import create_smart_document_tool
+
         tools = create_smart_document_tool("/documents", host=API_HOST)
         result = tools["generate_document"](
             template_name=template_name, company_name=company_name, custom_data=custom_data
         )
         if result.get("success"):
-            log_activity(user.get("user_id"), user.get("email"), "fill_generate",
-                         f"Generated {template_name} for {company_name} from fill-view", "")
+            log_activity(
+                user.get("user_id"),
+                user.get("email"),
+                "fill_generate",
+                f"Generated {template_name} for {company_name} from fill-view",
+                "",
+            )
         return result
     except Exception as e:
         logging.getLogger("legalscout").warning(f"fill-generate failed: {e}")
@@ -5596,6 +6196,7 @@ async def add_dashboard_company(request: Request):
     """Add a single company manually."""
     try:
         from scout.tools.knowledge_base import add_company
+
         user = get_current_user(request)
         body = await request.json()
 
@@ -5609,13 +6210,15 @@ async def add_dashboard_company(request: Request):
             creator_email = user.get("email", "unknown") if user else "unknown"
             # Track creator
             try:
-                from psycopg import connect as _ac
-                import os as _ao
                 _aconn = get_db_conn()
                 _acur = _aconn.cursor()
-                _acur.close(); _aconn.close()
-            except Exception: pass
-            log_activity(user.get("user_id") if user else None, creator_email, "add_company", f"Added: {company_name}", "")
+                _acur.close()
+                _aconn.close()
+            except Exception:
+                pass
+            log_activity(
+                user.get("user_id") if user else None, creator_email, "add_company", f"Added: {company_name}", ""
+            )
             clear_cache()  # Clear dashboard cache so list refreshes
             return {"success": True, "message": "Company added successfully"}
         return {"success": False, "error": result.get("error", "Failed to add company")}
@@ -5629,8 +6232,6 @@ async def delete_dashboard_company(request: Request, company_name: str):
     require_admin(request)
     try:
         import urllib.parse
-        import os
-        from psycopg import connect
 
         company_name = urllib.parse.unquote(company_name)
 
@@ -5658,23 +6259,21 @@ async def delete_dashboard_company(request: Request, company_name: str):
             # ★ Still a LIKE, and deliberately so — this one is a genuine substring
             # sweep over `source_file`. But the metacharacters are escaped now, or
             # deleting a company named '%' would empty the whole table.
-            _like_safe = (company_name.replace("\\", "\\\\")
-                                      .replace("%", "\\%")
-                                      .replace("_", "\\_"))
+            _like_safe = company_name.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
             cur.execute(
                 "DELETE FROM knowledge_lookup WHERE source_file ILIKE %s ESCAPE '\\'",
                 (f"%{_like_safe}%",),
             )
             cur.execute("DELETE FROM knowledge_vec WHERE source_file = %s", (f"company:{company_name}",))
-            try: cur.execute("DELETE FROM knowledge_raw WHERE source_file = %s", (f"company:{company_name}",))
-            except Exception: pass
+            with contextlib.suppress(Exception):
+                cur.execute("DELETE FROM knowledge_raw WHERE source_file = %s", (f"company:{company_name}",))
             for mem_table in ["agno_memories", "agno_learnings", "scout_learnings"]:
-                try: cur.execute(f"DELETE FROM {mem_table} WHERE content ILIKE %s", (f"%{company_name}%",))
-                except Exception: pass
-            try: cur.execute("DELETE FROM scout_knowledge WHERE content ILIKE %s", (f"%{company_name}%",))
-            except Exception: pass
-            try: cur.execute("DELETE FROM scout_knowledge_contents WHERE content ILIKE %s", (f"%{company_name}%",))
-            except Exception: pass
+                with contextlib.suppress(Exception):
+                    cur.execute(f"DELETE FROM {mem_table} WHERE content ILIKE %s", (f"%{company_name}%",))
+            with contextlib.suppress(Exception):
+                cur.execute("DELETE FROM scout_knowledge WHERE content ILIKE %s", (f"%{company_name}%",))
+            with contextlib.suppress(Exception):
+                cur.execute("DELETE FROM scout_knowledge_contents WHERE content ILIKE %s", (f"%{company_name}%",))
 
         # The company_people links went with the row (ON DELETE CASCADE), which
         # can leave sync-created people on the register belonging to nobody.
@@ -5694,17 +6293,16 @@ async def delete_dashboard_company(request: Request, company_name: str):
             clear_cache()  # Clear dashboard cache so list refreshes immediately
             invalidate_training(f"Company deleted: {company_name}")
             # Refresh agent's knowledge so it forgets this company
-            try:
-                from scout.agent import _build_template_knowledge
+            with contextlib.suppress(Exception):
                 _refresh_agent_knowledge()
-            except Exception: pass
             msg = f"Company '{company_name}' deleted. Re-training recommended."
             if pruned:
-                msg = (f"Company '{company_name}' deleted, plus {pruned} "
-                       f"{'person' if pruned == 1 else 'people'} left with no company. "
-                       "Re-training recommended.")
-            return {"success": True, "message": msg, "training_invalidated": True,
-                    "people_removed": pruned}
+                msg = (
+                    f"Company '{company_name}' deleted, plus {pruned} "
+                    f"{'person' if pruned == 1 else 'people'} left with no company. "
+                    "Re-training recommended."
+                )
+            return {"success": True, "message": msg, "training_invalidated": True, "people_removed": pruned}
 
         # Already gone — treat as done rather than an error. Deleting a row that
         # does not exist has the outcome the caller asked for, and reporting it
@@ -5723,26 +6321,25 @@ async def get_company_by_id(request: Request, company_id: int):
     """Get full company data by ID for editing."""
     get_current_user(request)
     try:
-        import os
-        from psycopg import connect
-
         conn = get_db_conn()
         cur = conn.cursor()
         cur.execute("SELECT * FROM companies WHERE id = %s", (company_id,))
         row = cur.fetchone()
         if not row:
-            cur.close(); conn.close()
+            cur.close()
+            conn.close()
             return {"success": False, "error": "Company not found"}
 
         cols = [desc[0] for desc in cur.description]
         company = {}
         for i, col in enumerate(cols):
             val = row[i]
-            if hasattr(val, 'isoformat'):
+            if hasattr(val, "isoformat"):
                 val = val.isoformat()
             company[col] = val
 
-        cur.close(); conn.close()
+        cur.close()
+        conn.close()
         return {"success": True, "data": company}
     except Exception as e:
         return {"success": False, "error": str(e)}
@@ -5754,6 +6351,7 @@ async def update_dashboard_company(request: Request, company_name: str, body: di
     require_admin(request)
     try:
         import urllib.parse
+
         from scout.tools.knowledge_base import add_company
 
         company_name = urllib.parse.unquote(company_name)
@@ -5783,7 +6381,7 @@ async def update_dashboard_company(request: Request, company_name: str, body: di
             # is a mistake, and answering it by creating a company hides that.
             return {"success": False, "error": f"Company '{company_name}' not found"}
 
-        stored = dict(zip(columns, row))
+        stored = dict(zip(columns, row, strict=False))
         stored_name = stored.get("company_name_english")
         stored_reg = stored.get("company_registration_number")
 
@@ -5811,7 +6409,7 @@ async def update_dashboard_company(request: Request, company_name: str, body: di
         result = add_company(body)
         if result.get("success"):
             _persist_company_source_pdf(body)
-            return {"success": True, "message": f"Company updated"}
+            return {"success": True, "message": "Company updated"}
         return {"success": False, "error": result.get("error", "Update failed")}
     except Exception as e:
         return {"success": False, "error": str(e)}
@@ -5833,12 +6431,16 @@ async def upload_dashboard_template(request: Request, file: UploadFile = File(..
 
         # Check if template already exists
         from scout.tools.template_analyzer import get_db_connection
+
         _check_conn = get_db_connection()
         _check_cur = _check_conn.cursor()
-        _check_cur.execute("SELECT id, total_fields, category, ai_trained, created_at FROM templates WHERE name = %s", (filename,))
+        _check_cur.execute(
+            "SELECT id, total_fields, category, ai_trained, created_at FROM templates WHERE name = %s", (filename,)
+        )
         existing = _check_cur.fetchone()
         if existing:
-            _check_cur.close(); _check_conn.close()
+            _check_cur.close()
+            _check_conn.close()
             return {
                 "success": False,
                 "error": f"Template '{filename}' already exists. Delete it first before re-uploading.",
@@ -5849,9 +6451,10 @@ async def upload_dashboard_template(request: Request, file: UploadFile = File(..
                     "category": existing[2] or "Unknown",
                     "trained": bool(existing[3]),
                     "uploaded_at": existing[4].isoformat() if existing[4] else None,
-                }
+                },
             }
-        _check_cur.close(); _check_conn.close()
+        _check_cur.close()
+        _check_conn.close()
 
         if len(content) > 50 * 1024 * 1024:  # 50MB limit
             return {"success": False, "error": "File too large (max 50MB)"}
@@ -5872,9 +6475,10 @@ async def upload_dashboard_template(request: Request, file: UploadFile = File(..
 
         # Quick: just extract placeholders and save to DB (no AI, no PDF)
         from scout.tools.template_analyzer import save_template_knowledge
+
         try:
-            from docx import Document as _UpDoc
             from scout.tools.smart_doc import extract_placeholders_from_template
+
             analysis = extract_placeholders_from_template(save_path)
             field_list = analysis.get("fields", [])
         except Exception:
@@ -5885,13 +6489,15 @@ async def upload_dashboard_template(request: Request, file: UploadFile = File(..
 
         # Track who uploaded
         try:
-            from psycopg import connect as _uc
-            import os as _uo
             _uconn = get_db_conn()
             _ucur = _uconn.cursor()
-            _ucur.close(); _uconn.close()
-        except Exception: pass
-        log_activity(user.get("user_id") if user else None, uploader_email, "upload_template", f"Uploaded: {filename}", "")
+            _ucur.close()
+            _uconn.close()
+        except Exception:
+            pass
+        log_activity(
+            user.get("user_id") if user else None, uploader_email, "upload_template", f"Uploaded: {filename}", ""
+        )
         clear_cache()  # Clear dashboard cache
 
         return {
@@ -5921,8 +6527,8 @@ async def get_template_pdf(request: Request, template_name: str, token: str = ""
     except Exception:
         return JSONResponse(status_code=401, content={"error": "Invalid token"})
 
-    import urllib.parse
     import subprocess
+    import urllib.parse
 
     template_name = urllib.parse.unquote(template_name)
     base_dir = Path("/documents/legal/templates").resolve()
@@ -5941,6 +6547,7 @@ async def get_template_pdf(request: Request, template_name: str, token: str = ""
     # If PDF doesn't exist or docx is newer, convert now (with yellow-highlighted placeholders)
     if not pdf_path.exists() or docx_path.stat().st_mtime > pdf_path.stat().st_mtime:
         import shutil
+
         if not shutil.which("libreoffice"):
             return {"error": "PDF conversion not available — LibreOffice not installed"}
         try:
@@ -5954,7 +6561,9 @@ async def get_template_pdf(request: Request, template_name: str, token: str = ""
 
             result = subprocess.run(
                 ["libreoffice", "--headless", "--convert-to", "pdf", "--outdir", str(pdf_dir), str(convert_source)],
-                capture_output=True, text=True, timeout=30
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
             # Rename highlighted PDF to expected name
             hl_pdf = pdf_dir / (convert_source.stem + ".pdf")
@@ -5972,6 +6581,7 @@ async def get_template_pdf(request: Request, template_name: str, token: str = ""
 
     if pdf_path.exists():
         from starlette.responses import Response
+
         pdf_bytes = pdf_path.read_bytes()
         return Response(content=pdf_bytes, media_type="application/pdf", headers={"Content-Disposition": "inline"})
     return {"error": "PDF not available — conversion may have failed"}
@@ -5991,8 +6601,8 @@ async def get_document_pdf(request: Request, doc_name: str, token: str = ""):
     except Exception:
         return JSONResponse(status_code=401, content={"error": "Invalid token"})
 
-    import urllib.parse
     import subprocess
+    import urllib.parse
 
     doc_name = urllib.parse.unquote(doc_name)
     output_base = Path("/documents/legal/output").resolve()
@@ -6016,13 +6626,16 @@ async def get_document_pdf(request: Request, doc_name: str, token: str = ""):
         try:
             subprocess.run(
                 ["libreoffice", "--headless", "--convert-to", "pdf", "--outdir", str(pdf_dir), str(docx_path)],
-                capture_output=True, text=True, timeout=30
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
         except Exception as e:
             logging.getLogger("legalscout").warning(f"preview-pdf convert failed for '{doc_name}': {e}")
 
     if pdf_path.exists():
         from starlette.responses import Response
+
         pdf_bytes = pdf_path.read_bytes()
         return Response(content=pdf_bytes, media_type="application/pdf", headers={"Content-Disposition": "inline"})
     return JSONResponse(status_code=502, content={"error": "Preview could not be generated for this document"})
@@ -6117,22 +6730,18 @@ def _persist_company_source_pdf(body: dict) -> None:
         cur = conn.cursor()
         if reg_no:
             cur.execute(
-                "UPDATE companies SET source_pdf_path = %s, updated_at = NOW() "
-                "WHERE company_registration_number = %s",
+                "UPDATE companies SET source_pdf_path = %s, updated_at = NOW() WHERE company_registration_number = %s",
                 (stored, reg_no),
             )
         else:
             cur.execute(
-                "UPDATE companies SET source_pdf_path = %s, updated_at = NOW() "
-                "WHERE company_name_english = %s",
+                "UPDATE companies SET source_pdf_path = %s, updated_at = NOW() WHERE company_name_english = %s",
                 (stored, name),
             )
         conn.commit()
         cur.close()
     except Exception as e:
-        logging.getLogger("legalscout").warning(
-            f"source PDF not recorded for '{name or reg_no}': {e}"
-        )
+        logging.getLogger("legalscout").warning(f"source PDF not recorded for '{name or reg_no}': {e}")
     finally:
         if conn is not None:
             conn.close()
@@ -6164,14 +6773,16 @@ async def upload_company_pdf(file: UploadFile = File(...)):
 # PDF Company Extract - AI-powered extraction
 # ---------------------------------------------------------------------------
 
+
 @app.post("/api/company/extract-pdf-stream")
 async def extract_company_from_pdf_stream(file: UploadFile = File(...)):
     """Streaming version of extract-pdf. Yields ND-JSON progress events."""
-    from fastapi.responses import StreamingResponse
     import asyncio
-    import tempfile
     import os
+    import tempfile
+
     import httpx
+    from fastapi.responses import StreamingResponse
 
     content = await file.read()
 
@@ -6185,15 +6796,18 @@ async def extract_company_from_pdf_stream(file: UploadFile = File(...)):
             await asyncio.sleep(0)
 
             if len(content) > 50 * 1024 * 1024:
-                yield evt("error", "File too large (max 50MB)"); return
+                yield evt("error", "File too large (max 50MB)")
+                return
 
             try:
                 import pdfplumber
             except ImportError:
-                yield evt("error", "pdfplumber not installed"); return
+                yield evt("error", "pdfplumber not installed")
+                return
 
             with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
-                tmp.write(content); tmp_path = tmp.name
+                tmp.write(content)
+                tmp_path = tmp.name
 
             # The saved file is the provenance for every field extracted below,
             # so the server names it — a client filename is not a path here.
@@ -6203,6 +6817,7 @@ async def extract_company_from_pdf_stream(file: UploadFile = File(...)):
 
             try:
                 from app.s3_storage import s3_upload_async
+
                 s3_upload_async(str(pdf_save_path))
             except Exception:
                 pass
@@ -6220,11 +6835,13 @@ async def extract_company_from_pdf_stream(file: UploadFile = File(...)):
             Path(tmp_path).unlink(missing_ok=True)
 
             if not full_text.strip():
-                yield evt("error", "Could not extract text from PDF"); return
+                yield evt("error", "Could not extract text from PDF")
+                return
 
             openrouter_key = os.getenv("OPENROUTER_API_KEY")
             if not openrouter_key:
-                yield evt("error", "OPENROUTER_API_KEY not set"); return
+                yield evt("error", "OPENROUTER_API_KEY not set")
+                return
 
             chat_model = get_model("training")
             yield evt("ai", f"Calling {chat_model} for structured extraction…")
@@ -6246,8 +6863,8 @@ async def extract_company_from_pdf_stream(file: UploadFile = File(...)):
                 # The member table lists individuals with their full identity, exactly
                 # like the officer table. Omitting those fields threw that identity
                 # away and made the same human look like two people on the register.
-                "For members[]: set type to \"Individual\" for a natural person or "
-                "\"Company\" for a body corporate — never leave type null. A member "
+                'For members[]: set type to "Individual" for a natural person or '
+                '"Company" for a body corporate — never leave type null. A member '
                 "with a registration_number is a Company; a member with an "
                 "N.R.C./Passport, date of birth or gender is an Individual, and you "
                 "MUST copy those identity fields across exactly as printed. "
@@ -6269,16 +6886,19 @@ async def extract_company_from_pdf_stream(file: UploadFile = File(...)):
                 t = r.json()["choices"][0]["message"]["content"].strip()
                 if t.startswith("```"):
                     t = t.split("```")[1]
-                    if t.startswith("json"): t = t[4:]
+                    t = t.removeprefix("json")
                     t = t.strip()
                 return t
 
             ai_text = await asyncio.to_thread(_call_llm, chat_model, extraction_prompt)
             yield evt("ai", f"AI returned {len(ai_text)} chars, parsing JSON…")
             extracted = json.loads(ai_text)
-            yield evt("ai", f"Extracted: {extracted.get('company_name_english') or 'unknown'} · "
-                            f"{len(extracted.get('directors') or [])} directors · "
-                            f"{len(extracted.get('members') or [])} members")
+            yield evt(
+                "ai",
+                f"Extracted: {extracted.get('company_name_english') or 'unknown'} · "
+                f"{len(extracted.get('directors') or [])} directors · "
+                f"{len(extracted.get('members') or [])} members",
+            )
 
             has_cid = "(cid:" in full_text
             if has_cid and not extracted.get("company_name_myanmar"):
@@ -6287,7 +6907,7 @@ async def extract_company_from_pdf_stream(file: UploadFile = File(...)):
                     cls_model = get_model("classification")
                     myanmar_prompt = (
                         f"This PDF text contains Myanmar/Burmese company name encoded as CID codes. "
-                        f"The English company name is: {extracted.get('company_name_english','Unknown')}. "
+                        f"The English company name is: {extracted.get('company_name_english', 'Unknown')}. "
                         f"Return ONLY the Myanmar name (Burmese script) or 'null'.\n\nTEXT:\n{full_text[:3000]}"
                     )
                     myanmar_text = (await asyncio.to_thread(_call_llm, cls_model, myanmar_prompt)).strip().strip('"')
@@ -6304,9 +6924,14 @@ async def extract_company_from_pdf_stream(file: UploadFile = File(...)):
             extracted["source_pdf_path"] = source_pdf_path
             extracted["pdf_url"] = f"/documents/legal/uploads/{stored_name}"
 
-            yield evt("done", "Extraction complete", success=True, data=extracted,
-                      pdf_url=f"/documents/legal/uploads/{stored_name}",
-                      source_pdf_path=source_pdf_path)
+            yield evt(
+                "done",
+                "Extraction complete",
+                success=True,
+                data=extracted,
+                pdf_url=f"/documents/legal/uploads/{stored_name}",
+                source_pdf_path=source_pdf_path,
+            )
         except json.JSONDecodeError as e:
             yield evt("error", f"AI returned invalid JSON: {e}", raw=(ai_text or "")[:500])
         except Exception as e:
@@ -6327,17 +6952,17 @@ async def reset_documents(request: Request):
         cur = conn.cursor()
         cur.execute("DELETE FROM documents")
         cur.execute("DELETE FROM document_versions")
-        count = cur.rowcount
-        conn.commit(); cur.close(); conn.close()
+        conn.commit()
+        cur.close()
+        conn.close()
 
-        import shutil
         output_dir = Path("/documents/legal/output")
         if output_dir.exists():
             for f in output_dir.glob("*.docx"):
                 f.unlink()
 
-        log_activity(user.get("user_id"), user.get("email"), "reset_documents", f"Deleted all documents", "")
-        return {"success": True, "message": f"All documents deleted"}
+        log_activity(user.get("user_id"), user.get("email"), "reset_documents", "Deleted all documents", "")
+        return {"success": True, "message": "All documents deleted"}
     except Exception as e:
         return {"success": False, "error": str(e)}
 
@@ -6349,15 +6974,25 @@ async def reset_chat(request: Request):
     try:
         conn = get_db_conn()
         cur = conn.cursor()
-        for t in ["agno_sessions", "agno_memories", "agno_learnings",
-                   "scout_knowledge", "scout_learnings", "scout_knowledge_contents"]:
+        for t in [
+            "agno_sessions",
+            "agno_memories",
+            "agno_learnings",
+            "scout_knowledge",
+            "scout_learnings",
+            "scout_knowledge_contents",
+        ]:
             try:
                 cur.execute(f"DELETE FROM {t}")
             except Exception:
                 conn.rollback()
-        conn.commit(); cur.close(); conn.close()
+        conn.commit()
+        cur.close()
+        conn.close()
 
-        log_activity(user.get("user_id"), user.get("email"), "reset_chat", "Deleted all chat sessions and AI memory", "")
+        log_activity(
+            user.get("user_id"), user.get("email"), "reset_chat", "Deleted all chat sessions and AI memory", ""
+        )
         return {"success": True, "message": "All chat sessions, AI memory, and learnings deleted"}
     except Exception as e:
         return {"success": False, "error": str(e)}
@@ -6373,7 +7008,9 @@ async def reset_companies(request: Request):
         cur.execute("DELETE FROM knowledge_lookup")
         cur.execute("DELETE FROM knowledge_raw")
         cur.execute("DELETE FROM companies")
-        conn.commit(); cur.close(); conn.close()
+        conn.commit()
+        cur.close()
+        conn.close()
 
         invalidate_training("All companies deleted")
         log_activity(user.get("user_id"), user.get("email"), "reset_companies", "Deleted all companies", "")
@@ -6401,6 +7038,7 @@ async def set_tz(request: Request):
         tz = body.get("timezone", "Asia/Yangon")
         # Validate timezone
         import zoneinfo
+
         zoneinfo.ZoneInfo(tz)  # throws if invalid
         save_timezone(tz)
         log_activity(user.get("user_id"), user.get("email"), "set_timezone", f"Timezone: {tz}", "")
@@ -6414,7 +7052,10 @@ async def test_model(request: Request):
     """Test if a model works by sending a simple prompt."""
     require_admin(request)
     try:
-        import httpx, time as _t
+        import time as _t
+
+        import httpx
+
         body = await request.json()
         model = body.get("model", "")
         purpose = body.get("purpose", "chat")
@@ -6446,14 +7087,19 @@ async def test_model(request: Request):
                 headers={"Authorization": f"Bearer {openrouter_key}", "Content-Type": "application/json"},
                 # 20 tokens cannot cover a reasoning model's thinking, so the
                 # probe reported "(empty response)" for a perfectly healthy model.
-                json={"model": model, "messages": [{"role": "user", "content": "Say OK"}], "max_tokens": 400, "temperature": 0},
+                json={
+                    "model": model,
+                    "messages": [{"role": "user", "content": "Say OK"}],
+                    "max_tokens": 400,
+                    "temperature": 0,
+                },
                 timeout=15,
             )
             res.raise_for_status()
             data = res.json()
             reply = (data["choices"][0]["message"].get("content") or "").strip() or "(empty response)"
             elapsed = round((_t.time() - start) * 1000)
-            result = {"success": True, "message": f"Working — replied \"{reply}\", {elapsed}ms", "time_ms": elapsed}
+            result = {"success": True, "message": f'Working — replied "{reply}", {elapsed}ms', "time_ms": elapsed}
 
         # Save test result to DB
         try:
@@ -6461,9 +7107,29 @@ async def test_model(request: Request):
             _tcur = _tconn.cursor()
             _tcur.execute(
                 "INSERT INTO app_settings (key, value) VALUES (%s, %s) ON CONFLICT (key) DO UPDATE SET value = %s, updated_at = CURRENT_TIMESTAMP",
-                (f"model_test_{purpose}", json.dumps({"model": model, "ok": result["success"], "msg": result.get("message", result.get("error","")), "time": datetime.now().isoformat()}),
-                 json.dumps({"model": model, "ok": result["success"], "msg": result.get("message", result.get("error","")), "time": datetime.now().isoformat()})))
-            _tconn.commit(); _tcur.close(); _tconn.close()
+                (
+                    f"model_test_{purpose}",
+                    json.dumps(
+                        {
+                            "model": model,
+                            "ok": result["success"],
+                            "msg": result.get("message", result.get("error", "")),
+                            "time": datetime.now().isoformat(),
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "model": model,
+                            "ok": result["success"],
+                            "msg": result.get("message", result.get("error", "")),
+                            "time": datetime.now().isoformat(),
+                        }
+                    ),
+                ),
+            )
+            _tconn.commit()
+            _tcur.close()
+            _tconn.close()
         except Exception as e:
             logging.getLogger("legalscout").warning(f"Model test log failed: {e}")
 
@@ -6527,8 +7193,7 @@ async def sync_to_s3(request: Request):
     user = require_admin(request)
     result = s3_sync_all()
     if result.get("success"):
-        log_activity(user.get("user_id"), user.get("email"), "s3_sync",
-                     f"Synced {result.get('synced', 0)} files", "")
+        log_activity(user.get("user_id"), user.get("email"), "s3_sync", f"Synced {result.get('synced', 0)} files", "")
     return result
 
 
@@ -6545,7 +7210,6 @@ async def get_model_tests(request: Request):
     """Get saved model test results."""
     require_admin(request)
     try:
-        from psycopg import connect
         conn = get_db_conn()
         cur = conn.cursor()
         cur.execute("SELECT key, value FROM app_settings WHERE key LIKE 'model_test_%'")
@@ -6554,7 +7218,8 @@ async def get_model_tests(request: Request):
             purpose = row[0].replace("model_test_", "")
             data = json.loads(row[1]) if isinstance(row[1], str) else row[1]
             results[purpose] = data
-        cur.close(); conn.close()
+        cur.close()
+        conn.close()
         return {"success": True, "tests": results}
     except Exception:
         return {"success": True, "tests": {}}
@@ -6585,8 +7250,8 @@ async def get_changelog():
     Parsed server-side so no markdown library ships in the bundle. The format is
     fixed and ours: `## [x.y.z] — date`, `### Section`, `- item`.
     """
-    from pathlib import Path
     import re as _re
+    from pathlib import Path
 
     cf = Path("/app/CHANGELOG.md")
     if not cf.exists():
@@ -6609,8 +7274,12 @@ async def get_changelog():
         line = raw.rstrip()
         m = _re.match(r"^##\s+\[([^\]]+)\]\s*[—-]\s*(.+)$", line)
         if m:
-            cur = {"version": m.group(1).strip(), "date": m.group(2).strip(),
-                   "running": m.group(1).strip() == running, "sections": []}
+            cur = {
+                "version": m.group(1).strip(),
+                "date": m.group(2).strip(),
+                "running": m.group(1).strip() == running,
+                "sections": [],
+            }
             versions.append(cur)
             sec = None
             continue
@@ -6629,9 +7298,8 @@ async def get_changelog():
             sec["items"].append(_inline(m.group(1)))
             continue
         # a wrapped continuation of the previous bullet
-        if sec and sec["items"] and line.startswith(("  ", "\t")) and line.strip():
-            if not line.strip().startswith("|"):
-                sec["items"][-1] = (sec["items"][-1] + " " + _inline(line)).strip()
+        if sec and sec["items"] and line.startswith(("  ", "\t")) and line.strip() and not line.strip().startswith("|"):
+            sec["items"][-1] = (sec["items"][-1] + " " + _inline(line)).strip()
 
     return {"success": True, "running": running, "versions": versions}
 
@@ -6640,6 +7308,7 @@ async def get_changelog():
 async def get_version():
     """Get app version."""
     from pathlib import Path
+
     version = "unknown"
     vf = Path("/app/VERSION")
     if vf.exists():
@@ -6652,6 +7321,7 @@ async def set_log_level(request: Request):
     """Change log level at runtime without restart."""
     user = require_admin(request)
     import logging
+
     body = await request.json()
     level = body.get("level", "INFO").upper()
     if level not in ("DEBUG", "INFO", "WARNING", "ERROR"):
@@ -6686,13 +7356,13 @@ async def update_models(request: Request):
         save_models(cleaned)
         clear_model_cache()
 
-        log_activity(user.get("user_id"), user.get("email"), "update_models",
-                     f"Models updated: {cleaned}", "")
+        log_activity(user.get("user_id"), user.get("email"), "update_models", f"Models updated: {cleaned}", "")
 
         # Hot-reload agent model
         try:
             if "chat" in cleaned:
                 from agno.models.openai import OpenAIChat as _OAC
+
                 new_model = cleaned["chat"]
                 scout.model = _OAC(
                     id=new_model,
@@ -6721,43 +7391,62 @@ async def get_activity(request: Request, days: int = 30, limit: int = 200):
     """Get system activity for dashboard — logins, uploads, training, generation, etc."""
     require_admin(request)
     try:
-        from psycopg import connect
-        import os
         conn = get_db_conn()
         cur = conn.cursor()
 
         # Recent activity logs
-        cur.execute("""
+        cur.execute(
+            """
             SELECT id, user_email, action, details, ip_address, created_at
             FROM activity_logs
             WHERE created_at > NOW() - INTERVAL '%s days'
             ORDER BY created_at DESC LIMIT %s
-        """, (days, limit))
-        logs = [{"id": r[0], "user": r[1] or "system", "action": r[2], "details": r[3] or "",
-                 "ip": r[4] or "", "time": r[5].isoformat() if r[5] else None} for r in cur.fetchall()]
+        """,
+            (days, limit),
+        )
+        logs = [
+            {
+                "id": r[0],
+                "user": r[1] or "system",
+                "action": r[2],
+                "details": r[3] or "",
+                "ip": r[4] or "",
+                "time": r[5].isoformat() if r[5] else None,
+            }
+            for r in cur.fetchall()
+        ]
 
         # Activity by action type (for chart)
-        cur.execute("""
+        cur.execute(
+            """
             SELECT action, COUNT(*) FROM activity_logs
             WHERE created_at > NOW() - INTERVAL '%s days'
             GROUP BY action ORDER BY count DESC
-        """, (days,))
+        """,
+            (days,),
+        )
         by_action = {r[0]: r[1] for r in cur.fetchall()}
 
         # Activity by day (for timeline chart)
-        cur.execute("""
+        cur.execute(
+            """
             SELECT DATE(created_at) as day, COUNT(*) FROM activity_logs
             WHERE created_at > NOW() - INTERVAL '%s days'
             GROUP BY day ORDER BY day
-        """, (days,))
+        """,
+            (days,),
+        )
         by_day = [{"date": r[0].isoformat(), "count": r[1]} for r in cur.fetchall()]
 
         # Activity by user (for user chart)
-        cur.execute("""
+        cur.execute(
+            """
             SELECT COALESCE(user_email, 'system'), COUNT(*) FROM activity_logs
             WHERE created_at > NOW() - INTERVAL '%s days'
             GROUP BY user_email ORDER BY count DESC LIMIT 10
-        """, (days,))
+        """,
+            (days,),
+        )
         by_user = {r[0]: r[1] for r in cur.fetchall()}
 
         # Recent documents
@@ -6765,25 +7454,25 @@ async def get_activity(request: Request, days: int = 30, limit: int = 200):
             SELECT template_name, company_name, file_name, created_at
             FROM documents ORDER BY created_at DESC LIMIT 10
         """)
-        recent_docs = [{"template": r[0], "company": r[1], "file": r[2],
-                        "time": r[3].isoformat() if r[3] else None}
-                       for r in cur.fetchall()]
+        recent_docs = [
+            {"template": r[0], "company": r[1], "file": r[2], "time": r[3].isoformat() if r[3] else None}
+            for r in cur.fetchall()
+        ]
 
         # Recent templates
         cur.execute("""
             SELECT name, created_at FROM templates ORDER BY created_at DESC LIMIT 10
         """)
-        recent_templates = [{"name": r[0],
-                            "time": r[1].isoformat() if r[1] else None} for r in cur.fetchall()]
+        recent_templates = [{"name": r[0], "time": r[1].isoformat() if r[1] else None} for r in cur.fetchall()]
 
         # Recent companies
         cur.execute("""
             SELECT company_name_english, created_at FROM companies ORDER BY created_at DESC LIMIT 10
         """)
-        recent_companies = [{"name": r[0],
-                            "time": r[1].isoformat() if r[1] else None} for r in cur.fetchall()]
+        recent_companies = [{"name": r[0], "time": r[1].isoformat() if r[1] else None} for r in cur.fetchall()]
 
-        cur.close(); conn.close()
+        cur.close()
+        conn.close()
 
         return {
             "success": True,
@@ -6798,7 +7487,7 @@ async def get_activity(request: Request, days: int = 30, limit: int = 200):
                 "documents": recent_docs,
                 "templates": recent_templates,
                 "companies": recent_companies,
-            }
+            },
         }
     except Exception as e:
         return {"success": False, "error": str(e)}
@@ -6812,24 +7501,35 @@ async def get_email_logs(request: Request, limit: int = 100):
     """Get all sent email logs."""
     require_admin(request)
     try:
-        from psycopg import connect
-        import os
         conn = get_db_conn()
         cur = conn.cursor()
-        cur.execute("""
+        cur.execute(
+            """
             SELECT id, to_email, subject, body, attachment_name, attachment_path,
                    sent_by_email, status, error_message, created_at
             FROM email_logs ORDER BY created_at DESC LIMIT %s
-        """, (limit,))
-        emails = [{
-            "id": r[0], "to": r[1], "subject": r[2], "body": r[3],
-            "attachment": r[4], "attachment_path": r[5],
-            "sent_by": r[6] or "unknown", "status": r[7],
-            "error": r[8], "time": r[9].isoformat() if r[9] else None,
-        } for r in cur.fetchall()]
-        cur.close(); conn.close()
+        """,
+            (limit,),
+        )
+        emails = [
+            {
+                "id": r[0],
+                "to": r[1],
+                "subject": r[2],
+                "body": r[3],
+                "attachment": r[4],
+                "attachment_path": r[5],
+                "sent_by": r[6] or "unknown",
+                "status": r[7],
+                "error": r[8],
+                "time": r[9].isoformat() if r[9] else None,
+            }
+            for r in cur.fetchall()
+        ]
+        cur.close()
+        conn.close()
         return {"success": True, "emails": emails, "total": len(emails)}
-    except Exception as e:
+    except Exception:
         return {"success": True, "emails": [], "total": 0}
 
 
@@ -6842,7 +7542,9 @@ async def reset_templates(request: Request):
         cur = conn.cursor()
         cur.execute("DELETE FROM templates")
         cur.execute("DELETE FROM template_versions")
-        conn.commit(); cur.close(); conn.close()
+        conn.commit()
+        cur.close()
+        conn.close()
 
         templates_dir = Path("/documents/legal/templates")
         if templates_dir.exists():
@@ -6860,7 +7562,7 @@ async def reset_templates(request: Request):
 @app.post("/api/admin/reset/all")
 async def reset_all(request: Request):
     """Delete ALL data — companies, documents, knowledge. Templates are preserved."""
-    user = require_admin(request)
+    require_admin(request)
     try:
         conn = get_db_conn()
         cur = conn.cursor()
@@ -6874,20 +7576,31 @@ async def reset_all(request: Request):
         cur.execute("DELETE FROM activity_logs")
         cur.execute("DELETE FROM training_status")
         # Chat sessions & AI memory
-        for t in ["agno_sessions", "agno_memories", "agno_learnings",
-                   "scout_knowledge", "scout_learnings", "scout_knowledge_contents"]:
+        for t in [
+            "agno_sessions",
+            "agno_memories",
+            "agno_learnings",
+            "scout_knowledge",
+            "scout_learnings",
+            "scout_knowledge_contents",
+        ]:
             try:
                 cur.execute(f"DELETE FROM {t}")
             except Exception:
                 conn.rollback()
-        conn.commit(); cur.close(); conn.close()
+        conn.commit()
+        cur.close()
+        conn.close()
 
         output_dir = Path("/documents/legal/output")
         if output_dir.exists():
             for f in output_dir.glob("*.docx"):
                 f.unlink()
 
-        return {"success": True, "message": "All data deleted (documents, companies, knowledge, chat sessions, AI memory). Templates preserved."}
+        return {
+            "success": True,
+            "message": "All data deleted (documents, companies, knowledge, chat sessions, AI memory). Templates preserved.",
+        }
     except Exception as e:
         return {"success": False, "error": str(e)}
 
@@ -6907,24 +7620,64 @@ async def restore_backup(request: Request, file: UploadFile = File(...)):
 
         # Restore order matters — tables with foreign keys last
         restore_tables = [
-            ("companies", ["company_name_english", "company_registration_number", "company_type",
-                          "registered_office_address", "principal_place_of_business", "directors",
-                          "total_shares_issued", "currency_of_share_capital", "members",
-                          "total_capital", "source"]),
+            (
+                "companies",
+                [
+                    "company_name_english",
+                    "company_registration_number",
+                    "company_type",
+                    "registered_office_address",
+                    "principal_place_of_business",
+                    "directors",
+                    "total_shares_issued",
+                    "currency_of_share_capital",
+                    "members",
+                    "total_capital",
+                    "source",
+                ],
+            ),
             ("knowledge_lookup", ["key_name", "key_value", "source_file"]),
             ("knowledge_raw", ["source_file", "file_type", "sheet_name", "row_number", "data"]),
             ("training_status", ["training_type", "last_trained", "record_count", "status", "logs"]),
-            ("documents", ["template_name", "company_name", "file_name", "file_path", "download_url",
-                          "validation_result", "custom_data", "version"]),
-            ("document_versions", ["document_name", "company_name", "template_name", "version",
-                                  "file_name", "file_path", "generated_by_email", "custom_data"]),
+            (
+                "documents",
+                [
+                    "template_name",
+                    "company_name",
+                    "file_name",
+                    "file_path",
+                    "download_url",
+                    "validation_result",
+                    "custom_data",
+                    "version",
+                ],
+            ),
+            (
+                "document_versions",
+                [
+                    "document_name",
+                    "company_name",
+                    "template_name",
+                    "version",
+                    "file_name",
+                    "file_path",
+                    "generated_by_email",
+                    "custom_data",
+                ],
+            ),
             ("activity_logs", ["user_email", "action", "details", "ip_address"]),
             ("app_settings", ["key", "value", "updated_by"]),
         ]
 
         # Agno tables (simple key-value style, restore if present)
-        agno_tables = ["agno_sessions", "agno_memories", "agno_learnings",
-                       "scout_knowledge", "scout_learnings", "scout_knowledge_contents"]
+        agno_tables = [
+            "agno_sessions",
+            "agno_memories",
+            "agno_learnings",
+            "scout_knowledge",
+            "scout_learnings",
+            "scout_knowledge_contents",
+        ]
 
         for table_name, columns in restore_tables:
             rows = backup.get(table_name, [])
@@ -6951,8 +7704,7 @@ async def restore_backup(request: Request, file: UploadFile = File(...)):
 
                 try:
                     cur.execute(
-                        f"INSERT INTO {table_name} ({col_names}) VALUES ({placeholders}) ON CONFLICT DO NOTHING",
-                        values
+                        f"INSERT INTO {table_name} ({col_names}) VALUES ({placeholders}) ON CONFLICT DO NOTHING", values
                     )
                     count += 1
                 except Exception:
@@ -6962,7 +7714,16 @@ async def restore_backup(request: Request, file: UploadFile = File(...)):
 
         # Restore agno tables with column whitelist to prevent SQL injection
         AGNO_SAFE_COLUMNS = {
-            "agno_sessions": {"session_id", "agent_id", "user_id", "memory", "agent_data", "session_data", "created_at", "updated_at"},
+            "agno_sessions": {
+                "session_id",
+                "agent_id",
+                "user_id",
+                "memory",
+                "agent_data",
+                "session_data",
+                "created_at",
+                "updated_at",
+            },
             "agno_memories": {"id", "user_id", "memory", "topics", "created_at", "updated_at"},
             "agno_learnings": {"id", "user_id", "learning", "topics", "created_at", "updated_at"},
             "scout_learnings": {"id", "user_id", "learning", "topics", "created_at", "updated_at"},
@@ -6977,7 +7738,7 @@ async def restore_backup(request: Request, file: UploadFile = File(...)):
             safe_cols_set = AGNO_SAFE_COLUMNS.get(table_name, set())
             count = 0
             for row in rows:
-                cols = [k for k in row.keys() if k != "id" and k in safe_cols_set and _safe_col_re.match(k)]
+                cols = [k for k in row if k != "id" and k in safe_cols_set and _safe_col_re.match(k)]
                 if not cols:
                     continue
                 values = []
@@ -6989,19 +7750,26 @@ async def restore_backup(request: Request, file: UploadFile = File(...)):
                 placeholders = ", ".join(["%s"] * len(cols))
                 col_names = ", ".join(cols)
                 try:
-                    cur.execute(f"INSERT INTO {table_name} ({col_names}) VALUES ({placeholders}) ON CONFLICT DO NOTHING", values)
+                    cur.execute(
+                        f"INSERT INTO {table_name} ({col_names}) VALUES ({placeholders}) ON CONFLICT DO NOTHING", values
+                    )
                     count += 1
                 except Exception:
                     conn.rollback()
             restored[table_name] = count
 
-        conn.commit(); cur.close(); conn.close()
+        conn.commit()
+        cur.close()
+        conn.close()
 
-        log_activity(user.get("user_id"), user.get("email"), "restore_backup",
-                     f"Restored: {restored}", "")
+        log_activity(user.get("user_id"), user.get("email"), "restore_backup", f"Restored: {restored}", "")
 
         total = sum(restored.values())
-        return {"success": True, "message": f"Restored {total} records across {len(restored)} tables", "details": restored}
+        return {
+            "success": True,
+            "message": f"Restored {total} records across {len(restored)} tables",
+            "details": restored,
+        }
     except json.JSONDecodeError:
         return {"success": False, "error": "Invalid JSON file"}
     except Exception as e:
@@ -7131,12 +7899,19 @@ async def list_legal_skills(request: Request):
         """)
         rows = cur.fetchall()
         cur.close()
-        skills = [{
-            "id": r[0], "name": r[1], "description": r[2], "version": r[3],
-            "enabled": r[4], "source": r[5],
-            "updated_at": r[6].isoformat() if r[6] else None,
-            "body_chars": r[7] or 0,
-        } for r in rows]
+        skills = [
+            {
+                "id": r[0],
+                "name": r[1],
+                "description": r[2],
+                "version": r[3],
+                "enabled": r[4],
+                "source": r[5],
+                "updated_at": r[6].isoformat() if r[6] else None,
+                "body_chars": r[7] or 0,
+            }
+            for r in rows
+        ]
         return {"success": True, "skills": skills, "count": len(skills)}
     except Exception as e:
         return {"success": False, "error": str(e)}
@@ -7155,19 +7930,30 @@ async def get_legal_skill(name: str, request: Request):
     try:
         conn = get_db_conn()
         cur = conn.cursor()
-        cur.execute("""
+        cur.execute(
+            """
             SELECT id, name, description, body, version, enabled, source, updated_at
             FROM legal_skills WHERE name = %s
-        """, (name,))
+        """,
+            (name,),
+        )
         row = cur.fetchone()
         cur.close()
         if not row:
             raise HTTPException(status_code=404, detail="Skill not found")
-        return {"success": True, "skill": {
-            "id": row[0], "name": row[1], "description": row[2], "body": row[3],
-            "version": row[4], "enabled": row[5], "source": row[6],
-            "updated_at": row[7].isoformat() if row[7] else None,
-        }}
+        return {
+            "success": True,
+            "skill": {
+                "id": row[0],
+                "name": row[1],
+                "description": row[2],
+                "body": row[3],
+                "version": row[4],
+                "enabled": row[5],
+                "source": row[6],
+                "updated_at": row[7].isoformat() if row[7] else None,
+            },
+        }
     except HTTPException:
         raise
     except Exception as e:
@@ -7200,13 +7986,17 @@ async def create_legal_skill(request: Request):
         if cur.fetchone():
             cur.close()
             return {"success": False, "error": f"Skill '{name}' already exists."}
-        cur.execute("""
+        cur.execute(
+            """
             INSERT INTO legal_skills (name, description, body, source)
             VALUES (%s, %s, %s, 'manual')
             RETURNING id
-        """, (name, description, skill_body))
+        """,
+            (name, description, skill_body),
+        )
         new_id = cur.fetchone()[0]
-        conn.commit(); cur.close()
+        conn.commit()
+        cur.close()
         _refresh_legal_skills()
         log_activity(user.get("user_id"), user.get("email"), "create_skill", f"Created skill {name}", "")
         return {"success": True, "id": new_id, "name": name}
@@ -7238,16 +8028,19 @@ async def update_legal_skill(name: str, request: Request):
             desc = (body.get("description") or "").strip()
             if not desc:
                 return {"success": False, "error": "Description cannot be empty."}
-            fields.append("description = %s"); params.append(desc)
+            fields.append("description = %s")
+            params.append(desc)
         if "body" in body:
             new_body = body.get("body") or ""
             if not new_body.strip():
                 return {"success": False, "error": "Body cannot be empty."}
             _reject_unknown_skill_tools(new_body, name)
-            fields.append("body = %s"); params.append(new_body)
+            fields.append("body = %s")
+            params.append(new_body)
         if "version" in body:
             ver = (body.get("version") or "").strip()[:16]
-            fields.append("version = %s"); params.append(ver)
+            fields.append("version = %s")
+            params.append(ver)
         if not fields:
             return {"success": False, "error": "Nothing to update."}
         fields.append("updated_at = now()")
@@ -7262,7 +8055,8 @@ async def update_legal_skill(name: str, request: Request):
         if not row:
             cur.close()
             raise HTTPException(status_code=404, detail="Skill not found")
-        conn.commit(); cur.close()
+        conn.commit()
+        cur.close()
         _refresh_legal_skills()
         log_activity(user.get("user_id"), user.get("email"), "update_skill", f"Updated skill {name}", "")
         return {"success": True, "name": name}
@@ -7293,7 +8087,8 @@ async def toggle_legal_skill(name: str, request: Request):
         if not row:
             cur.close()
             raise HTTPException(status_code=404, detail="Skill not found")
-        conn.commit(); cur.close()
+        conn.commit()
+        cur.close()
         _refresh_legal_skills()
         log_activity(user.get("user_id"), user.get("email"), "toggle_skill", f"Skill {name} enabled={row[0]}", "")
         return {"success": True, "name": name, "enabled": row[0]}
@@ -7324,9 +8119,13 @@ async def delete_legal_skill(name: str, request: Request):
             raise HTTPException(status_code=404, detail="Skill not found")
         if row[0] != "manual":
             cur.close()
-            return {"success": False, "error": f"Skill '{name}' (source={row[0]}) cannot be deleted — disable it instead."}
+            return {
+                "success": False,
+                "error": f"Skill '{name}' (source={row[0]}) cannot be deleted — disable it instead.",
+            }
         cur.execute("DELETE FROM legal_skills WHERE name = %s", (name,))
-        conn.commit(); cur.close()
+        conn.commit()
+        cur.close()
         _refresh_legal_skills()
         log_activity(user.get("user_id"), user.get("email"), "delete_skill", f"Deleted skill {name}", "")
         return {"success": True, "name": name}
@@ -7397,7 +8196,7 @@ async def list_queued_emails(request: Request):
         }
     except Exception as e:
         logging.getLogger("legalscout").error(f"Listing queued emails failed: {e}")
-        raise HTTPException(status_code=500, detail="Could not list queued emails")
+        raise HTTPException(status_code=500, detail="Could not list queued emails") from e
     finally:
         if conn:
             conn.close()
@@ -7427,14 +8226,19 @@ async def discard_queued_email(email_id: int, request: Request):
         cur.close()
         if not row:
             raise HTTPException(status_code=404, detail="No such queued email")
-        log_activity(user.get("user_id"), user.get("email", "unknown"),
-                     "email_discarded", f"Discarded queued email #{email_id} to {row[0]}", "")
+        log_activity(
+            user.get("user_id"),
+            user.get("email", "unknown"),
+            "email_discarded",
+            f"Discarded queued email #{email_id} to {row[0]}",
+            "",
+        )
         return {"success": True, "discarded": email_id}
     except HTTPException:
         raise
     except Exception as e:
         logging.getLogger("legalscout").error(f"Discarding email {email_id} failed: {e}")
-        raise HTTPException(status_code=500, detail="Could not discard the email")
+        raise HTTPException(status_code=500, detail="Could not discard the email") from e
     finally:
         if conn:
             conn.close()
@@ -7481,7 +8285,7 @@ async def send_queued_email(email_id: int, request: Request):
         logging.getLogger("legalscout").error(f"Claiming email {email_id} failed: {e}")
         if conn:
             conn.close()
-        raise HTTPException(status_code=500, detail="Could not send the email")
+        raise HTTPException(status_code=500, detail="Could not send the email") from e
 
     def _finish(status: str, error: str = ""):
         try:
@@ -7494,16 +8298,16 @@ async def send_queued_email(email_id: int, request: Request):
             c.commit()
             k.close()
             c.close()
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             logging.getLogger("legalscout").error(f"Recording email {email_id} outcome failed: {e}")
 
     try:
         import os
         import smtplib
-        from email.mime.text import MIMEText
-        from email.mime.multipart import MIMEMultipart
-        from email.mime.base import MIMEBase
         from email import encoders
+        from email.mime.base import MIMEBase
+        from email.mime.multipart import MIMEMultipart
+        from email.mime.text import MIMEText
 
         full_path = None
         if attachment_path:
@@ -7513,9 +8317,7 @@ async def send_queued_email(email_id: int, request: Request):
             output_base = Path("/documents/legal/output").resolve()
             templates_base = Path("/documents/legal/templates").resolve()
             candidate = Path(attachment_path).resolve()
-            inside = str(candidate).startswith(str(output_base)) or str(
-                candidate
-            ).startswith(str(templates_base))
+            inside = str(candidate).startswith(str(output_base)) or str(candidate).startswith(str(templates_base))
             if not inside or not candidate.exists():
                 _finish("failed", f"Attachment outside the documents directory or missing: {attachment_path}")
                 return {"success": False, "error": "The attachment is no longer available."}
@@ -7559,13 +8361,16 @@ async def send_queued_email(email_id: int, request: Request):
             server.send_message(msg)
 
         _finish("sent")
-        log_activity(user.get("user_id"), approver, "email_approved_and_sent",
-                     f"Sent queued email #{email_id} to {to_email}"
-                     + (f" with {attachment_name}" if attachment_name else ""), "")
+        log_activity(
+            user.get("user_id"),
+            approver,
+            "email_approved_and_sent",
+            f"Sent queued email #{email_id} to {to_email}" + (f" with {attachment_name}" if attachment_name else ""),
+            "",
+        )
         return {
             "success": True,
-            "message": f"Sent to {to_email}"
-            + (f" with {attachment_name} attached" if attachment_name else ""),
+            "message": f"Sent to {to_email}" + (f" with {attachment_name} attached" if attachment_name else ""),
         }
     except Exception as e:
         # 'failed', not back to 'queued'. SMTP may have accepted the message
@@ -7623,7 +8428,7 @@ async def record_message_feedback(request: Request):
     try:
         body = await request.json()
     except Exception:
-        raise HTTPException(status_code=400, detail="Body must be JSON")
+        raise HTTPException(status_code=400, detail="Body must be JSON") from None
 
     # ★ Required, though the client types it `string|null`. A vote with no
     # session can never be read back — GET is keyed on session_id — so storing
@@ -7663,7 +8468,7 @@ async def record_message_feedback(request: Request):
         try:
             message_index = int(raw_index)
         except (TypeError, ValueError):
-            raise HTTPException(status_code=400, detail="message_index must be an integer")
+            raise HTTPException(status_code=400, detail="message_index must be an integer") from None
         if message_index < 0:
             raise HTTPException(status_code=400, detail="message_index must not be negative")
 
@@ -7727,7 +8532,7 @@ async def record_message_feedback(request: Request):
         raise
     except Exception as e:
         logging.getLogger("legalscout").error(f"Recording message feedback failed: {e}")
-        raise HTTPException(status_code=500, detail="Could not record the feedback")
+        raise HTTPException(status_code=500, detail="Could not record the feedback") from e
     finally:
         if conn:
             conn.close()
@@ -7791,7 +8596,7 @@ async def list_message_feedback(request: Request):
         raise
     except Exception as e:
         logging.getLogger("legalscout").error(f"Listing message feedback failed: {e}")
-        raise HTTPException(status_code=500, detail="Could not list the feedback")
+        raise HTTPException(status_code=500, detail="Could not list the feedback") from e
     finally:
         if conn:
             conn.close()
@@ -7811,13 +8616,12 @@ async def list_message_feedback(request: Request):
 async def generate_company_extract(company_id: int, request: Request):
     """Generate a DICA-style Company Extract PDF from company data."""
     try:
-        import os, json
-        from psycopg import connect
         from starlette.responses import Response
 
         conn = get_db_conn()
         cur = conn.cursor()
-        cur.execute("""
+        cur.execute(
+            """
             SELECT company_name_english, company_name_myanmar, company_registration_number,
                    registration_date, status, company_type, foreign_company, small_company,
                    principal_activity, date_of_last_annual_return, previous_registration_number,
@@ -7826,9 +8630,12 @@ async def generate_company_extract(company_id: int, request: Request):
                    ultimate_holding_company_jurisdiction, ultimate_holding_company_registration_number,
                    total_shares_issued, currency_of_share_capital, members, filing_history
             FROM companies WHERE id = %s
-        """, (company_id,))
+        """,
+            (company_id,),
+        )
         row = cur.fetchone()
-        cur.close(); conn.close()
+        cur.close()
+        conn.close()
 
         if not row:
             return {"success": False, "error": "Company not found"}
@@ -7860,22 +8667,22 @@ async def generate_company_extract(company_id: int, request: Request):
         directors_html = ""
         for d in dirs:
             directors_html += f"""
-            <tr><td>Name:</td><td><b>{d.get('name','')}</b></td><td>Type:</td><td>{d.get('type','Director')}</td></tr>
-            <tr><td>Date of Appointment:</td><td>{d.get('date_of_appointment','')}</td><td>Date of Birth:</td><td>{d.get('date_of_birth','')}</td></tr>
-            <tr><td>Nationality:</td><td>{d.get('nationality','')}</td><td>N.R.C./Passport:</td><td>{d.get('nrc_passport','')}</td></tr>
-            <tr><td>Gender:</td><td>{d.get('gender','')}</td><td>Business Occupation:</td><td>{d.get('business_occupation','-')}</td></tr>
+            <tr><td>Name:</td><td><b>{d.get("name", "")}</b></td><td>Type:</td><td>{d.get("type", "Director")}</td></tr>
+            <tr><td>Date of Appointment:</td><td>{d.get("date_of_appointment", "")}</td><td>Date of Birth:</td><td>{d.get("date_of_birth", "")}</td></tr>
+            <tr><td>Nationality:</td><td>{d.get("nationality", "")}</td><td>N.R.C./Passport:</td><td>{d.get("nrc_passport", "")}</td></tr>
+            <tr><td>Gender:</td><td>{d.get("gender", "")}</td><td>Business Occupation:</td><td>{d.get("business_occupation", "-")}</td></tr>
             <tr><td colspan="4" style="border-bottom:1px solid #ddd;height:10px;"></td></tr>
             """
 
         # Build members HTML
         members_html = ""
         for m in members:
-            members_html += f"<tr><td>{m.get('name','')}</td><td>{m.get('type','')}</td><td>{m.get('share_quantity','')}</td><td>{m.get('amount_paid','')}</td><td>{m.get('share_class','')}</td></tr>"
+            members_html += f"<tr><td>{m.get('name', '')}</td><td>{m.get('type', '')}</td><td>{m.get('share_quantity', '')}</td><td>{m.get('amount_paid', '')}</td><td>{m.get('share_class', '')}</td></tr>"
 
         # Build filing history HTML
         filings_html = ""
         for f in filings[:15]:
-            filings_html += f"<tr><td>{f.get('form_type','')}</td><td>{f.get('effective_date','')}</td></tr>"
+            filings_html += f"<tr><td>{f.get('form_type', '')}</td><td>{f.get('effective_date', '')}</td></tr>"
 
         html = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
@@ -7896,7 +8703,7 @@ async def generate_company_extract(company_id: int, request: Request):
 <div class="header">
     <h1>Myanmar Companies Online Registry - Company Extract</h1>
     <p><b>Company Name (English):</b> {name}</p>
-    {f'<p><b>Company Name (Myanmar):</b> {myanmar_name}</p>' if myanmar_name else ''}
+    {f"<p><b>Company Name (Myanmar):</b> {myanmar_name}</p>" if myanmar_name else ""}
 </div>
 
 <h2>Company Information</h2>
@@ -7917,16 +8724,16 @@ async def generate_company_extract(company_id: int, request: Request):
 <h2>Officers</h2>
 <table>{directors_html}</table>
 
-{'<h2>Ultimate Holding Company</h2><table><tr><td class="label">Name</td><td class="value">' + uhc_name + '</td><td class="label">Jurisdiction</td><td class="value">' + uhc_juris + '</td><td class="label">Reg No</td><td class="value">' + uhc_reg + '</td></tr></table>' if uhc_name else ''}
+{'<h2>Ultimate Holding Company</h2><table><tr><td class="label">Name</td><td class="value">' + uhc_name + '</td><td class="label">Jurisdiction</td><td class="value">' + uhc_juris + '</td><td class="label">Reg No</td><td class="value">' + uhc_reg + "</td></tr></table>" if uhc_name else ""}
 
 <h2>Share Capital Structure</h2>
 <table>
     <tr><td class="label">Total Shares Issued</td><td class="value">{shares}</td><td class="label">Currency</td><td class="value">{currency}</td></tr>
 </table>
 
-{f'<h2>Members</h2><table><tr><th>Name</th><th>Type</th><th>Shares</th><th>Amount Paid</th><th>Class</th></tr>{members_html}</table>' if members_html else ''}
+{f"<h2>Members</h2><table><tr><th>Name</th><th>Type</th><th>Shares</th><th>Amount Paid</th><th>Class</th></tr>{members_html}</table>" if members_html else ""}
 
-{f'<h2>Filing History</h2><table><tr><th>Form / Filing Type</th><th>Effective Date</th></tr>{filings_html}</table>' if filings_html else ''}
+{f"<h2>Filing History</h2><table><tr><th>Form / Filing Type</th><th>Effective Date</th></tr>{filings_html}</table>" if filings_html else ""}
 
 <div class="footer">
     EXTRACT GENERATED ON {datetime.now().strftime("%d/%m/%Y")} AT {datetime.now().strftime("%H:%M")}<br>
@@ -7935,8 +8742,10 @@ async def generate_company_extract(company_id: int, request: Request):
 </body></html>"""
 
         # Convert HTML to PDF using LibreOffice
-        import subprocess, tempfile
-        with tempfile.NamedTemporaryFile(suffix=".html", delete=False, mode='w') as tmp:
+        import subprocess
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(suffix=".html", delete=False, mode="w") as tmp:
             tmp.write(html)
             tmp_path = tmp.name
 
@@ -7945,7 +8754,9 @@ async def generate_company_extract(company_id: int, request: Request):
 
         subprocess.run(
             ["libreoffice", "--headless", "--convert-to", "pdf", "--outdir", str(pdf_dir), tmp_path],
-            capture_output=True, text=True, timeout=30
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
 
         pdf_name = Path(tmp_path).stem + ".pdf"
@@ -7964,7 +8775,7 @@ async def generate_company_extract(company_id: int, request: Request):
             return Response(
                 content=pdf_bytes,
                 media_type="application/pdf",
-                headers={"Content-Disposition": f"inline; filename={final_name}"}
+                headers={"Content-Disposition": f"inline; filename={final_name}"},
             )
 
         Path(tmp_path).unlink(missing_ok=True)
@@ -7983,10 +8794,12 @@ async def generate_company_extract(company_id: int, request: Request):
 _frontend_dir = Path("/app/static-frontend")
 
 if _frontend_dir.exists():
+
     @app.get("/dashboard")
     async def dashboard_redirect():
         """Redirect /dashboard to /admin/dashboard/."""
         from fastapi.responses import RedirectResponse
+
         return RedirectResponse(url="/admin/dashboard/")
 
     @app.get("/{full_path:path}")
@@ -8010,11 +8823,7 @@ if _frontend_dir.exists():
             immutable = "/_next/static/" in f"/{full_path}"
             return FileResponse(
                 path,
-                headers={
-                    "Cache-Control": "public, max-age=31536000, immutable"
-                    if immutable
-                    else "no-cache"
-                },
+                headers={"Cache-Control": "public, max-age=31536000, immutable" if immutable else "no-cache"},
             )
 
         # Try exact file match (e.g., /favicon.ico, /robots.txt)
@@ -8041,16 +8850,19 @@ if _frontend_dir.exists():
 
         return HTMLResponse("<h1>Not Found</h1>", status_code=404)
 else:
+
     @app.get("/dashboard")
     async def dashboard():
         """Redirect to frontend (when running separately in dev mode)."""
         from fastapi.responses import RedirectResponse
+
         return RedirectResponse(url=f"{FRONTEND_HOST}/dashboard")
 
     @app.get("/")
     async def root_redirect():
         """Redirect to frontend in dev mode."""
         from fastapi.responses import RedirectResponse
+
         return RedirectResponse(url=FRONTEND_HOST)
 
 
@@ -8079,8 +8891,10 @@ def _get_when_to_use(template_name: str) -> str:
     resigning = "resignation" in n or "resign" in n
 
     if "corporate shareholder consent" in n:
-        return ("When a corporate shareholder must consent — signed by that shareholder "
-                "company's OWN directors, never the new company's board")
+        return (
+            "When a corporate shareholder must consent — signed by that shareholder "
+            "company's OWN directors, never the new company's board"
+        )
     if "individual shareholder consent" in n:
         return "When an individual shareholder must give written consent in their own name"
     if "director consent" in n:
@@ -8384,18 +9198,19 @@ async def send_document_email(request: Request):
             return {"success": False, "error": "File not found"}
 
         # Get SMTP settings
-        import os, smtplib
-        from email.mime.text import MIMEText
-        from email.mime.multipart import MIMEMultipart
-        from email.mime.base import MIMEBase
+        import os
+        import smtplib
         from email import encoders
-        from psycopg import connect
+        from email.mime.base import MIMEBase
+        from email.mime.multipart import MIMEMultipart
+        from email.mime.text import MIMEText
 
         conn = get_db_conn()
         cur = conn.cursor()
         cur.execute("SELECT key, value FROM app_settings WHERE key LIKE 'smtp_%'")
         smtp = {r[0]: r[1] for r in cur.fetchall()}
-        cur.close(); conn.close()
+        cur.close()
+        conn.close()
 
         smtp_host = smtp.get("smtp_host") or os.getenv("SMTP_HOST", "")
         smtp_port = int(smtp.get("smtp_port") or os.getenv("SMTP_PORT", "587"))
@@ -8418,7 +9233,7 @@ async def send_document_email(request: Request):
             </div>
             <div style="padding:20px;border:1px solid #eee;border-top:0;">
                 <p>{message or "Please find the attached document."}</p>
-                <p style="color:#666;font-size:12px;">Sent by {user.get('email', 'Legal Scout')}</p>
+                <p style="color:#666;font-size:12px;">Sent by {user.get("email", "Legal Scout")}</p>
             </div>
         </div>"""
         msg.attach(MIMEText(html_body, "html"))
@@ -8438,8 +9253,13 @@ async def send_document_email(request: Request):
             server.send_message(msg)
 
         sender_email = user.get("email", "unknown") if user else "unknown"
-        log_activity(user.get("user_id") if user else None, sender_email, "send_email",
-            f"Sent {full_path.name} to {to_email}", "")
+        log_activity(
+            user.get("user_id") if user else None,
+            sender_email,
+            "send_email",
+            f"Sent {full_path.name} to {to_email}",
+            "",
+        )
 
         # Log to email_logs table
         try:
@@ -8447,8 +9267,11 @@ async def send_document_email(request: Request):
             _ecur = _econn.cursor()
             _ecur.execute(
                 "INSERT INTO email_logs (to_email, subject, body, attachment_name, attachment_path, sent_by_email, status) VALUES (%s,%s,%s,%s,%s,%s,%s)",
-                (to_email, subject, message, full_path.name, str(full_path), sender_email, "sent"))
-            _econn.commit(); _ecur.close(); _econn.close()
+                (to_email, subject, message, full_path.name, str(full_path), sender_email, "sent"),
+            )
+            _econn.commit()
+            _ecur.close()
+            _econn.close()
         except Exception as e:
             logging.getLogger("legalscout").warning(f"Email log failed: {e}")
 
@@ -8460,8 +9283,11 @@ async def send_document_email(request: Request):
             _ecur2 = _econn2.cursor()
             _ecur2.execute(
                 "INSERT INTO email_logs (to_email, subject, body, sent_by_email, status, error_message) VALUES (%s,%s,%s,%s,%s,%s)",
-                (to_email, subject, message, "unknown", "failed", str(e)))
-            _econn2.commit(); _ecur2.close(); _econn2.close()
+                (to_email, subject, message, "unknown", "failed", str(e)),
+            )
+            _econn2.commit()
+            _ecur2.close()
+            _econn2.close()
         except Exception as e2:
             logging.getLogger("legalscout").warning(f"Email error log failed: {e2}")
         return {"success": False, "error": str(e)}
@@ -8474,5 +9300,5 @@ async def send_document_email(request: Request):
 # because AgentOS installs a lifespan. See startup_sync's docstring.
 try:
     startup_sync()
-except Exception as _startup_err:  # noqa: BLE001 — never take the app down on boot
+except Exception as _startup_err:
     logger.error(f"[STARTUP] startup_sync failed: {_startup_err}")

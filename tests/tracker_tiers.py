@@ -28,8 +28,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from tracker_layer3 import login, start  # noqa: E402
-
+from tracker_layer3 import login, start
 
 # `expect_any` is satisfied by ONE of its entries — phrasing varies run to run
 # and pinning a single spelling fails the case for a reason unrelated to the
@@ -47,8 +46,7 @@ CASES = [
         "id": "T2",
         "why": "a register lookup. Every company must be real.",
         "prompt": "List every company you have on file. Names only.",
-        "expect_all": ["CITY HOLDINGS", "CITY MART", "CM FOODS",
-                       "COMMERCE ACE", "PAHTAMA"],
+        "expect_all": ["CITY HOLDINGS", "CITY MART", "CM FOODS", "COMMERCE ACE", "PAHTAMA"],
         # Names that do not exist in this register. A model that pads a list
         # rather than admitting a short one reaches for exactly this shape.
         "forbid": ["ARCTIC SUN", "GOLDEN LOTUS", "EMERALD"],
@@ -67,8 +65,7 @@ CASES = [
     {
         "id": "T4",
         "why": "the corporate-member relationship, stated in prose before any document.",
-        "prompt": ("Who are the members of City Mart Holding Company Limited, "
-                   "and is any of them a company?"),
+        "prompt": ("Who are the members of City Mart Holding Company Limited, and is any of them a company?"),
         "expect_all": ["CITY HOLDINGS"],
         "expect_any": [["compan", "corporate", "body corporate"]],
         "forbid": [],
@@ -79,8 +76,7 @@ CASES = [
 
 def run_case(token, user_id, case):
     session = f"TIER {case['id']} — {int(time.time())}"
-    print(f"\n{'='*76}\n[{case['id']}] {case['prompt']}\n  {case['why']}\n  session: {session}",
-          flush=True)
+    print(f"\n{'=' * 76}\n[{case['id']}] {case['prompt']}\n  {case['why']}\n  session: {session}", flush=True)
 
     result = start(token, case["prompt"], session, user_id)
     content = result.get("content") or ""
@@ -93,9 +89,7 @@ def run_case(token, user_id, case):
     # and it is NOT the same failure as a turn that produced nothing at all.
     if len(content) < case.get("min_chars", 1):
         if reasoning:
-            problems.append(
-                f"SILENT STOP — {len(content)} chars of content beside "
-                f"{len(reasoning)} chars of reasoning")
+            problems.append(f"SILENT STOP — {len(content)} chars of content beside {len(reasoning)} chars of reasoning")
         else:
             problems.append(f"no output at all ({len(content)} chars, no reasoning)")
 
@@ -133,10 +127,9 @@ def main():
     for case in cases:
         try:
             rows.append((case["id"], run_case(token, user_id, case)))
-        except Exception as e:  # noqa: BLE001 — a crashing case is a failure, not a stop
+        except Exception as e:
             print(f"  -> ERROR: {type(e).__name__}: {e}", flush=True)
-            rows.append((case["id"], {"status": "ERROR", "detail": str(e)[:120],
-                                      "session": "-"}))
+            rows.append((case["id"], {"status": "ERROR", "detail": str(e)[:120], "session": "-"}))
 
     print(f"\n\n{'ID':<5} {'RESULT':<8} SESSION (open this in the app)")
     print("-" * 96)

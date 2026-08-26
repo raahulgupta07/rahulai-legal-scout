@@ -8,8 +8,7 @@ Tracks generated documents in PostgreSQL database.
 import json
 import logging
 from datetime import datetime
-from typing import Any, Dict, List, Optional
-from pathlib import Path
+from typing import Any
 
 from scout.tools.template_analyzer import get_db_connection
 
@@ -21,8 +20,8 @@ def record_document(
     file_path: str,
     download_url: str,
     preview_url: str,
-    validation_result: Optional[Dict] = None,
-    custom_data: Optional[Dict] = None,
+    validation_result: dict | None = None,
+    custom_data: dict | None = None,
 ) -> bool:
     """Record a generated document to database."""
     conn = None
@@ -60,7 +59,7 @@ def record_document(
             conn.close()
 
 
-def get_all_documents(limit: int = 100) -> List[Dict]:
+def get_all_documents(limit: int = 100) -> list[dict]:
     """Get all documents from database."""
     conn = None
     try:
@@ -100,7 +99,7 @@ def get_all_documents(limit: int = 100) -> List[Dict]:
             conn.close()
 
 
-def get_documents_by_company(company_name: str) -> List[Dict]:
+def get_documents_by_company(company_name: str) -> list[dict]:
     """Get documents for a specific company."""
     conn = None
     try:
@@ -140,7 +139,7 @@ def get_documents_by_company(company_name: str) -> List[Dict]:
             conn.close()
 
 
-def get_document_stats() -> Dict[str, Any]:
+def get_document_stats() -> dict[str, Any]:
     """Get document statistics from database."""
     conn = None
     try:

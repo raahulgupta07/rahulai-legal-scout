@@ -19,11 +19,11 @@ from __future__ import annotations
 
 import hashlib
 import json as _json
-from contextvars import ContextVar
 import logging
 import re
 import threading
 import time
+from contextvars import ContextVar
 from datetime import datetime
 from functools import wraps
 from pathlib import Path
@@ -104,6 +104,7 @@ def _session_of(run_context: Any) -> str:
     their values explicitly and must not inherit any conversation's picks.
     """
     return str(getattr(run_context, "session_id", "") or "").strip()
+
 
 # --- Duplicate-generation guard -------------------------------------------
 # generate_document had no idea it had just run. Three things re-fire it with
@@ -214,7 +215,6 @@ def extract_placeholders_from_template(template_path: Path) -> dict[str, Any]:
     }
 
 
-
 # The placeholder values the pipeline uses to mean "nothing here yet". Compared
 # case-insensitively: `prepare_document_data` writes "TBD" for a party position
 # the register does not fill, and a TBD is precisely a field that still needs an
@@ -244,7 +244,10 @@ def validate_data_vs_template(required_fields: list, company_data: dict) -> dict
     Validate that company data has all required fields for template.
     Returns what's available vs what's missing.
     """
-    available_columns = [col.lower().replace(" ", "_").replace("-", "_") for col in company_data.get("columns", list(company_data.keys()))]
+    available_columns = [
+        col.lower().replace(" ", "_").replace("-", "_")
+        for col in company_data.get("columns", list(company_data.keys()))
+    ]
 
     available_fields = []
     missing_fields = []
@@ -272,11 +275,15 @@ def validate_data_vs_template(required_fields: list, company_data: dict) -> dict
 
     # Alias mapping for matching
     FIELD_ALIASES = {
-        "company": "company_name", "date": "meeting_date",
+        "company": "company_name",
+        "date": "meeting_date",
         "meeting_location": "registered_office",
-        "director_name": "directors", "authorized_director_name": "directors",
-        "resigning_director_name": "directors", "address": "registered_office",
-        "nric": "nrc_passport", "identification_type": "nrc_passport",
+        "director_name": "directors",
+        "authorized_director_name": "directors",
+        "resigning_director_name": "directors",
+        "address": "registered_office",
+        "nric": "nrc_passport",
+        "identification_type": "nrc_passport",
         "shareholder_name": "individual_shareholder_1_name",
     }
 
@@ -311,9 +318,7 @@ def validate_data_vs_template(required_fields: list, company_data: dict) -> dict
         #
         # DEFAULT_FIELDS are exempt: those are filled from defaults further down
         # the pipeline, so they are legitimately available while still empty here.
-        if found and field_normalized not in DEFAULT_FIELDS and not _has_value(
-            company_data, field, field_normalized
-        ):
+        if found and field_normalized not in DEFAULT_FIELDS and not _has_value(company_data, field, field_normalized):
             found = False
 
         if found:
@@ -433,8 +438,7 @@ def analyze_template(template_name: str, documents_dir: str = "/documents") -> d
             "agent_instruction": (
                 "Do NOT guess a different template. "
                 + (
-                    "Ask the user which of these they mean with ask_questions: "
-                    + "; ".join(close)
+                    "Ask the user which of these they mean with ask_questions: " + "; ".join(close)
                     if close
                     else "Pick an exact name from available_templates."
                 )
@@ -498,7 +502,7 @@ def _company_from_binding(session_id: str) -> str:
         if bound.status != RESOLVED:
             return ""
         return str(getattr(bound, "company_name", "") or "").strip()
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         _log_binding_warning(key, e)
         return ""
 
@@ -597,13 +601,11 @@ def _normalise_template_key(name: str) -> str:
     "Corporate_Shareholder_Consent-Directors Resolution.docx" and
     "corporate shareholder consent - directors resolution" become the same key.
     """
-    stem = re.sub(r"\.docx$", "", str(name or "").strip(), flags=re.I)
+    stem = re.sub(r"\.docx$", "", str(name or "").strip(), flags=re.IGNORECASE)
     return re.sub(r"[^a-z0-9]+", " ", stem.lower()).strip()
 
 
-def _resolve_template_name(
-    template_name: str, templates_dir: Path
-) -> tuple[str | None, list[str]]:
+def _resolve_template_name(template_name: str, templates_dir: Path) -> tuple[str | None, list[str]]:
     """Map a requested template name onto a real file.
 
     Returns (filename, []) when it resolves, or (None, close_matches) when it
@@ -618,9 +620,7 @@ def _resolve_template_name(
     if not templates_dir.is_dir():
         return None, []
 
-    candidates = [
-        p.name for p in templates_dir.glob("*.docx") if not p.name.startswith("~$")
-    ]
+    candidates = [p.name for p in templates_dir.glob("*.docx") if not p.name.startswith("~$")]
 
     # Membership in the real listing, NOT Path.is_file(). macOS is
     # case-insensitive, so `(dir / "director resignation letter.docx").is_file()`
@@ -687,9 +687,7 @@ def prepare_document_data(template_name: str, company_name: str, documents_dir: 
             "error": f"Template not found: {template_name}",
             "step": "template_analysis",
             "close_matches": ambiguous,
-            "available_templates": sorted(
-                p.name for p in templates_dir.glob("*.docx") if not p.name.startswith("~$")
-            ),
+            "available_templates": sorted(p.name for p in templates_dir.glob("*.docx") if not p.name.startswith("~$")),
             "agent_instruction": (
                 "Do NOT guess a different template and do NOT generate anything. "
                 + (
@@ -712,6 +710,7 @@ def prepare_document_data(template_name: str, company_name: str, documents_dir: 
     companies_data = {"companies": []}
     try:
         from scout.tools.companies_db import get_all_companies
+
         db_companies = get_all_companies(limit=200)
         if db_companies:
             companies_list = []
@@ -745,7 +744,8 @@ def prepare_document_data(template_name: str, company_name: str, documents_dir: 
                 ind_split = shs_split
                 corp_split = shs_split[2:]
                 typed_members = [
-                    m for m in shareholders_list
+                    m
+                    for m in shareholders_list
                     if isinstance(m, dict) and str(m.get("name") or m.get("full_name") or "").strip()
                 ]
                 if typed_members:
@@ -754,69 +754,76 @@ def prepare_document_data(template_name: str, company_name: str, documents_dir: 
                         nm = str(m.get("name") or m.get("full_name") or "").strip()
                         (corp_split if _is_corporate(m) else ind_split).append(nm)
 
-                companies_list.append({
-                    "company_name": c.get("name", ""),
-                    "company": c.get("name", ""),
-                    "company_name_english": c.get("name", ""),
-                    "company_registration_number": c.get("registration_number", ""),
-                    "registered_office": c.get("address", ""),
-                    "registered_office_address": c.get("address", ""),
-                    "company_address": c.get("address", ""),
-                    "address": c.get("address", ""),
-                    "meeting_location": c.get("address", ""),
-                    "directors": director_names,
-                    "director_name": dirs_split[0] if dirs_split else "TBD",
-                    # `authorized_director_name` / `authorized director_name` are
-                    # NOT seeded here any more. They are the representative slot
-                    # — the person signing on behalf of a CORPORATE MEMBER — and
-                    # seeding them from this company's directors[0] was wrong
-                    # twice over.
-                    #
-                    # It named the wrong board. A corporate member is signed for
-                    # by ITS OWN directors, so for CM FOODS (sole member CITY
-                    # MART HOLDING) the value came from CM FOODS' register, not
-                    # CITY MART's.
-                    #
-                    # And it suppressed the question. resolve_slot treats a value
-                    # present in `data` as an answer, so collect_slot_requests
-                    # stopped asking: measured on CM FOODS, the requests went
-                    # from ['new_director', 'representative'] with empty data to
-                    # ['new_director'] once the company defaults were merged in.
-                    # The user was never offered the choice, and directors[0] of
-                    # the wrong company signed. That is the same shape as the
-                    # slot_resolver fallback that was removed for guessing.
-                    #
-                    # Unseeded, the slot resolves to nothing, the picker is
-                    # raised against the MEMBER company's board, and
-                    # repeat_regions._corp_representative vets whatever comes
-                    # back against that board before printing it.
-                    "individual_shareholder_1_name": ind_split[0] if len(ind_split) > 0 else "TBD",
-                    "individual_shareholder_2_name": ind_split[1] if len(ind_split) > 1 else "TBD",
-                    "individual shareholder_1_name": ind_split[0] if len(ind_split) > 0 else "TBD",
-                    "individual shareholder_2_name": ind_split[1] if len(ind_split) > 1 else "TBD",
-                    "corporate_shareholder_3_name": corp_split[0] if len(corp_split) > 0 else "TBD",
-                    "corporate shareholder_3_name": corp_split[0] if len(corp_split) > 0 else "TBD",
-                    "shareholder_1_name": shs_split[0] if len(shs_split) > 0 else "TBD",
-                    "shareholder_2_name": shs_split[1] if len(shs_split) > 1 else "TBD",
-                    "shareholder_1_shares": sh_shares.get(shs_split[0], "TBD") if shs_split else "TBD",
-                    "shareholder_2_shares": sh_shares.get(shs_split[1], "TBD") if len(shs_split) > 1 else "TBD",
-                    "status": c.get("status", ""),
-                    "company_type": c.get("company_type", ""),
-                    "total_shares": c.get("total_shares", ""),
-                    "currency": c.get("currency", ""),
-                    "financial_year_end_date": c.get("financial_year_end_date", ""),
-                    "next_financial_year_end_date": c.get("next_financial_year_end_date", ""),
-                    "auditor_name": c.get("auditor_name", ""),
-                    "auditor_fee": c.get("auditor_fee", ""),
-                    **(c.get("custom_fields") or {}),
-                })
+                companies_list.append(
+                    {
+                        "company_name": c.get("name", ""),
+                        "company": c.get("name", ""),
+                        "company_name_english": c.get("name", ""),
+                        "company_registration_number": c.get("registration_number", ""),
+                        "registered_office": c.get("address", ""),
+                        "registered_office_address": c.get("address", ""),
+                        "company_address": c.get("address", ""),
+                        "address": c.get("address", ""),
+                        "meeting_location": c.get("address", ""),
+                        "directors": director_names,
+                        "director_name": dirs_split[0] if dirs_split else "TBD",
+                        # `authorized_director_name` / `authorized director_name` are
+                        # NOT seeded here any more. They are the representative slot
+                        # — the person signing on behalf of a CORPORATE MEMBER — and
+                        # seeding them from this company's directors[0] was wrong
+                        # twice over.
+                        #
+                        # It named the wrong board. A corporate member is signed for
+                        # by ITS OWN directors, so for CM FOODS (sole member CITY
+                        # MART HOLDING) the value came from CM FOODS' register, not
+                        # CITY MART's.
+                        #
+                        # And it suppressed the question. resolve_slot treats a value
+                        # present in `data` as an answer, so collect_slot_requests
+                        # stopped asking: measured on CM FOODS, the requests went
+                        # from ['new_director', 'representative'] with empty data to
+                        # ['new_director'] once the company defaults were merged in.
+                        # The user was never offered the choice, and directors[0] of
+                        # the wrong company signed. That is the same shape as the
+                        # slot_resolver fallback that was removed for guessing.
+                        #
+                        # Unseeded, the slot resolves to nothing, the picker is
+                        # raised against the MEMBER company's board, and
+                        # repeat_regions._corp_representative vets whatever comes
+                        # back against that board before printing it.
+                        "individual_shareholder_1_name": ind_split[0] if len(ind_split) > 0 else "TBD",
+                        "individual_shareholder_2_name": ind_split[1] if len(ind_split) > 1 else "TBD",
+                        "individual shareholder_1_name": ind_split[0] if len(ind_split) > 0 else "TBD",
+                        "individual shareholder_2_name": ind_split[1] if len(ind_split) > 1 else "TBD",
+                        "corporate_shareholder_3_name": corp_split[0] if len(corp_split) > 0 else "TBD",
+                        "corporate shareholder_3_name": corp_split[0] if len(corp_split) > 0 else "TBD",
+                        "shareholder_1_name": shs_split[0] if len(shs_split) > 0 else "TBD",
+                        "shareholder_2_name": shs_split[1] if len(shs_split) > 1 else "TBD",
+                        "shareholder_1_shares": sh_shares.get(shs_split[0], "TBD") if shs_split else "TBD",
+                        "shareholder_2_shares": sh_shares.get(shs_split[1], "TBD") if len(shs_split) > 1 else "TBD",
+                        "status": c.get("status", ""),
+                        "company_type": c.get("company_type", ""),
+                        "total_shares": c.get("total_shares", ""),
+                        "currency": c.get("currency", ""),
+                        "financial_year_end_date": c.get("financial_year_end_date", ""),
+                        "next_financial_year_end_date": c.get("next_financial_year_end_date", ""),
+                        "auditor_name": c.get("auditor_name", ""),
+                        "auditor_fee": c.get("auditor_fee", ""),
+                        **(c.get("custom_fields") or {}),
+                    }
+                )
             companies_data = {"success": True, "companies": companies_list}
             company_result = find_company_data(company_name, companies_data)
     except Exception as e:
         logging.getLogger("legalscout").warning(f"Failed to load company data from DB: {e}")
 
     if not company_result:
-        return {"success": False, "error": "No company data in database. Add companies from the admin panel.", "step": "data_loading", "required_fields": required_fields}
+        return {
+            "success": False,
+            "error": "No company data in database. Add companies from the admin panel.",
+            "step": "data_loading",
+            "required_fields": required_fields,
+        }
 
     if not company_result.get("found"):
         return {
@@ -857,9 +864,7 @@ def prepare_document_data(template_name: str, company_name: str, documents_dir: 
         company_name=company_name,
     )
 
-    outstanding = list(validation.get("missing_fields", [])) + [
-        r["placeholder"] for r in slot_requests
-    ]
+    outstanding = list(validation.get("missing_fields", [])) + [r["placeholder"] for r in slot_requests]
     ready = validation["is_complete"] and not slot_requests
 
     return {
@@ -903,7 +908,7 @@ def _prepare_message(validation: dict, slot_requests: list) -> str:
     return " | ".join(parts) if parts else "Ready to generate document"
 
 
-def validate_filled_document(document_path: Path, all_placeholders: list = None) -> dict[str, Any]:
+def validate_filled_document(document_path: Path, all_placeholders: list | None = None) -> dict[str, Any]:
     """
     Step 4: Validate that a filled document has no unfilled placeholders.
 
@@ -942,7 +947,7 @@ def validate_filled_document(document_path: Path, all_placeholders: list = None)
 
     # Calculate filled placeholders
     if all_placeholders:
-        unfilled_set = set(p.lower() for p in unfilled_placeholders)
+        unfilled_set = {p.lower() for p in unfilled_placeholders}
         filled_placeholders = [p for p in all_placeholders if p.lower() not in unfilled_set]
         total_placeholders = len(all_placeholders)
         total_filled = len(filled_placeholders)
@@ -965,7 +970,11 @@ def validate_filled_document(document_path: Path, all_placeholders: list = None)
         "total_unfilled": len(unique_unfilled),
         "message": f"Filled {total_filled}/{total_placeholders} fields"
         if all_placeholders
-        else ("Document is valid - all fields filled" if len(unfilled_placeholders) == 0 else f"Warning: {len(unfilled_placeholders)} unfilled placeholders found"),
+        else (
+            "Document is valid - all fields filled"
+            if len(unfilled_placeholders) == 0
+            else f"Warning: {len(unfilled_placeholders)} unfilled placeholders found"
+        ),
     }
 
 
@@ -976,9 +985,7 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
         """Analyze a template to see what fields are required."""
         return analyze_template(template_name, documents_dir)
 
-    def prepare_document(
-        template_name: str, company_name: str = "", run_context: RunContext = None
-    ) -> dict[str, Any]:
+    def prepare_document(template_name: str, company_name: str = "", run_context: RunContext = None) -> dict[str, Any]:
         """Complete workflow: analyze, validate, prepare data."""
         session_id = _session_of(run_context)
         with session_scope(session_id):
@@ -990,7 +997,7 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
     def generate_document(
         template_name: str,
         company_name: str = "",
-        custom_data: dict = None,
+        custom_data: dict | None = None,
         run_context: RunContext = None,
     ) -> dict[str, Any]:
         """Generate document with validation workflow."""
@@ -1001,7 +1008,7 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
                 return dict(_NO_COMPANY)
             return _generate_document(template_name, resolved, custom_data)
 
-    def _generate_document(template_name: str, company_name: str, custom_data: dict = None) -> dict[str, Any]:
+    def _generate_document(template_name: str, company_name: str, custom_data: dict | None = None) -> dict[str, Any]:
         # Collect the placeholders this fill empties, so validation can report
         # them. Reset in the finally at the end of the generation so a blank
         # from one document is never attributed to the next.
@@ -1011,7 +1018,9 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
         finally:
             _blanked_placeholders.reset(_blank_token)
 
-    def _generate_document_inner(template_name: str, company_name: str, custom_data: dict = None) -> dict[str, Any]:
+    def _generate_document_inner(
+        template_name: str, company_name: str, custom_data: dict | None = None
+    ) -> dict[str, Any]:
         result = prepare_document_data(template_name, company_name, documents_dir)
 
         if not result.get("success"):
@@ -1023,9 +1032,7 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
         # classification, and the path the .docx is opened from — so adopt the
         # resolved name here. Without this the request succeeds analysis and
         # then dies on "Template not found" one screen later.
-        template_name = (
-            (result.get("template_analysis") or {}).get("template") or template_name
-        )
+        template_name = (result.get("template_analysis") or {}).get("template") or template_name
 
         # The goal goes on the server the moment it is known. Measured on
         # session 3be25e3c: between a pause and its resume the agent lost track
@@ -1035,7 +1042,7 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
             from scout.tools.task_memory import remember_task
 
             remember_task(_session, template_name, company_name, custom_data)
-        except Exception as _e:  # noqa: BLE001 — never fail a run for memory
+        except Exception as _e:
             logging.getLogger("legalscout").warning(f"[TASK] record skipped: {_e}")
 
         mapping = _get_field_mapping(template_name) or {}
@@ -1052,7 +1059,7 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
             from scout.tools.task_memory import recall_task
 
             _remembered = (recall_task(_session) or {}).get("collected") or {}
-        except Exception:  # noqa: BLE001
+        except Exception:
             _remembered = {}
         if _remembered:
             # An EMPTY caller value does not beat a remembered one.
@@ -1082,9 +1089,7 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
             # defect.
             _caller = custom_data or {}
             _kept = {
-                k: v
-                for k, v in _caller.items()
-                if str(v or "").strip() or not str(_remembered.get(k) or "").strip()
+                k: v for k, v in _caller.items() if str(v or "").strip() or not str(_remembered.get(k) or "").strip()
             }
             custom_data = {**_remembered, **_kept}
 
@@ -1096,9 +1101,7 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
         # explicit selection counts here: drop the auto-filled slot placeholders
         # and let custom_data (which carries the picker's answer) speak alone.
         slot_data = {
-            key: value
-            for key, value in (result.get("normalized_data") or {}).items()
-            if not slot_of(mapping.get(key))
+            key: value for key, value in (result.get("normalized_data") or {}).items() if not slot_of(mapping.get(key))
         }
         if custom_data:
             slot_data.update(custom_data)
@@ -1162,18 +1165,15 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
         matched_fields = len(validation.get("available_fields", []))
 
         # Calculate percentage
-        if total_fields > 0:
-            field_coverage = matched_fields / total_fields
-        else:
-            field_coverage = 0
+        matched_fields / total_fields if total_fields > 0 else 0
 
         # Always auto-proceed — use defaults/TBD for missing fields
-        auto_proceed = True
 
         # --- Load field classification from DB ---
         field_classification = None
         try:
             from scout.tools.template_analyzer import get_template_from_db
+
             tpl_data = get_template_from_db(template_name)
             if tpl_data and isinstance(tpl_data.get("fields"), dict):
                 field_classification = tpl_data["fields"].get("field_classification")
@@ -1242,7 +1242,9 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
             for mf in missing_user_fields:
                 mf_lower = mf.lower()
                 if "location" in mf_lower or "venue" in mf_lower:
-                    field_defaults[mf] = normalized_data.get("registered_office_address", normalized_data.get("registered_office", "TBD"))
+                    field_defaults[mf] = normalized_data.get(
+                        "registered_office_address", normalized_data.get("registered_office", "TBD")
+                    )
                 else:
                     field_defaults[mf] = "TBD"
 
@@ -1252,9 +1254,7 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
                     "success": False,
                     "error": "Need user input for some fields",
                     "user_input_fields": missing_user_fields,
-                    "field_descriptions": {
-                        f: field_descriptions.get(f, "") for f in missing_user_fields
-                    },
+                    "field_descriptions": {f: field_descriptions.get(f, "") for f in missing_user_fields},
                     "field_defaults": field_defaults,
                     "db_fields_filled": db_fields_filled,
                     "static_text_warnings": field_classification.get("static_text_warnings", []),
@@ -1273,8 +1273,7 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
                         "selections you passed before AND these fields. custom_data does "
                         "not accumulate between calls: anything you leave out of the next "
                         "call is BLANK in the document, and a blank legal term is not "
-                        "visible in the finished file. Missing now: "
-                        + ", ".join(missing_user_fields)
+                        "visible in the finished file. Missing now: " + ", ".join(missing_user_fields)
                     ),
                     "document_state": _document_state(
                         template=template_name,
@@ -1307,8 +1306,13 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
         data = result.get("normalized_data", {})
         # Company-identity scalars the model must never overwrite via custom_data.
         PROTECTED_FIELDS = {
-            "company_registration_number", "company_name", "company_name_english",
-            "status", "company_type", "registered_office", "registered_office_address",
+            "company_registration_number",
+            "company_name",
+            "company_name_english",
+            "status",
+            "company_type",
+            "registered_office",
+            "registered_office_address",
         }
         # Party lists (directors/members/shareholders) ARE legitimate custom_data —
         # repeat_regions expands the "Present:" list and signing blocks from them
@@ -1375,8 +1379,7 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
 
         if _new_company:
             _tpl_fields = {
-                canonical_field(f)
-                for f in (result.get("template_analysis", {}).get("required_fields") or [])
+                canonical_field(f) for f in (result.get("template_analysis", {}).get("required_fields") or [])
             }
             if canonical_field("new_company_name") not in _tpl_fields:
                 for _key in ("company", "company_name", "company_name_english"):
@@ -1399,9 +1402,7 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
                         _supplied_reg = _v
                         break
                 data["company_registration_number"] = (
-                    str(_supplied_reg)
-                    if _supplied_reg is not None
-                    else "TBC upon incorporation"
+                    str(_supplied_reg) if _supplied_reg is not None else "TBC upon incorporation"
                 )
                 # find_replacement resolves company identity from the DB row,
                 # not from `data` — see its `source == "db"` branch. The marker
@@ -1435,7 +1436,9 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
             )
             return previous
 
-        filled_doc = fill_template_with_validation(template_path, data, template_name=template_name, company_name=company_name)
+        filled_doc = fill_template_with_validation(
+            template_path, data, template_name=template_name, company_name=company_name
+        )
 
         # A blank nobody asked for does not get written to disk.
         #
@@ -1458,7 +1461,8 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
         if _undeclared:
             logging.getLogger("legalscout").warning(
                 f"refused to generate '{template_name}' for '{company_name}': "
-                + f"{len(_undeclared)} undeclared blank field(s): " + ", ".join(_undeclared)
+                + f"{len(_undeclared)} undeclared blank field(s): "
+                + ", ".join(_undeclared)
             )
             return {
                 "success": False,
@@ -1502,7 +1506,7 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
 
         # Sanitize template name (remove spaces and special chars for URL-safe filename)
         template_safe = (
-            template_name.replace('.docx', '')
+            template_name.replace(".docx", "")
             .replace(" ", "_")  # Replace spaces with underscores
             .replace("/", "_")
             .replace("\\", "_")
@@ -1541,17 +1545,17 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
                 op="external",
                 target_table=None,
                 target_label=output_filename,
-                after={"company_name": company_name, "template_name": template_name,
-                       "path": str(output_path)},
+                after={"company_name": company_name, "template_name": template_name, "path": str(output_path)},
                 tool_name="generate_document",
                 diff=False,
             )
-        except Exception as e:  # noqa: BLE001 — auditing must never fail the write
+        except Exception as e:
             logging.getLogger("legalscout").warning(f"effects record failed for '{output_path}': {e}")
 
         # Upload to S3 (background)
         try:
             from app.s3_storage import s3_upload_async
+
             s3_upload_async(str(output_path))
         except Exception as e:
             logging.getLogger("legalscout").warning(f"S3 upload failed for '{output_path}': {e}")
@@ -1575,8 +1579,11 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
                     _names.append(_b)
                 if _b not in _ph:
                     _ph.append(_b)
-            _filled = [f for f in (validation.get("filled_placeholders") or [])
-                       if f.lower() not in {b.lower() for b in _blanked}]
+            _filled = [
+                f
+                for f in (validation.get("filled_placeholders") or [])
+                if f.lower() not in {b.lower() for b in _blanked}
+            ]
             validation["unfilled_names"] = _names
             validation["unfilled_placeholders"] = _ph
             validation["filled_placeholders"] = _filled
@@ -1585,8 +1592,8 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
             validation["blanked_placeholders"] = _blanked
             validation["is_valid"] = False
             logging.getLogger("legalscout").warning(
-                f"'{output_filename}' generated with {len(_blanked)} EMPTY field(s): "
-                + ", ".join(_blanked))
+                f"'{output_filename}' generated with {len(_blanked)} EMPTY field(s): " + ", ".join(_blanked)
+            )
 
         preview = generate_preview(filled_doc)
 
@@ -1675,7 +1682,7 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
             from scout.tools.task_memory import clear_task
 
             clear_task(_session)
-        except Exception as _e:  # noqa: BLE001
+        except Exception as _e:
             logging.getLogger("legalscout").warning(f"[TASK] clear skipped: {_e}")
 
         # Only successes are remembered — a failed run must stay retryable.
@@ -1686,7 +1693,7 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
     def create_document(
         template_name: str,
         company_name: str,
-        custom_data: dict = None,
+        custom_data: dict | None = None,
         run_context: RunContext = None,
     ) -> dict:
         """
@@ -1707,14 +1714,14 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
     def preview_doc(
         template_name: str,
         company_name: str,
-        custom_data: dict = None,
+        custom_data: dict | None = None,
         run_context: RunContext = None,
     ) -> dict[str, Any]:
         """Preview document - shows what will be filled without saving."""
         with session_scope(_session_of(run_context)):
             return _preview_doc(template_name, company_name, custom_data)
 
-    def _preview_doc(template_name: str, company_name: str, custom_data: dict = None) -> dict[str, Any]:
+    def _preview_doc(template_name: str, company_name: str, custom_data: dict | None = None) -> dict[str, Any]:
         result = prepare_document_data(template_name, company_name, documents_dir)
 
         if not result.get("success"):
@@ -1724,9 +1731,7 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
         # may be a prefix or a case variant, and everything downstream keys off
         # the name. A preview built from an unresolved name would disagree with
         # the document that generation then produces.
-        template_name = (
-            (result.get("template_analysis") or {}).get("template") or template_name
-        )
+        template_name = (result.get("template_analysis") or {}).get("template") or template_name
 
         # Record the task HERE too, not only at generation.
         #
@@ -1740,7 +1745,7 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
             from scout.tools.task_memory import remember_task
 
             remember_task(current_session_scope(), template_name, company_name, custom_data)
-        except Exception as _e:  # noqa: BLE001
+        except Exception as _e:
             logging.getLogger("legalscout").warning(f"[TASK] preview record skipped: {_e}")
 
         validation = result.get("validation", {})
@@ -1748,10 +1753,7 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
         total_fields = len(validation.get("available_fields", [])) + len(validation.get("missing_fields", []))
         matched_fields = len(validation.get("available_fields", []))
 
-        if total_fields > 0:
-            field_coverage = matched_fields / total_fields
-        else:
-            field_coverage = 0
+        field_coverage = matched_fields / total_fields if total_fields > 0 else 0
 
         # Build preview data
         preview_data = result.get("normalized_data", {}).copy()
@@ -1842,11 +1844,8 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
                 values=preview_data,
                 # A preview that still has missing fields or unpicked parties is
                 # waiting on the user; otherwise it is ready to generate.
-                status="ready"
-                if result.get("ready_to_generate")
-                else "awaiting-input",
-                outstanding=list(validation.get("missing_fields", []))
-                + list(result.get("unresolved_slots", [])),
+                status="ready" if result.get("ready_to_generate") else "awaiting-input",
+                outstanding=list(validation.get("missing_fields", [])) + list(result.get("unresolved_slots", [])),
             ),
             "needs_approval": True,
             # Told to the model, not shown to the user: how to ask for approval.
@@ -1862,8 +1861,8 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
                 "ends here with no text is a bug — the user is left looking at an empty "
                 "reply while waiting to approve. Summarise what will be filled and what "
                 "is still missing, THEN call ask_questions with ONE question — "
-                f"\"Generate {short_name} for {company_name} now?\" — and the options "
-                "[\"Yes, generate it\", \"No, change the data first\"]. "
+                f'"Generate {short_name} for {company_name} now?" — and the options '
+                '["Yes, generate it", "No, change the data first"]. '
                 "Never write a lettered a)/b) menu in prose."
             ),
         }
@@ -1881,6 +1880,7 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
         unambiguous on both sides. `default=str` keeps dates and Decimals from
         raising mid-serialisation.
         """
+
         @wraps(fn)
         def wrapper(*args, **kwargs):
             result = fn(*args, **kwargs)
@@ -1889,9 +1889,7 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
             try:
                 return _json.dumps(result, default=str)
             except (TypeError, ValueError) as e:
-                logging.getLogger("legalscout").warning(
-                    f"[SMART_DOC] {fn.__name__} result not JSON-serialisable: {e}"
-                )
+                logging.getLogger("legalscout").warning(f"[SMART_DOC] {fn.__name__} result not JSON-serialisable: {e}")
                 return _json.dumps({"success": False, "error": f"Result could not be serialised: {e}"})
 
         return wrapper
@@ -1907,12 +1905,19 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
     }
 
 
-def _fill_paragraph_highlighted(paragraph, data: dict[str, Any], placeholder_pattern=None, template_name: str = None, company_name: str = None, empty_counter=None):
+def _fill_paragraph_highlighted(
+    paragraph,
+    data: dict[str, Any],
+    placeholder_pattern=None,
+    template_name: str | None = None,
+    company_name: str | None = None,
+    empty_counter=None,
+):
     """Fill placeholders in a paragraph, highlighting replaced text in yellow."""
-    from docx.shared import RGBColor
-    from docx.oxml.ns import qn
     from copy import deepcopy
-    import lxml.etree as etree
+
+    from docx.oxml.ns import qn
+    from lxml import etree
 
     text = paragraph.text
     matches = list((placeholder_pattern or PLACEHOLDER_PATTERN).finditer(text))
@@ -1931,14 +1936,15 @@ def _fill_paragraph_highlighted(paragraph, data: dict[str, Any], placeholder_pat
     segments = []
     last_end = 0
     for match in matches:
-        placeholder = placeholder_name(
-            (match.group(1), match.group(2), match.group(3)), empty_counter
-        ).lower()
-        replacement = find_replacement(placeholder, data,
-            template_name=template_name, company_name=company_name) if placeholder else None
+        placeholder = placeholder_name((match.group(1), match.group(2), match.group(3)), empty_counter).lower()
+        replacement = (
+            find_replacement(placeholder, data, template_name=template_name, company_name=company_name)
+            if placeholder
+            else None
+        )
 
         if match.start() > last_end:
-            segments.append((text[last_end:match.start()], None))
+            segments.append((text[last_end : match.start()], None))
 
         if replacement == LEFT_BLANK and replacement is not None:
             segments.append((LEFT_BLANK, None))
@@ -1946,7 +1952,7 @@ def _fill_paragraph_highlighted(paragraph, data: dict[str, Any], placeholder_pat
             is_tbd = str(replacement).strip().upper() == "TBD"
             segments.append((str(replacement), "red" if is_tbd else "yellow"))
         else:
-            segments.append((text[match.start():match.end()], None))
+            segments.append((text[match.start() : match.end()], None))
 
         last_end = match.end()
 
@@ -1956,27 +1962,29 @@ def _fill_paragraph_highlighted(paragraph, data: dict[str, Any], placeholder_pat
     # Add runs for each segment
     p_element = paragraph._element
     # Remove all existing run elements
-    for r in list(p_element.findall(qn('w:r'))):
+    for r in list(p_element.findall(qn("w:r"))):
         p_element.remove(r)
 
     for seg_text, highlight_color in segments:
         new_run = paragraph.add_run(seg_text)
         # Copy formatting from base run if available
-        if base_run and base_run._element.find(qn('w:rPr')) is not None:
-            new_rpr = deepcopy(base_run._element.find(qn('w:rPr')))
+        if base_run and base_run._element.find(qn("w:rPr")) is not None:
+            new_rpr = deepcopy(base_run._element.find(qn("w:rPr")))
             # Remove any existing highlight from copied format
-            for existing_hl in new_rpr.findall(qn('w:highlight')):
+            for existing_hl in new_rpr.findall(qn("w:highlight")):
                 new_rpr.remove(existing_hl)
             new_run._element.insert(0, new_rpr)
 
         # Add highlight: yellow=filled from data, red=TBD/unfilled
         if highlight_color:
             rpr = new_run._element.get_or_add_rPr()
-            highlight = etree.SubElement(rpr, qn('w:highlight'))
-            highlight.set(qn('w:val'), highlight_color)  # "yellow" for filled, "red" for TBD
+            highlight = etree.SubElement(rpr, qn("w:highlight"))
+            highlight.set(qn("w:val"), highlight_color)  # "yellow" for filled, "red" for TBD
 
 
-def fill_template_with_validation(template_path: Path, data: dict[str, Any], template_name: str = None, company_name: str = None) -> Document:
+def fill_template_with_validation(
+    template_path: Path, data: dict[str, Any], template_name: str | None = None, company_name: str | None = None
+) -> Document:
     """Fill template with data, highlighting filled values in yellow."""
     doc = Document(str(template_path))
     empty_counter = new_empty_counter()
@@ -1986,6 +1994,7 @@ def fill_template_with_validation(template_path: Path, data: dict[str, Any], tem
     # Returns synthetic {token: value} pairs the highlighter fills like any slot.
     try:
         from scout.tools.repeat_regions import expand_repeat_regions
+
         synth = expand_repeat_regions(doc, data, template_name=template_name, company_name=company_name)
         if synth:
             data = {**data, **synth}
@@ -1993,13 +2002,27 @@ def fill_template_with_validation(template_path: Path, data: dict[str, Any], tem
         logging.getLogger("legalscout").warning(f"repeat-region expansion skipped: {e}")
 
     for paragraph in doc.paragraphs:
-        _fill_paragraph_highlighted(paragraph, data, PLACEHOLDER_PATTERN, template_name=template_name, company_name=company_name, empty_counter=empty_counter)
+        _fill_paragraph_highlighted(
+            paragraph,
+            data,
+            PLACEHOLDER_PATTERN,
+            template_name=template_name,
+            company_name=company_name,
+            empty_counter=empty_counter,
+        )
 
     for table in doc.tables:
         for row in table.rows:
             for cell in row.cells:
                 for paragraph in cell.paragraphs:
-                    _fill_paragraph_highlighted(paragraph, data, PLACEHOLDER_PATTERN, template_name=template_name, company_name=company_name, empty_counter=empty_counter)
+                    _fill_paragraph_highlighted(
+                        paragraph,
+                        data,
+                        PLACEHOLDER_PATTERN,
+                        template_name=template_name,
+                        company_name=company_name,
+                        empty_counter=empty_counter,
+                    )
 
     return doc
 
@@ -2012,7 +2035,8 @@ def _get_company_field(company_row: dict, column_path: str) -> str | None:
 
     # Handle array access: members[0].name
     import re
-    array_match = re.match(r'(\w+)\[(\d+)\]\.(\w+)', column_path)
+
+    array_match = re.match(r"(\w+)\[(\d+)\]\.(\w+)", column_path)
     if array_match:
         field, idx, subfield = array_match.groups()
         arr = company_row.get(field, [])
@@ -2031,13 +2055,14 @@ def _get_field_mapping(template_name: str) -> dict | None:
     conn = None
     try:
         from db.connection import get_db_conn
+
         conn = get_db_conn()
         cur = conn.cursor()
         cur.execute("SELECT field_mapping FROM templates WHERE name = %s", (template_name,))
         row = cur.fetchone()
         cur.close()
         if row and row[0]:
-            raw = row[0] if isinstance(row[0], dict) else __import__('json').loads(row[0])
+            raw = row[0] if isinstance(row[0], dict) else __import__("json").loads(row[0])
             return normalise_mapping(raw)
     except Exception as e:
         logging.getLogger("legalscout").warning(f"Failed to load field mapping for '{template_name}': {e}")
@@ -2050,17 +2075,22 @@ def _get_field_mapping(template_name: str) -> dict | None:
 def _company_row_to_dict(row) -> dict:
     """Map a companies table row to the resolver's field dict."""
     return {
-        "company_name_english": row[0], "company_registration_number": row[1],
-        "registered_office_address": row[2], "principal_place_of_business": row[3],
-        "status": row[4], "company_type": row[5],
+        "company_name_english": row[0],
+        "company_registration_number": row[1],
+        "registered_office_address": row[2],
+        "principal_place_of_business": row[3],
+        "status": row[4],
+        "company_type": row[5],
         "directors": row[6] if isinstance(row[6], list) else [],
         "members": row[7] if isinstance(row[7], list) else [],
-        "total_shares_issued": row[8], "currency_of_share_capital": row[9],
+        "total_shares_issued": row[8],
+        "currency_of_share_capital": row[9],
         "date_of_last_annual_return": str(row[10]) if row[10] else None,
         "financial_year_end_date": str(row[11]) if row[11] else None,
         "ultimate_holding_company_name": row[12],
         "next_financial_year_end_date": str(row[13]) if row[13] else None,
-        "auditor_name": row[14], "auditor_fee": row[15],
+        "auditor_name": row[14],
+        "auditor_fee": row[15],
     }
 
 
@@ -2074,9 +2104,11 @@ def _get_company_from_db(company_name: str) -> dict | None:
     conn = None
     try:
         from db.connection import get_db_conn
+
         conn = get_db_conn()
         cur = conn.cursor()
-        cur.execute("""
+        cur.execute(
+            """
             SELECT company_name_english, company_registration_number, registered_office_address,
                    principal_place_of_business, status, company_type, directors, members,
                    total_shares_issued, currency_of_share_capital, date_of_last_annual_return,
@@ -2084,7 +2116,9 @@ def _get_company_from_db(company_name: str) -> dict | None:
                    next_financial_year_end_date, auditor_name, auditor_fee
             FROM companies WHERE company_name_english ILIKE %s
             ORDER BY company_name_english
-        """, (f"%{company_name}%",))
+        """,
+            (f"%{company_name}%",),
+        )
         rows = cur.fetchall()
         cur.close()
 
@@ -2142,11 +2176,7 @@ def _resolve_from_data(placeholder: str, data: dict[str, Any]) -> str | None:
     # (a meeting date and a signing date) mean the caller distinguished them,
     # and picking either would put one date where the other belongs.
     if placeholder_canonical == "date":
-        qualified = [
-            value
-            for key_norm, _kc, value in normalized_items
-            if _QUALIFIED_DATE_RE.match(key_norm)
-        ]
+        qualified = [value for key_norm, _kc, value in normalized_items if _QUALIFIED_DATE_RE.match(key_norm)]
         if len(qualified) == 1:
             return qualified[0]
 
@@ -2180,7 +2210,13 @@ def _explicitly_supplied(placeholder: str, custom_data: dict[str, Any] | None) -
     return False
 
 
-def find_replacement(placeholder: str, data: dict[str, Any], template_name: str = None, company_name: str = None, document_id: Any = None) -> str | None:
+def find_replacement(
+    placeholder: str,
+    data: dict[str, Any],
+    template_name: str | None = None,
+    company_name: str | None = None,
+    document_id: Any = None,
+) -> str | None:
     """Find replacement value using learned field_mapping (if available) or fallback to data lookup."""
     placeholder_norm = normalize_field(placeholder)
 
@@ -2200,8 +2236,11 @@ def find_replacement(placeholder: str, data: dict[str, Any], template_name: str 
 
                 if source == "slot" and slot_of(config):
                     resolved = resolve_slot(
-                        placeholder, config, data,
-                        company_name=company_name, document_id=document_id,
+                        placeholder,
+                        config,
+                        data,
+                        company_name=company_name,
+                        document_id=document_id,
                         blank=LEFT_BLANK,
                     )
                     if isinstance(resolved, list):
@@ -2241,8 +2280,11 @@ def find_replacement(placeholder: str, data: dict[str, Any], template_name: str 
                     # as free text, and the two could disagree or come out blank
                     # while the register held the number all along.
                     companion = companion_identifier(
-                        placeholder, mapping, data,
-                        company_name=company_name, document_id=document_id,
+                        placeholder,
+                        mapping,
+                        data,
+                        company_name=company_name,
+                        document_id=document_id,
                     )
                     if companion:
                         return companion
@@ -2266,9 +2308,13 @@ def find_replacement(placeholder: str, data: dict[str, Any], template_name: str 
 
     # Final fallback — any unfilled placeholder becomes TBD so it is not left raw in the doc
     KNOWN_USER_INPUT = {
-        "financial_year_end_date", "next_financial_year_end_date",
-        "auditor_name", "auditor_fee", "auditor_remuneration",
-        "meeting_time", "shareholder_name",
+        "financial_year_end_date",
+        "next_financial_year_end_date",
+        "auditor_name",
+        "auditor_fee",
+        "auditor_remuneration",
+        "meeting_time",
+        "shareholder_name",
     }
     if placeholder_norm in KNOWN_USER_INPUT or "financial_year" in placeholder_norm or "auditor" in placeholder_norm:
         return "TBD"

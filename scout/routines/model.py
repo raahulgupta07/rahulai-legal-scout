@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 # A step is done when every key it `produces` is present in run state.
 DONE_PRODUCED = "produced"
@@ -62,7 +62,7 @@ class RoutineInput:
     source_hint: str = "user"
     notes: str = ""
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "key": self.key,
             "label": self.label,
@@ -80,15 +80,15 @@ class RoutineStep:
     key: str
     no: float
     title: str
-    tool: Optional[str] = None
-    args: Dict[str, Any] = field(default_factory=dict)
-    requires: List[str] = field(default_factory=list)
-    produces: List[str] = field(default_factory=list)
+    tool: str | None = None
+    args: dict[str, Any] = field(default_factory=dict)
+    requires: list[str] = field(default_factory=list)
+    produces: list[str] = field(default_factory=list)
     done_when: str = DONE_PRODUCED
     optional: bool = False
     notes: str = ""
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "key": self.key,
             "no": self.no,
@@ -115,28 +115,28 @@ class Routine:
     name: str
     title: str
     description: str = ""
-    skill: Optional[str] = None
+    skill: str | None = None
     version: str = "1.0.0"
     enabled: bool = False
     source: str = "catalog"
-    triggers: List[str] = field(default_factory=list)
-    inputs: List[RoutineInput] = field(default_factory=list)
-    steps: List[RoutineStep] = field(default_factory=list)
+    triggers: list[str] = field(default_factory=list)
+    inputs: list[RoutineInput] = field(default_factory=list)
+    steps: list[RoutineStep] = field(default_factory=list)
 
     # -- lookups ------------------------------------------------------------
-    def step(self, key: str) -> Optional[RoutineStep]:
+    def step(self, key: str) -> RoutineStep | None:
         for s in self.steps:
             if s.key == key:
                 return s
         return None
 
-    def input(self, key: str) -> Optional[RoutineInput]:
+    def input(self, key: str) -> RoutineInput | None:
         for i in self.inputs:
             if i.key == key:
                 return i
         return None
 
-    def ordered_steps(self) -> List[RoutineStep]:
+    def ordered_steps(self) -> list[RoutineStep]:
         """Steps in execution order.
 
         Sorted by `no`, not by list position. The two agree in the catalogue,
@@ -146,18 +146,18 @@ class Routine:
         """
         return sorted(self.steps, key=lambda s: (s.no, s.key))
 
-    def required_input_keys(self) -> List[str]:
+    def required_input_keys(self) -> list[str]:
         return [i.key for i in self.inputs if i.required]
 
-    def tool_names(self) -> List[str]:
+    def tool_names(self) -> list[str]:
         """Every distinct tool this routine calls, in step order."""
-        out: List[str] = []
+        out: list[str] = []
         for s in self.ordered_steps():
             if s.tool and s.tool not in out:
                 out.append(s.tool)
         return out
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "name": self.name,
             "title": self.title,
@@ -175,7 +175,7 @@ class Routine:
 # ---------------------------------------------------------------------------
 # Validation
 # ---------------------------------------------------------------------------
-def validate(routine: Routine, known_tools: Optional[set] = None) -> List[str]:
+def validate(routine: Routine, known_tools: set | None = None) -> list[str]:
     """Return a list of defect strings. Empty list means the routine is sound.
 
     Returns rather than raises. A malformed routine is a data problem, and the
@@ -196,7 +196,7 @@ def validate(routine: Routine, known_tools: Optional[set] = None) -> List[str]:
     nothing raised — the model followed the instruction, found no such tool,
     and the review step simply did not happen.
     """
-    defects: List[str] = []
+    defects: list[str] = []
     where = f"routine {routine.name!r}"
 
     if not _NAME_RE.match(routine.name or ""):
@@ -215,9 +215,7 @@ def validate(routine: Routine, known_tools: Optional[set] = None) -> List[str]:
         if inp.kind not in INPUT_KINDS:
             defects.append(f"{where}: input {inp.key!r} has unknown kind {inp.kind!r}")
         if inp.source_hint not in SOURCE_HINTS:
-            defects.append(
-                f"{where}: input {inp.key!r} has unknown source_hint {inp.source_hint!r}"
-            )
+            defects.append(f"{where}: input {inp.key!r} has unknown source_hint {inp.source_hint!r}")
 
     # -- steps --------------------------------------------------------------
     if not routine.steps:
@@ -247,15 +245,13 @@ def validate(routine: Routine, known_tools: Optional[set] = None) -> List[str]:
             # which silently never runs, which is the exact failure mode this
             # whole layer exists to make visible.
             defects.append(
-                f"{sw}: done_when='produced' but produces nothing — "
-                "it would count as done without ever running"
+                f"{sw}: done_when='produced' but produces nothing — it would count as done without ever running"
             )
 
         for key in step.requires:
             if key not in available:
                 defects.append(
-                    f"{sw}: requires {key!r}, which is neither a declared input "
-                    "nor produced by any earlier step"
+                    f"{sw}: requires {key!r}, which is neither a declared input nor produced by any earlier step"
                 )
         for key in step.produces:
             if not _KEY_RE.match(key or ""):

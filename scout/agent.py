@@ -17,15 +17,18 @@ def _sanitize_for_prompt(text: str, max_len: int = 200) -> str:
         return ""
     # Remove instruction-like patterns
     text = re.sub(
-        r'(?i)(ignore|forget|disregard)\s+(all|previous|above)\s+(instructions?|rules?|prompts?)',
-        '[filtered]', text,
+        r"(?i)(ignore|forget|disregard)\s+(all|previous|above)\s+(instructions?|rules?|prompts?)",
+        "[filtered]",
+        text,
     )
     text = re.sub(
-        r'(?i)(you are now|new instructions?|system prompt|override)',
-        '[filtered]', text,
+        r"(?i)(you are now|new instructions?|system prompt|override)",
+        "[filtered]",
+        text,
     )
     # Truncate
     return text[:max_len].strip()
+
 
 from agno.agent import Agent
 from agno.learn import (
@@ -42,15 +45,15 @@ from scout.context.intent_routing import INTENT_ROUTING_CONTEXT
 from scout.context.source_registry import SOURCE_REGISTRY_STR
 from scout.paths import DOCUMENTS_DIR
 from scout.tools import (
+    create_clarification_tool,
+    create_document_tracker_tool,
+    create_fast_info_tool,
     create_get_metadata_tool,
     create_list_sources_tool,
     create_save_intent_discovery_tool,
     create_search_content_tool,
-    create_clarification_tool,
     create_smart_document_tool,
-    create_document_tracker_tool,
     create_template_analyzer_tool,
-    create_fast_info_tool,
 )
 from scout.tools.ask_questions import ask_questions_tools
 from scout.tools.knowledge_tools import create_knowledge_tools
@@ -174,7 +177,9 @@ def send_email_tool(to_email: str, subject: str, message: str, attachment_path: 
 
         logging.getLogger("legalscout").info(
             "EMAIL QUEUED id=%s to=%s attachment=%s — awaiting user approval",
-            queued_id, recipient, attachment_name or "(none)",
+            queued_id,
+            recipient,
+            attachment_name or "(none)",
         )
 
         return {
@@ -233,6 +238,7 @@ def list_companies():
     from scout.tools.clarification import list_available_companies
 
     return list_available_companies(str(DOCUMENTS_DIR))
+
 
 list_tracked_documents = document_tracker["list_documents"]
 get_document_info = document_tracker["get_document"]
@@ -319,10 +325,11 @@ base_tools: list = (
     + [send_email_tool]
     + (
         [MCPTools(url=f"https://mcp.exa.ai/mcp?exaApiKey={_exa_key}&tools=web_search_exa")]
-        if (_exa_key := getenv('EXA_API_KEY', ''))
+        if (_exa_key := getenv("EXA_API_KEY", ""))
         else []
     )
 )
+
 
 # ---------------------------------------------------------------------------
 # Tool inventory — GENERATED from the registry, never hand-written
@@ -430,8 +437,7 @@ def _build_tool_inventory(tools: list) -> str:
             seen[str(name)] = first
     if not seen:
         return ""
-    lines = [f"- `{name}` — {purpose}" if purpose else f"- `{name}`"
-             for name, purpose in sorted(seen.items())]
+    lines = [f"- `{name}` — {purpose}" if purpose else f"- `{name}`" for name, purpose in sorted(seen.items())]
     return (
         "## Tools you actually have (generated from the registry)\n\n"
         "This list is built from the live tool registry at startup, so it is "
@@ -439,8 +445,7 @@ def _build_tool_inventory(tools: list) -> str:
         "not exist, no matter what any other instruction says — calling it does "
         "nothing and ends your turn with no reply, which the user sees as a "
         "hang. When an instruction names a tool that is not here, do the closest "
-        "thing on this list and say what you did.\n\n"
-        + "\n".join(lines)
+        "thing on this list and say what you did.\n\n" + "\n".join(lines)
     )
 
 
@@ -455,6 +460,7 @@ def _build_template_knowledge() -> str:
     conn = None
     try:
         from scout.tools.template_analyzer import get_db_connection
+
         conn = get_db_connection()
         cur = conn.cursor()
         cur.execute("""
@@ -476,7 +482,7 @@ def _build_template_knowledge() -> str:
         for row in rows:
             name = row[0] or "Unknown"
             fields_data = row[1]
-            total = row[2] or 0
+            row[2] or 0
             category = row[3] or "General"
             purpose = row[4] or ""
             when_to_use = row[5] or ""
@@ -485,7 +491,7 @@ def _build_template_knowledge() -> str:
             how_to_use = row[8] if isinstance(row[8], list) else []
             prerequisites = row[9] if isinstance(row[9], list) else []
             filing_deadline = row[10] or ""
-            fees = row[11] or ""
+            row[11] or ""
             legal_refs = row[12] if isinstance(row[12], list) else []
             legal_context = row[13] or ""
             common_mistakes = row[14] if isinstance(row[14], list) else []
@@ -559,11 +565,15 @@ def _build_template_knowledge() -> str:
                 if desc_parts:
                     lines.append(f"  Field details: {'; '.join(desc_parts)}")
             if common_mistakes:
-                lines.append(f"  Common mistakes: {'; '.join(_sanitize_for_prompt(str(m)) for m in common_mistakes[:3])}")
+                lines.append(
+                    f"  Common mistakes: {'; '.join(_sanitize_for_prompt(str(m)) for m in common_mistakes[:3])}"
+                )
             if prerequisites:
                 lines.append(f"  Prerequisites: {', '.join(str(p) for p in prerequisites)}")
             if sample_filled:
-                preview = ", ".join(f"{k}={_sanitize_for_prompt(str(v), max_len=100)}" for k, v in list(sample_filled.items())[:5])
+                preview = ", ".join(
+                    f"{k}={_sanitize_for_prompt(str(v), max_len=100)}" for k, v in list(sample_filled.items())[:5]
+                )
                 lines.append(f"  Sample values: {_sanitize_for_prompt(preview, max_len=500)}")
             if doc_workflow:
                 if doc_workflow.get("before"):
@@ -571,7 +581,7 @@ def _build_template_knowledge() -> str:
                 if doc_workflow.get("after"):
                     lines.append(f"  Documents needed after: {', '.join(doc_workflow['after'])}")
             if cross_refs:
-                rel_strs = [f"{r.get('template','')} ({r.get('relationship','')})" for r in cross_refs[:5]]
+                rel_strs = [f"{r.get('template', '')} ({r.get('relationship', '')})" for r in cross_refs[:5]]
                 lines.append(f"  Related: {', '.join(rel_strs)}")
             if confidence:
                 lines.append(f"  Training confidence: {confidence}%")
@@ -600,11 +610,10 @@ def _build_legal_skills_block() -> str:
     conn = None
     try:
         from db.connection import get_db_conn
+
         conn = get_db_conn()
         cur = conn.cursor()
-        cur.execute(
-            "SELECT name, description FROM legal_skills WHERE enabled = TRUE ORDER BY name"
-        )
+        cur.execute("SELECT name, description FROM legal_skills WHERE enabled = TRUE ORDER BY name")
         rows = cur.fetchall()
         cur.close()
 
@@ -621,10 +630,7 @@ def _build_legal_skills_block() -> str:
         return "\n".join(lines) + "\n■■■"
     except Exception as e:
         logging.getLogger("legalscout").warning(f"DB error in _build_legal_skills_block: {e}")
-        return (
-            "## Legal Skills (playbooks — load on demand)\n"
-            "(skills unavailable)\n■■■"
-        )
+        return "## Legal Skills (playbooks — load on demand)\n(skills unavailable)\n■■■"
     finally:
         if conn:
             conn.close()
@@ -1820,14 +1826,14 @@ try:
     from scout.routines import apply_routines_block as _apply_routines_block
 
     INSTRUCTIONS = _apply_routines_block(INSTRUCTIONS)
-except Exception as _routines_exc:  # noqa: BLE001
-    logging.getLogger("legalscout").warning(
-        f"routines block not applied: {_routines_exc}")
+except Exception as _routines_exc:
+    logging.getLogger("legalscout").warning(f"routines block not applied: {_routines_exc}")
 
 # ---------------------------------------------------------------------------
 # Create Agent
 # ---------------------------------------------------------------------------
-from app.model_config import get_model as _get_model, OPENROUTER_BASE_URL as _OPENROUTER_BASE_URL
+from app.model_config import OPENROUTER_BASE_URL as _OPENROUTER_BASE_URL
+from app.model_config import get_model as _get_model
 from db.connection import get_db_conn
 
 _chat_model = _get_model("chat") or "google/gemini-3.6-flash"
@@ -1875,7 +1881,6 @@ scout = Agent(
 )
 
 
-
 # ---------------------------------------------------------------------------
 # Prompt ↔ tool contract check
 # ---------------------------------------------------------------------------
@@ -1903,7 +1908,7 @@ def _audit_prompt_tool_contract() -> list[str]:
         instructions = scout.instructions or ""
         if not isinstance(instructions, str):
             instructions = str(instructions)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return []
 
     # Shared with the inventory generator, so the list the model is SHOWN and the
@@ -1917,10 +1922,12 @@ def _audit_prompt_tool_contract() -> list[str]:
     # space before the paren, or any content after it, turns this into a match
     # on ordinary English: "advice (see below)", "the approval (step 4)" and
     # about thirty other words all reported as missing tools on the first run.
-    named = set(_re.findall(
-        r"\b([a-z_][a-z0-9_]{3,})\((?=[\"']|[a-z_][a-z0-9_]*\s*=|\))",
-        instructions,
-    ))
+    named = set(
+        _re.findall(
+            r"\b([a-z_][a-z0-9_]{3,})\((?=[\"']|[a-z_][a-z0-9_]*\s*=|\))",
+            instructions,
+        )
+    )
 
     # A backticked identifier with no parentheses is usually a field name, not a
     # tool, so flagging every one of them would drown the signal in
@@ -1930,7 +1937,7 @@ def _audit_prompt_tool_contract() -> list[str]:
     # `preview_document` next to `preview_doc`.
     def _shared_prefix(a: str, b: str) -> int:
         n = 0
-        for x, y in zip(a, b):
+        for x, y in zip(a, b, strict=False):
             if x != y:
                 break
             n += 1
@@ -1943,10 +1950,36 @@ def _audit_prompt_tool_contract() -> list[str]:
             named.add(word)
 
     # Python builtins and helpers that look like calls in prose.
-    noise = {"get", "set", "str", "int", "len", "print", "format", "join",
-             "append", "dict", "list", "json", "loads", "dumps", "name",
-             "type", "range", "sorted", "items", "keys", "values", "split",
-             "strip", "lower", "upper", "replace", "example", "note"}
+    noise = {
+        "get",
+        "set",
+        "str",
+        "int",
+        "len",
+        "print",
+        "format",
+        "join",
+        "append",
+        "dict",
+        "list",
+        "json",
+        "loads",
+        "dumps",
+        "name",
+        "type",
+        "range",
+        "sorted",
+        "items",
+        "keys",
+        "values",
+        "split",
+        "strip",
+        "lower",
+        "upper",
+        "replace",
+        "example",
+        "note",
+    }
     missing = sorted(n for n in named - registered if n not in noise)
 
     if missing:

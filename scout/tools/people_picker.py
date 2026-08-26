@@ -21,7 +21,7 @@ import json
 import logging
 import re
 from datetime import date
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from agno.run import RunContext
 from agno.tools import tool
@@ -66,16 +66,13 @@ def _session_from_payload(candidates_json: Any) -> str:
     again, rather than a pick leaking into another conversation.
     """
     try:
-        payload = (
-            json.loads(candidates_json)
-            if isinstance(candidates_json, str)
-            else (candidates_json or {})
-        )
+        payload = json.loads(candidates_json) if isinstance(candidates_json, str) else (candidates_json or {})
     except (ValueError, TypeError):
         return ""
     if not isinstance(payload, dict):
         return ""
     return str(payload.get("session") or "").strip()
+
 
 DIRECTOR_ROLES = ("director", "both")
 SHAREHOLDER_ROLES = ("individual_shareholder", "both")
@@ -92,10 +89,32 @@ SHAREHOLDER_ROLES = ("individual_shareholder", "both")
 #
 # U/Daw are the common adult titles; Ko/Ma/Maung/Mi are younger forms; Saw/Naw
 # are Karen, Sai/Nang Shan, Nai Mon; Bo and Thakin are historical/military.
-_HONORIFICS = frozenset({
-    "u", "daw", "ko", "ma", "maung", "mi", "nai", "saw", "naw", "sai", "nang",
-    "dr", "dr.", "bo", "thakin", "mr", "mr.", "mrs", "mrs.", "ms", "ms.", "miss",
-})
+_HONORIFICS = frozenset(
+    {
+        "u",
+        "daw",
+        "ko",
+        "ma",
+        "maung",
+        "mi",
+        "nai",
+        "saw",
+        "naw",
+        "sai",
+        "nang",
+        "dr",
+        "dr.",
+        "bo",
+        "thakin",
+        "mr",
+        "mr.",
+        "mrs",
+        "mrs.",
+        "ms",
+        "ms.",
+        "miss",
+    }
+)
 
 
 def strip_honorifics(name: str) -> str:
@@ -112,6 +131,7 @@ def strip_honorifics(name: str) -> str:
     stripped = " ".join(words[i:]).strip()
     return stripped or str(name or "").strip()
 
+
 NEW_PERSON_FIELDS = [
     {"name": "full_name", "label": "Full name", "required": True},
     {"name": "nrc_passport_no", "label": "NRC / Passport no.", "required": False},
@@ -120,7 +140,7 @@ NEW_PERSON_FIELDS = [
 ]
 
 
-def _company_row(cur, company_name: str) -> Optional[tuple]:
+def _company_row(cur, company_name: str) -> tuple | None:
     """Resolve a company by exact then fuzzy name match."""
     cur.execute(
         """
@@ -150,7 +170,7 @@ def _company_row(cur, company_name: str) -> Optional[tuple]:
     return cur.fetchone()
 
 
-def _as_list(value: Any) -> List[Dict]:
+def _as_list(value: Any) -> list[dict]:
     return [v for v in value if isinstance(v, dict)] if isinstance(value, list) else []
 
 
@@ -161,8 +181,8 @@ def _candidate(
     subtitle: str = "",
     party_type: str = "individual",
     source: str = "company_people",
-    representatives: Optional[List[Dict]] = None,
-) -> Dict[str, Any]:
+    representatives: list[dict] | None = None,
+) -> dict[str, Any]:
     """Build the stable candidate shape the chat UI renders."""
     return {
         "id": str(person_id) if person_id is not None else f"name:{name}",
@@ -175,7 +195,7 @@ def _candidate(
     }
 
 
-def _registered_people(cur, company_id: int, roles: tuple) -> List[Dict]:
+def _registered_people(cur, company_id: int, roles: tuple) -> list[dict]:
     """Candidates from the people register for one company and role set."""
     cur.execute(
         """
@@ -241,7 +261,7 @@ _ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _EMPTY_DATE_MARKERS = frozenset({"", "-", "--", "n/a", "na", "none", "null", "nil"})
 
 
-def _cessation_status(entry: Dict[str, Any]) -> Tuple[bool, str]:
+def _cessation_status(entry: dict[str, Any]) -> tuple[bool, str]:
     """Whether a legacy officer has already left office, and how that should read.
 
     `_registered_people` filters cessations in SQL, but this fallback used to read
@@ -287,7 +307,7 @@ def _cessation_status(entry: Dict[str, Any]) -> Tuple[bool, str]:
     return False, unreadable
 
 
-def _legacy_people(entries: List[Dict], role_label: str) -> List[Dict]:
+def _legacy_people(entries: list[dict], role_label: str) -> list[dict]:
     """Fallback candidates from the legacy companies.directors / members JSONB."""
     candidates = []
     for entry in entries:
@@ -321,7 +341,7 @@ def _legacy_people(entries: List[Dict], role_label: str) -> List[Dict]:
     return candidates
 
 
-def _directors_of(cur, company_name: str) -> Dict[str, Any]:
+def _directors_of(cur, company_name: str) -> dict[str, Any]:
     """Director candidates for a company, register first then legacy JSONB."""
     row = _company_row(cur, company_name)
     if not row:
@@ -339,13 +359,13 @@ def _directors_of(cur, company_name: str) -> Dict[str, Any]:
     }
 
 
-def _corporate_representatives(cur, corporate_name: str) -> List[Dict]:
+def _corporate_representatives(cur, corporate_name: str) -> list[dict]:
     """Directors of a corporate shareholder, used as its representatives."""
     resolved = _directors_of(cur, corporate_name)
     return resolved["candidates"] if resolved.get("found") else []
 
 
-def _shareholders_of(cur, company_name: str) -> Dict[str, Any]:
+def _shareholders_of(cur, company_name: str) -> dict[str, Any]:
     """Individual and corporate shareholder candidates for a company."""
     row = _company_row(cur, company_name)
     if not row:
@@ -387,13 +407,13 @@ def _shareholders_of(cur, company_name: str) -> Dict[str, Any]:
 
 def _payload(
     picker: str,
-    candidates: List[Dict],
+    candidates: list[dict],
     company: Any = None,
     purpose: str = "",
     multi_select: bool = False,
     note: str = "",
     session: str = "",
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Wrap candidates in the envelope the chat UI consumes."""
     return {
         "picker": picker,
@@ -446,9 +466,7 @@ def _lookup_instruction(picker: str, hint: str = "", resolved: Any = None) -> st
     )
 
 
-def lookup_director_candidates(
-    company_name: str, person_name: str = "", run_context: RunContext = None
-) -> str:
+def lookup_director_candidates(company_name: str, person_name: str = "", run_context: RunContext = None) -> str:
     """Fetch the director candidates for a company, as JSON for choose_director.
 
     Args:
@@ -481,10 +499,14 @@ def lookup_director_candidates(
         )
         return json.dumps(payload)
     except Exception as e:
-        return json.dumps({
-            "error": str(e), "candidates": [], "allow_new": True,
-            "agent_instruction": _LOOKUP_FAILED_INSTRUCTION,
-        })
+        return json.dumps(
+            {
+                "error": str(e),
+                "candidates": [],
+                "allow_new": True,
+                "agent_instruction": _LOOKUP_FAILED_INSTRUCTION,
+            }
+        )
     finally:
         if conn is not None:
             conn.close()
@@ -511,15 +533,18 @@ def lookup_representative_candidates(corporate_shareholder_name: str, run_contex
         )
         payload["agent_instruction"] = _lookup_instruction(
             "choose_representative_director",
-            " — these are the corporate shareholder's OWN directors, so never "
-            "substitute the document company's board",
+            " — these are the corporate shareholder's OWN directors, so never substitute the document company's board",
         )
         return json.dumps(payload)
     except Exception as e:
-        return json.dumps({
-            "error": str(e), "candidates": [], "allow_new": True,
-            "agent_instruction": _LOOKUP_FAILED_INSTRUCTION,
-        })
+        return json.dumps(
+            {
+                "error": str(e),
+                "candidates": [],
+                "allow_new": True,
+                "agent_instruction": _LOOKUP_FAILED_INSTRUCTION,
+            }
+        )
     finally:
         if conn is not None:
             conn.close()
@@ -550,10 +575,14 @@ def lookup_attendee_candidates(company_name: str, run_context: RunContext = None
         )
         return json.dumps(payload)
     except Exception as e:
-        return json.dumps({
-            "error": str(e), "candidates": [], "allow_new": True,
-            "agent_instruction": _LOOKUP_FAILED_INSTRUCTION,
-        })
+        return json.dumps(
+            {
+                "error": str(e),
+                "candidates": [],
+                "allow_new": True,
+                "agent_instruction": _LOOKUP_FAILED_INSTRUCTION,
+            }
+        )
     finally:
         if conn is not None:
             conn.close()
@@ -622,16 +651,20 @@ def lookup_register_candidates(search: str = "", company_name: str = "", run_con
         )
         return json.dumps(payload)
     except Exception as e:
-        return json.dumps({
-            "error": str(e), "candidates": [], "allow_new": True,
-            "agent_instruction": _LOOKUP_FAILED_INSTRUCTION,
-        })
+        return json.dumps(
+            {
+                "error": str(e),
+                "candidates": [],
+                "allow_new": True,
+                "agent_instruction": _LOOKUP_FAILED_INSTRUCTION,
+            }
+        )
     finally:
         if conn is not None:
             conn.close()
 
 
-def _narrow(candidates: List[Dict], person_name: str) -> List[Dict]:
+def _narrow(candidates: list[dict], person_name: str) -> list[dict]:
     """Candidates filtered to a name the user gave, or all of them.
 
     Falls back to the FULL list whenever the name matches nothing — a typo or an
@@ -645,7 +678,7 @@ def _narrow(candidates: List[Dict], person_name: str) -> List[Dict]:
     return hits or candidates
 
 
-def _resolution(candidates: List[Dict], search: str) -> Optional[Dict[str, Any]]:
+def _resolution(candidates: list[dict], search: str) -> dict[str, Any] | None:
     """The one person the user already named, when there is exactly one.
 
     Asking "who is resigning?" after the user opened with "resignation letter of
@@ -680,7 +713,7 @@ def _resolution(candidates: List[Dict], search: str) -> Optional[Dict[str, Any]]
         "searched_for": term,
         "instruction": (
             f"The user already named this person, and exactly one register entry matches "
-            f"\"{term}\": {name}"
+            f'"{term}": {name}'
             + (f" (NRC/passport {identifier})" if identifier else "")
             + ". Do NOT open a picker card and do NOT ask who they mean — that question is "
             "already answered. Use this person, pass the name through custom_data when "
@@ -690,8 +723,8 @@ def _resolution(candidates: List[Dict], search: str) -> Optional[Dict[str, Any]]
     }
 
 
-def _describe(entry: Dict[str, Any]) -> str:
-    """"NAME (represented by REP)" — how one chosen party reads in prose."""
+def _describe(entry: dict[str, Any]) -> str:
+    """ "NAME (represented by REP)" — how one chosen party reads in prose."""
     name = str(entry.get("name") or "").strip()
     rep = entry.get("representative")
     rep_name = str(rep.get("name") or "").strip() if isinstance(rep, dict) else ""
@@ -716,14 +749,14 @@ def _classify_purpose(purpose: str) -> str:
         from scout.tools.slot_resolver import classify_kind
 
         return classify_kind(purpose)
-    except Exception:  # noqa: BLE001 — a classification miss must never break a pick
+    except Exception:
         return ""
 
 
 def _record_selection(
     picker: str,
     company_name: str,
-    chosen: List[Dict],
+    chosen: list[dict],
     purpose: str = "",
     session_id: str = "",
 ) -> None:
@@ -767,7 +800,7 @@ def _record_selection(
         )
         conn.commit()
         cur.close()
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         import logging
 
         logging.getLogger("legalscout").warning(f"Could not record {picker} selection: {e}")
@@ -807,7 +840,7 @@ def _bind_session_company(session_id: str, company_name: str) -> None:
         if resolution.status != RESOLVED:
             return
         bind_session(key, resolution.company_id, bound_by="people_picker")
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         import logging
 
         logging.getLogger("legalscout").warning(f"Could not bind session {key!r} to {name!r}: {e}")
@@ -873,7 +906,7 @@ def _selection_result(
         from scout.tools.task_memory import pending_task_instruction
 
         _pending = pending_task_instruction(session_id)
-    except Exception:  # noqa: BLE001 — a picker must never fail for memory
+    except Exception:
         _pending = ""
 
     return json.dumps(
@@ -890,8 +923,7 @@ def _selection_result(
                 "these names and continue the task NOW, IN THIS SAME TURN — if a document "
                 "was requested, generate it immediately, passing these names through "
                 "custom_data. Never end your turn empty: always write the user a line "
-                "saying who was chosen and what you did next."
-                + _pending
+                "saying who was chosen and what you did next." + _pending
             ),
         }
     )
@@ -915,7 +947,10 @@ def choose_director(
         selected: Filled in by the user from the chat picker. Never set this yourself.
     """
     return _selection_result(
-        "choose_director", selected, company_name, purpose,
+        "choose_director",
+        selected,
+        company_name,
+        purpose,
         session_id=_session_from_payload(candidates_json),
     )
 
@@ -945,7 +980,10 @@ def choose_representative_director(
     # than inferred — a prose purpose like "who signs for the shareholder" would
     # otherwise classify as a plain signatory.
     return _selection_result(
-        "choose_representative_director", selected, document_company, "representative",
+        "choose_representative_director",
+        selected,
+        document_company,
+        "representative",
         session_id=_session_from_payload(candidates_json),
     )
 
@@ -968,7 +1006,10 @@ def choose_attendees(
         selected: Ordered list filled in by the user from the chat picker. Never set this yourself.
     """
     return _selection_result(
-        "choose_attendees", selected, company_name, purpose,
+        "choose_attendees",
+        selected,
+        company_name,
+        purpose,
         session_id=_session_from_payload(candidates_json),
     )
 
@@ -1009,7 +1050,10 @@ def choose_person_from_register(
         )
 
     return _selection_result(
-        "choose_person_from_register", selected, company_name, purpose,
+        "choose_person_from_register",
+        selected,
+        company_name,
+        purpose,
         session_id=_session_from_payload(candidates_json),
     )
 

@@ -28,7 +28,7 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from scout.routines.model import (
     DONE_ALWAYS,
@@ -59,7 +59,7 @@ def routines_enabled() -> bool:
 # ---------------------------------------------------------------------------
 # State helpers
 # ---------------------------------------------------------------------------
-def is_present(state: Dict[str, Any], key: str) -> bool:
+def is_present(state: dict[str, Any], key: str) -> bool:
     """Whether `key` counts as answered in run state.
 
     None and a blank/whitespace string are ABSENT. Everything else is present,
@@ -77,12 +77,10 @@ def is_present(state: Dict[str, Any], key: str) -> bool:
     value = state[key]
     if value is None:
         return False
-    if isinstance(value, str) and not value.strip():
-        return False
-    return True
+    return not (isinstance(value, str) and not value.strip())
 
 
-def step_is_done(step: RoutineStep, state: Dict[str, Any]) -> bool:
+def step_is_done(step: RoutineStep, state: dict[str, Any]) -> bool:
     """Whether this step counts as complete, per its own done_when."""
     if step.done_when == DONE_ALWAYS:
         return True
@@ -103,7 +101,7 @@ def step_is_done(step: RoutineStep, state: Dict[str, Any]) -> bool:
     return False
 
 
-def missing_requires(step: RoutineStep, state: Dict[str, Any]) -> List[str]:
+def missing_requires(step: RoutineStep, state: dict[str, Any]) -> list[str]:
     return [key for key in step.requires if not is_present(state, key)]
 
 
@@ -121,14 +119,14 @@ class Plan:
 
     routine: str
     done: bool
-    next_step: Optional[str] = None
-    next_tool: Optional[str] = None
-    blocked_on: List[str] = field(default_factory=list)
-    missing_inputs: List[str] = field(default_factory=list)
-    completed: List[str] = field(default_factory=list)
-    remaining: List[str] = field(default_factory=list)
+    next_step: str | None = None
+    next_tool: str | None = None
+    blocked_on: list[str] = field(default_factory=list)
+    missing_inputs: list[str] = field(default_factory=list)
+    completed: list[str] = field(default_factory=list)
+    remaining: list[str] = field(default_factory=list)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "routine": self.routine,
             "done": self.done,
@@ -141,17 +139,15 @@ class Plan:
         }
 
 
-def plan(routine: Routine, state: Optional[Dict[str, Any]] = None) -> Plan:
+def plan(routine: Routine, state: dict[str, Any] | None = None) -> Plan:
     """Compute the next step of `routine` given everything known so far."""
     state = dict(state or {})
 
-    missing_inputs = [
-        key for key in routine.required_input_keys() if not is_present(state, key)
-    ]
+    missing_inputs = [key for key in routine.required_input_keys() if not is_present(state, key)]
 
-    completed: List[str] = []
-    remaining: List[str] = []
-    next_step: Optional[RoutineStep] = None
+    completed: list[str] = []
+    remaining: list[str] = []
+    next_step: RoutineStep | None = None
 
     for step in routine.ordered_steps():
         if step_is_done(step, state):
@@ -173,7 +169,7 @@ def plan(routine: Routine, state: Optional[Dict[str, Any]] = None) -> Plan:
     )
 
 
-def resolve_args(step: RoutineStep, state: Dict[str, Any]) -> Dict[str, Any]:
+def resolve_args(step: RoutineStep, state: dict[str, Any]) -> dict[str, Any]:
     """Render a step's argument template against run state.
 
     A string value of the form "$key" is replaced by state["key"]; every other
@@ -182,7 +178,7 @@ def resolve_args(step: RoutineStep, state: Dict[str, Any]) -> Dict[str, Any]:
     out with a visible "$company_name" fails loudly at the tool, whereas a
     silently dropped argument produces a document filled from a default.
     """
-    out: Dict[str, Any] = {}
+    out: dict[str, Any] = {}
     for name, value in (step.args or {}).items():
         if isinstance(value, str) and value.startswith("$"):
             ref = value[1:]
@@ -194,10 +190,10 @@ def resolve_args(step: RoutineStep, state: Dict[str, Any]) -> Dict[str, Any]:
 
 def advance(
     routine: Routine,
-    state: Dict[str, Any],
+    state: dict[str, Any],
     step_key: str,
-    produced: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
+    produced: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Return a NEW state with `step_key`'s results recorded.
 
     Never mutates the state passed in. A caller that holds the pre-step state
@@ -236,7 +232,7 @@ def _normalise(text: str) -> str:
     return _WS.sub(" ", str(text or "").strip().lower())
 
 
-def match_routine(text: str, routines: List[Routine]) -> Optional[Routine]:
+def match_routine(text: str, routines: list[Routine]) -> Routine | None:
     """Pick the routine whose trigger phrase best matches `text`.
 
     Pure: no flag check, no DB, no model. Disabled routines are skipped.
@@ -256,7 +252,7 @@ def match_routine(text: str, routines: List[Routine]) -> Optional[Routine]:
     if not haystack:
         return None
 
-    best: Optional[Routine] = None
+    best: Routine | None = None
     best_len = 0
     for routine in sorted(routines or [], key=lambda r: r.name):
         if not routine.enabled:
@@ -268,7 +264,7 @@ def match_routine(text: str, routines: List[Routine]) -> Optional[Routine]:
     return best
 
 
-def select_routine(text: str, routines: Optional[List[Routine]] = None) -> Optional[Routine]:
+def select_routine(text: str, routines: list[Routine] | None = None) -> Routine | None:
     """Flag-gated entry point. Returns None whenever routines are off.
 
     This is the ONLY matching function a caller outside this package should

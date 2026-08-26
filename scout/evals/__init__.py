@@ -11,10 +11,10 @@ from scout.evals.grader import GradeResult, check_source_citation, grade_respons
 from scout.evals.test_cases import CATEGORIES, TEST_CASES, TestCase
 
 __all__ = [
-    "TEST_CASES",
     "CATEGORIES",
-    "TestCase",
-    "grade_response",
-    "check_source_citation",
+    "TEST_CASES",
     "GradeResult",
+    "TestCase",
+    "check_source_citation",
+    "grade_response",
 ]

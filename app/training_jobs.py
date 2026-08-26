@@ -16,6 +16,7 @@ connection for the worker's lifetime is the single-runner guard: only the
 holder runs the queue; every other worker/process acquire-fails and exits.
 """
 
+import contextlib
 import json
 import logging
 import threading
@@ -112,8 +113,7 @@ def get_active_job(cap_logs: bool = True) -> dict:
     try:
         cur = conn.cursor(row_factory=dict_row)
         cur.execute(
-            "SELECT * FROM template_training_jobs "
-            "WHERE status IN ('queued','running') ORDER BY id DESC LIMIT 1"
+            "SELECT * FROM template_training_jobs WHERE status IN ('queued','running') ORDER BY id DESC LIMIT 1"
         )
         return _row_to_job(cur.fetchone(), cap_logs=cap_logs)
     finally:
@@ -138,8 +138,7 @@ def _peek(job_id: int) -> dict:
     try:
         cur = conn.cursor()
         cur.execute(
-            "SELECT status, EXTRACT(EPOCH FROM (now()-updated_at)) "
-            "FROM template_training_jobs WHERE id=%s",
+            "SELECT status, EXTRACT(EPOCH FROM (now()-updated_at)) FROM template_training_jobs WHERE id=%s",
             (job_id,),
         )
         row = cur.fetchone()
@@ -166,7 +165,7 @@ def _wait_server_ready(timeout: float = 60.0) -> bool:
             r = httpx.get(f"{_INTERNAL_BASE}/health", timeout=5.0)
             if r.status_code == 200:
                 return True
-        except Exception:  # noqa: BLE001 — not up yet
+        except Exception:
             pass
         time.sleep(2)
     return False
@@ -185,8 +184,7 @@ def create_job(templates: list) -> dict:
     try:
         cur = conn.cursor(row_factory=dict_row)
         cur.execute(
-            "INSERT INTO template_training_jobs (status, queue, total) "
-            "VALUES ('queued', %s, %s) RETURNING *",
+            "INSERT INTO template_training_jobs (status, queue, total) VALUES ('queued', %s, %s) RETURNING *",
             (Json(list(templates)), len(templates)),
         )
         job = _row_to_job(cur.fetchone())
@@ -232,10 +230,7 @@ def resume_incomplete() -> None:
     conn = get_db_conn()
     try:
         cur = conn.cursor()
-        cur.execute(
-            "SELECT id FROM template_training_jobs "
-            "WHERE status IN ('running','queued') ORDER BY id DESC"
-        )
+        cur.execute("SELECT id FROM template_training_jobs WHERE status IN ('running','queued') ORDER BY id DESC")
         ids = [r[0] for r in cur.fetchall()]
     finally:
         conn.close()
@@ -275,7 +270,7 @@ def _watchdog_loop() -> None:
             for job_id, status in rows:
                 log.info("[watchdog] reviving %s job %s", status, job_id)
                 threading.Thread(target=_worker, args=(job_id,), daemon=True).start()
-        except Exception:  # noqa: BLE001 — never let the watchdog die
+        except Exception:
             log.exception("Training watchdog iteration failed")
         time.sleep(_WATCHDOG_INTERVAL)
 
@@ -370,8 +365,7 @@ def _worker(job_id: int) -> None:
 
         cur = conn.cursor()
         cur.execute(
-            "UPDATE template_training_jobs SET status='running', updated_at=now() "
-            "WHERE id=%s",
+            "UPDATE template_training_jobs SET status='running', updated_at=now() WHERE id=%s",
             (job_id,),
         )
         conn.commit()
@@ -403,8 +397,7 @@ def _worker(job_id: int) -> None:
             name = queue[i]
             cur = conn.cursor()
             cur.execute(
-                "UPDATE template_training_jobs SET current_index=%s, "
-                "current_template=%s, updated_at=now() WHERE id=%s",
+                "UPDATE template_training_jobs SET current_index=%s, current_template=%s, updated_at=now() WHERE id=%s",
                 (i, name, job_id),
             )
             conn.commit()
@@ -413,10 +406,7 @@ def _worker(job_id: int) -> None:
 
             template_done = False
             try:
-                url = (
-                    f"{_INTERNAL_BASE}/api/knowledge/train-stream/"
-                    f"{urllib.parse.quote(name)}"
-                )
+                url = f"{_INTERNAL_BASE}/api/knowledge/train-stream/{urllib.parse.quote(name)}"
                 timeout = httpx.Timeout(connect=10.0, read=300.0, write=30.0, pool=10.0)
                 with httpx.stream("GET", url, headers=headers, timeout=timeout) as r:
                     if r.status_code != 200:
@@ -439,7 +429,7 @@ def _worker(job_id: int) -> None:
                                 _log(name, step, msg or "error", "error")
                             else:
                                 _log(name, step, msg, "info")
-            except Exception as e:  # noqa: BLE001 — a single failure must not halt the queue
+            except Exception as e:
                 log.warning("Training stream failed for %s: %s", name, e)
                 _log(name, "error", f"{name} — connection error: {e}", "error")
 
@@ -478,13 +468,11 @@ def _worker(job_id: int) -> None:
             # for the whole phase. The status line below gives it something to
             # show; the phase is still one blocking call, which is the next
             # thing to fix if it grows.
-            _log("", "deep_train_start",
-                 f"Refreshing agent knowledge for {len(queue)} template(s)…", "processing")
+            _log("", "deep_train_start", f"Refreshing agent knowledge for {len(queue)} template(s)…", "processing")
             _flush_logs(conn, job_id, logs)
             cur = conn.cursor()
             cur.execute(
-                "UPDATE template_training_jobs SET current_template=%s, updated_at=now() "
-                "WHERE id=%s",
+                "UPDATE template_training_jobs SET current_template=%s, updated_at=now() WHERE id=%s",
                 (f"Refreshing agent knowledge ({len(queue)})…", job_id),
             )
             conn.commit()
@@ -498,9 +486,8 @@ def _worker(job_id: int) -> None:
                 if resp.status_code == 200:
                     _log("", "deep_train_done", "Agent knowledge updated", "success")
                 else:
-                    _log("", "deep_train_error",
-                         f"Deep-train HTTP {resp.status_code}", "error")
-            except Exception as e:  # noqa: BLE001
+                    _log("", "deep_train_error", f"Deep-train HTTP {resp.status_code}", "error")
+            except Exception as e:
                 log.warning("deep-train failed: %s", e)
                 _log("", "deep_train_error", f"Agent knowledge refresh failed: {e}", "error")
             _flush_logs(conn, job_id, logs)
@@ -509,13 +496,12 @@ def _worker(job_id: int) -> None:
         final_status = "cancelled" if cancelled else "done"
         cur = conn.cursor()
         cur.execute(
-            "UPDATE template_training_jobs SET status=%s, finished_at=now(), "
-            "updated_at=now() WHERE id=%s",
+            "UPDATE template_training_jobs SET status=%s, finished_at=now(), updated_at=now() WHERE id=%s",
             (final_status, job_id),
         )
         conn.commit()
 
-    except Exception as e:  # noqa: BLE001 — fatal worker error
+    except Exception as e:
         log.exception("Training worker fatal error: %s", e)
         try:
             if conn is not None:
@@ -535,15 +521,11 @@ def _worker(job_id: int) -> None:
                 lcur.execute("SELECT pg_advisory_unlock(%s)", (_LOCK_KEY,))
             except Exception:
                 log.exception("Failed to release advisory lock")
-        try:
+        with contextlib.suppress(Exception):
             lock_conn.close()
-        except Exception:
-            pass
         if conn is not None:
-            try:
+            with contextlib.suppress(Exception):
                 conn.close()
-            except Exception:
-                pass
 
 
 # ---------------------------------------------------------------------------
@@ -557,5 +539,5 @@ def _worker(job_id: int) -> None:
 try:
     start_watchdog()
     logging.getLogger("legalscout").info("[train-jobs] watchdog started at import")
-except Exception:  # noqa: BLE001 — never break the import
+except Exception:
     logging.getLogger("legalscout").exception("Failed to start training watchdog")

@@ -18,6 +18,7 @@ possible, and each is now asserted here:
      Cache-Control, on a port that hosts a different app every few weeks — so a
      browser could hand pdf.js a worker cached from something else entirely.
 """
+
 from __future__ import annotations
 
 import json
@@ -85,35 +86,25 @@ def main(mutant: str = "") -> int:
     # BAD against correct code, because the explanatory comment in PdfViewer.tsx
     # quotes the very string the check forbids. A source scan that can match its
     # own documentation measures the prose, not the program.
-    src = "\n".join(
-        ln for ln in raw.split("\n") if not ln.lstrip().startswith(("//", "*", "/*"))
-    )
+    src = "\n".join(ln for ln in raw.split("\n") if not ln.lstrip().startswith(("//", "*", "/*")))
     if mutant == "bare_worker_path":
         # Sabotage: the original wiring — a fixed path a stale cache can satisfy.
-        src = src.replace("`/pdf.worker.min.mjs?v=${pdfjsLib.version}`",
-                          "'/pdf.worker.min.mjs'")
+        src = src.replace("`/pdf.worker.min.mjs?v=${pdfjsLib.version}`", "'/pdf.worker.min.mjs'")
 
     keyed = bool(re.search(r"workerSrc\s*=\s*\n?\s*`/pdf\.worker\.min\.mjs\?v=\$\{[^}]*version\}`", src))
     r.check("workerSrc is keyed to the library version", keyed, True)
-    r.check("no bare unversioned workerSrc remains",
-            "'/pdf.worker.min.mjs'" in src, False)
+    r.check("no bare unversioned workerSrc remains", "'/pdf.worker.min.mjs'" in src, False)
 
     # ---- the version label in the rail --------------------------------------
     rail_p = UI / "src" / "components" / "shell" / "AppRail.tsx"
     rail_raw = rail_p.read_text() if rail_p.is_file() else ""
-    rail = "\n".join(
-        ln for ln in rail_raw.split("\n") if not ln.lstrip().startswith(("//", "*", "/*"))
-    )
+    rail = "\n".join(ln for ln in rail_raw.split("\n") if not ln.lstrip().startswith(("//", "*", "/*")))
     if mutant == "hardcoded_version":
         # Sabotage: what shipped for five releases — a literal that never moved.
         rail = rail.replace("const APP_VERSION_FALLBACK = ''", "const APP_VERSION = 'v2'")
-        rail = rail.replace(
-            "Legal Scout{appVersion ? ` v${appVersion}` : ''}", "Legal Scout {APP_VERSION}"
-        )
-    r.check("rail reads the version from state, not a literal",
-            "{appVersion" in rail, True)
-    r.check("no hardcoded version literal in the rail",
-            bool(re.search(r"APP_VERSION\s*=\s*'v?\d", rail)), False)
+        rail = rail.replace("Legal Scout{appVersion ? ` v${appVersion}` : ''}", "Legal Scout {APP_VERSION}")
+    r.check("rail reads the version from state, not a literal", "{appVersion" in rail, True)
+    r.check("no hardcoded version literal in the rail", bool(re.search(r"APP_VERSION\s*=\s*'v?\d", rail)), False)
     r.check("rail fetches /api/version", "'/api/version'" in rail, True)
 
     # ---- the three places a release number is written -----------------------
@@ -132,7 +123,7 @@ def main(mutant: str = "") -> int:
     changelog_p = ROOT / "CHANGELOG.md"
     top_version = ""
     if changelog_p.is_file():
-        m = re.search(r"^##\s*\[([^\]]+)\]", changelog_p.read_text(), re.M)
+        m = re.search(r"^##\s*\[([^\]]+)\]", changelog_p.read_text(), re.MULTILINE)
         top_version = m.group(1) if m else ""
 
     if mutant == "version_sources_drift":
@@ -148,24 +139,17 @@ def main(mutant: str = "") -> int:
     panel = panel_p.read_text() if panel_p.is_file() else ""
     r.check("changelog panel exists", panel_p.is_file(), True)
     r.check("panel fetches /api/changelog", "'/api/changelog'" in panel, True)
-    r.check("panel degrades to a message, not a crash",
-            "Changelog unavailable" in panel, True)
+    r.check("panel degrades to a message, not a crash", "Changelog unavailable" in panel, True)
     r.check("rail opens the panel", "ChangelogPanel" in rail_raw, True)
 
     # ---- worker self-heal ---------------------------------------------------
     viewer_raw = viewer.read_text() if viewer.is_file() else ""
-    vsrc = "\n".join(
-        ln for ln in viewer_raw.split("\n")
-        if not ln.lstrip().startswith(("//", "*", "/*"))
-    )
+    vsrc = "\n".join(ln for ln in viewer_raw.split("\n") if not ln.lstrip().startswith(("//", "*", "/*")))
     if mutant == "no_self_heal":
         vsrc = vsrc.replace("cache: 'reload'", "").replace("createObjectURL", "")
-    r.check("viewer refetches the worker bypassing the cache",
-            "cache: 'reload'" in vsrc, True)
-    r.check("viewer falls back to an uncacheable blob url",
-            "createObjectURL" in vsrc, True)
-    r.check("retry is bounded, not a loop",
-            vsrc.count("does not match the Worker version") == 1, True)
+    r.check("viewer refetches the worker bypassing the cache", "cache: 'reload'" in vsrc, True)
+    r.check("viewer falls back to an uncacheable blob url", "createObjectURL" in vsrc, True)
+    r.check("retry is bounded, not a loop", vsrc.count("does not match the Worker version") == 1, True)
 
     # ★ The real defect was never the cache: a browser EXTENSION injects
     # globalThis.pdfjsLib/pdfjsWorker at 5.2.133, and pdf.js reuses an existing
@@ -175,8 +159,7 @@ def main(mutant: str = "") -> int:
     if mutant == "no_worker_port":
         vsrc = vsrc.replace("workerPort", "workerSrcOnly")
     r.check("viewer owns its worker via workerPort", "workerPort" in vsrc, True)
-    r.check("worker is constructed as a module worker",
-            "{ type: 'module' }" in vsrc, True)
+    r.check("worker is constructed as a module worker", "{ type: 'module' }" in vsrc, True)
     r.check("worker is terminated on unmount", ".terminate()" in vsrc, True)
 
     main_py = (ROOT / "app" / "main.py").read_text()
@@ -190,18 +173,16 @@ def main(mutant: str = "") -> int:
                 '@app.get("/api/changelog")', "@app.get_MOVED_BELOW", 1
             )
     changelog_line = next(
-        (i for i, ln in enumerate(main_py.split("\n"))
-         if ln.startswith('@app.get("/api/changelog")')), None
+        (i for i, ln in enumerate(main_py.split("\n")) if ln.startswith('@app.get("/api/changelog")')), None
     )
     catchall_line = next(
-        (i for i, ln in enumerate(main_py.split("\n"))
-         if ln.strip().startswith('@app.get("/{full_path:path}")')), None
+        (i for i, ln in enumerate(main_py.split("\n")) if ln.strip().startswith('@app.get("/{full_path:path}")')), None
     )
-    r.check("changelog route registered ABOVE the catch-all",
-            changelog_line is not None
-            and catchall_line is not None
-            and changelog_line < catchall_line,
-            True)
+    r.check(
+        "changelog route registered ABOVE the catch-all",
+        changelog_line is not None and catchall_line is not None and changelog_line < catchall_line,
+        True,
+    )
     if mutant == "no_cache_header":
         # Sabotage: revert to what shipped — no Cache-Control anywhere. Must
         # remove EVERY occurrence: the first version of this mutant replaced
@@ -219,12 +200,9 @@ def main(mutant: str = "") -> int:
     # it existed to serve. A text scan cannot see which code path RUNS — so
     # assert the thing that actually serves the bytes carries the header.
     if mutant == "plain_staticfiles":
-        main_py = main_py.replace('_HashedStatic(directory=', "StaticFiles(directory=")
-    mount_line = next(
-        (ln for ln in main_py.split("\n") if 'app.mount("/_next"' in ln), ""
-    )
-    r.check("the /_next mount is the caching subclass",
-            "_HashedStatic(" in mount_line, True)
+        main_py = main_py.replace("_HashedStatic(directory=", "StaticFiles(directory=")
+    mount_line = next((ln for ln in main_py.split("\n") if 'app.mount("/_next"' in ln), "")
+    r.check("the /_next mount is the caching subclass", "_HashedStatic(" in mount_line, True)
     r.check("hashed assets marked immutable", "max-age=31536000, immutable" in main_py, True)
     # NOTE: offline, this can only prove the wiring. `curl -D-` against a live
     # container is the only thing that proves the header reaches the client —
@@ -235,7 +213,17 @@ def main(mutant: str = "") -> int:
     return r.failed
 
 
-MUTANTS = ["version_sources_drift", "version_drift", "bare_worker_path", "no_cache_header", "hardcoded_version", "changelog_below_catchall", "plain_staticfiles", "no_self_heal", "no_worker_port"]
+MUTANTS = [
+    "version_sources_drift",
+    "version_drift",
+    "bare_worker_path",
+    "no_cache_header",
+    "hardcoded_version",
+    "changelog_below_catchall",
+    "plain_staticfiles",
+    "no_self_heal",
+    "no_worker_port",
+]
 
 if __name__ == "__main__":
     if "--controls" in sys.argv:

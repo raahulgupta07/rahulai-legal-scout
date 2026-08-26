@@ -15,9 +15,9 @@ from __future__ import annotations
 
 import logging
 
-from scout.memory.flags import memory_enabled
-from scout.memory.scope import MemoryScope, MemoryScopeError, require_scope
 from scout.memory import sql as _sql
+from scout.memory.flags import memory_enabled
+from scout.memory.scope import MemoryScopeError, require_scope
 
 log = logging.getLogger("legalscout.memory")
 
@@ -31,7 +31,7 @@ MAX_KEY_CHARS = 200
 DISABLED_WRITE = {"success": False, "stored": False, "disabled": True}
 
 
-class _ConnectionFactory(object):
+class _ConnectionFactory:
     """Indirection so tests can supply their own connection.
 
     Production leaves this alone and gets db.connection.get_db_conn,
@@ -126,10 +126,7 @@ def _rollback_savepoint(conn, borrowed):
     except Exception as exc:
         # Nothing left to salvage here, but the caller must be able to see
         # in the log that their transaction may be poisoned.
-        log.error(
-            "memory could not roll back to its savepoint; the calling "
-            "transaction may be aborted: %s", exc
-        )
+        log.error("memory could not roll back to its savepoint; the calling transaction may be aborted: %s", exc)
 
 
 def _normalise_key(key):
@@ -156,7 +153,7 @@ def _normalise_value(value):
 
 
 def _row_to_dict(row):
-    record = dict(zip(_sql.READ_COLUMNS, row))
+    record = dict(zip(_sql.READ_COLUMNS, row, strict=False))
     for stamp in ("created_at", "updated_at", "superseded_at"):
         value = record.get(stamp)
         if value is not None and hasattr(value, "isoformat"):
@@ -164,8 +161,18 @@ def _row_to_dict(row):
     return record
 
 
-def remember(scope, key, value, category="fact", confidence=None, source="chat",
-             session_id=None, run_id=None, author_email=None, conn=None):
+def remember(
+    scope,
+    key,
+    value,
+    category="fact",
+    confidence=None,
+    source="chat",
+    session_id=None,
+    run_id=None,
+    author_email=None,
+    conn=None,
+):
     """Store or update one fact about the scope's company.
 
     Re-remembering an existing key does NOT overwrite in place: the live
@@ -183,7 +190,7 @@ def remember(scope, key, value, category="fact", confidence=None, source="chat",
 
     if category not in _sql.VALID_CATEGORIES:
         raise MemoryScopeError(
-            "category must be one of %s, got %r" % (", ".join(_sql.VALID_CATEGORIES), category)
+            "category must be one of {}, got {!r}".format(", ".join(_sql.VALID_CATEGORIES), category)
         )
     if confidence is not None:
         confidence = float(confidence)
@@ -211,8 +218,16 @@ def remember(scope, key, value, category="fact", confidence=None, source="chat",
             superseded = True
 
         statement, params = _sql.insert(
-            scope, key, value, category, confidence, revision, source,
-            session_id, run_id, actor,
+            scope,
+            key,
+            value,
+            category,
+            confidence,
+            revision,
+            source,
+            session_id,
+            run_id,
+            actor,
         )
         cur.execute(statement, params)
 
@@ -270,7 +285,7 @@ def recall(scope, key=None, category=None, limit=50, conn=None):
         key = _normalise_key(key)
     if category is not None and category not in _sql.VALID_CATEGORIES:
         raise MemoryScopeError(
-            "category must be one of %s, got %r" % (", ".join(_sql.VALID_CATEGORIES), category)
+            "category must be one of {}, got {!r}".format(", ".join(_sql.VALID_CATEGORIES), category)
         )
     limit = max(1, min(int(limit), 500))
 
@@ -418,5 +433,5 @@ def render_for_prompt(scope, limit=25, conn=None):
         return ""
     lines = ["## Remembered about this company", ""]
     for record in memories:
-        lines.append("- (%s) %s: %s" % (record["category"], record["memory_key"], record["memory_value"]))
+        lines.append("- ({}) {}: {}".format(record["category"], record["memory_key"], record["memory_value"]))
     return "\n".join(lines)

@@ -34,7 +34,7 @@ import re
 import sys
 import types
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
@@ -73,20 +73,20 @@ def _parse(path: Path) -> ast.Module:
     return ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
 
 
-def _nested_defs(node: ast.AST) -> Dict[str, str]:
+def _nested_defs(node: ast.AST) -> dict[str, str]:
     """Every function defined anywhere under `node`, by binding name -> def name.
 
     They are the same string for a plain `def`. The distinction matters one
     level up, where a dict maps an EXPORT KEY to one of these.
     """
-    out: Dict[str, str] = {}
+    out: dict[str, str] = {}
     for child in ast.walk(node):
         if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
             out[child.name] = child.name
     return out
 
 
-def _unwrap(value: ast.AST) -> Optional[str]:
+def _unwrap(value: ast.AST) -> str | None:
     """The __name__ a registered value will actually carry.
 
     `_as_json(preview_doc)` uses functools.wraps, so the wrapper's __name__ is
@@ -108,7 +108,7 @@ def _unwrap(value: ast.AST) -> Optional[str]:
     return None
 
 
-def _subscript_key(node: ast.Subscript) -> Optional[str]:
+def _subscript_key(node: ast.Subscript) -> str | None:
     """`somedict["key"]` -> "key" (the KEY, still to be resolved to a name)."""
     sl = node.slice
     if isinstance(sl, ast.Index):  # py3.8 shape, harmless on 3.9+
@@ -118,12 +118,12 @@ def _subscript_key(node: ast.Subscript) -> Optional[str]:
     return None
 
 
-def _dict_exports(fn_node: ast.AST) -> Dict[str, str]:
+def _dict_exports(fn_node: ast.AST) -> dict[str, str]:
     """Map export-dict keys to the __name__ the value will carry."""
-    exports: Dict[str, str] = {}
+    exports: dict[str, str] = {}
     for child in ast.walk(fn_node):
         if isinstance(child, ast.Dict):
-            for k, v in zip(child.keys, child.values):
+            for k, v in zip(child.keys, child.values, strict=False):
                 if isinstance(k, ast.Constant) and isinstance(k.value, str):
                     name = _unwrap(v)
                     if name:
@@ -131,7 +131,7 @@ def _dict_exports(fn_node: ast.AST) -> Dict[str, str]:
     return exports
 
 
-def _factory_return_name(fn_node: ast.AST) -> Optional[str]:
+def _factory_return_name(fn_node: ast.AST) -> str | None:
     """A factory whose last statement is `return <name>` returns a FUNCTION.
 
     `create_list_sources_tool` ends `return list_sources`, so the module-level
@@ -149,9 +149,9 @@ def _factory_return_name(fn_node: ast.AST) -> Optional[str]:
     return None
 
 
-def _factory_exports() -> Dict[str, Dict[str, str]]:
+def _factory_exports() -> dict[str, dict[str, str]]:
     """factory-or-module-dict name -> {export key: registered __name__}."""
-    out: Dict[str, Dict[str, str]] = {}
+    out: dict[str, dict[str, str]] = {}
     for path in sorted(TOOLS_DIR.glob("*.py")):
         try:
             tree = _parse(path)
@@ -178,7 +178,7 @@ def _factory_exports() -> Dict[str, Dict[str, str]]:
     return out
 
 
-def registered_tool_names() -> Tuple[List[str], List[str]]:
+def registered_tool_names() -> tuple[list[str], list[str]]:
     """(names in registration order, unresolved entries).
 
     Resolves `_tools_to_add` in scout/agent.py the way agno will: through the
@@ -189,11 +189,9 @@ def registered_tool_names() -> Tuple[List[str], List[str]]:
     tree = _parse(AGENT_PY)
     factories = _factory_exports()
 
-    module_defs = {
-        n.name for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
-    }
+    module_defs = {n.name for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
     # name -> ("factory", factory_name) | ("subscript", dictname, key)
-    binds: Dict[str, Any] = {}
+    binds: dict[str, Any] = {}
     for node in tree.body:
         if not isinstance(node, ast.Assign) or len(node.targets) != 1:
             continue
@@ -223,13 +221,13 @@ def registered_tool_names() -> Tuple[List[str], List[str]]:
         ):
             binds[target.id] = ("subscript", val.func.value.id, val.args[0].value)
 
-    def resolve_subscript(dict_name: str, key: str) -> Optional[str]:
+    def resolve_subscript(dict_name: str, key: str) -> str | None:
         bind = binds.get(dict_name)
         factory = bind[1] if bind and bind[0] == "factory" else dict_name
         exports = factories.get(factory) or factories.get(dict_name) or {}
         return exports.get(key)
 
-    tools_list: Optional[ast.List] = None
+    tools_list: ast.List | None = None
     for node in tree.body:
         if (
             isinstance(node, ast.Assign)
@@ -243,8 +241,8 @@ def registered_tool_names() -> Tuple[List[str], List[str]]:
     if tools_list is None:
         return [], ["_tools_to_add not found in scout/agent.py"]
 
-    names: List[str] = []
-    unresolved: List[str] = []
+    names: list[str] = []
+    unresolved: list[str] = []
     for element in tools_list.elts:
         if isinstance(element, ast.Name):
             ident = element.id
@@ -282,14 +280,14 @@ TOOLKIT_MEMBERS = {
 }
 
 
-def _flatten_add(node: ast.AST) -> List[ast.AST]:
+def _flatten_add(node: ast.AST) -> list[ast.AST]:
     """Flatten `A + B + C` into [A, B, C] in left-to-right source order."""
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
         return _flatten_add(node.left) + _flatten_add(node.right)
     return [node]
 
 
-def full_registry() -> Tuple[List[str], List[str], List[str]]:
+def full_registry() -> tuple[list[str], list[str], list[str]]:
     """(names in registration order, unresolved, conditional-or-declared).
 
     Resolves `base_tools`, not just `_tools_to_add`. That distinction is the
@@ -304,10 +302,8 @@ def full_registry() -> Tuple[List[str], List[str], List[str]]:
     factories = _factory_exports()
     tools_names, unresolved = registered_tool_names()
 
-    module_defs = {
-        n.name for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
-    }
-    binds: Dict[str, Any] = {}
+    module_defs = {n.name for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    binds: dict[str, Any] = {}
     for node in tree.body:
         if (
             isinstance(node, ast.Assign)
@@ -318,23 +314,22 @@ def full_registry() -> Tuple[List[str], List[str], List[str]]:
         ):
             binds[node.targets[0].id] = node.value.func.id
 
-    base_value: Optional[ast.AST] = None
+    base_value: ast.AST | None = None
     for node in tree.body:
-        if (
-            isinstance(node, (ast.Assign, ast.AnnAssign))
-            and isinstance(getattr(node, "target", None) or node.targets[0], ast.Name)
+        if isinstance(node, (ast.Assign, ast.AnnAssign)) and isinstance(
+            getattr(node, "target", None) or node.targets[0], ast.Name
         ):
             target = getattr(node, "target", None) or node.targets[0]
             if target.id == "base_tools":
                 base_value = node.value
                 break
     if base_value is None:
-        return tools_names, unresolved + ["base_tools not found"], []
+        return tools_names, [*unresolved, "base_tools not found"], []
 
-    names: List[str] = []
-    declared: List[str] = []
+    names: list[str] = []
+    declared: list[str] = []
     for operand in _flatten_add(base_value):
-        elements: List[ast.AST] = []
+        elements: list[ast.AST] = []
         conditional = False
         if isinstance(operand, ast.List):
             elements = list(operand.elts)
@@ -382,7 +377,7 @@ def full_registry() -> Tuple[List[str], List[str], List[str]]:
 # ===========================================================================
 class Rows:
     def __init__(self) -> None:
-        self.rows: List[Tuple[str, str, Any, Any, bool]] = []
+        self.rows: list[tuple[str, str, Any, Any, bool]] = []
 
     def check(self, group: str, name: str, got: Any, want: Any) -> bool:
         ok = got == want
@@ -390,7 +385,7 @@ class Rows:
         return ok
 
     @property
-    def failures(self) -> List[Tuple[str, str, Any, Any, bool]]:
+    def failures(self) -> list[tuple[str, str, Any, Any, bool]]:
         return [r for r in self.rows if not r[4]]
 
 
@@ -413,7 +408,7 @@ MUTANTS = [
 ]
 
 
-def run_checks(mutant: str, flag_on: bool = False) -> Rows:  # noqa: C901
+def run_checks(mutant: str, flag_on: bool = False) -> Rows:
     """Run every assertion once.
 
     `mutant` names a sabotage to apply first; `flag_on` runs the whole table in
@@ -467,60 +462,96 @@ def run_checks(mutant: str, flag_on: bool = False) -> Rows:  # noqa: C901
     if mutant == "dup_step_key":
         steps = list(resignation.steps)
         clone = steps[1]
-        steps.append(
-            model.RoutineStep(key=clone.key, no=99, title="clone", produces=["x"])
-        )
+        steps.append(model.RoutineStep(key=clone.key, no=99, title="clone", produces=["x"]))
         resignation = model.Routine(
-            name=resignation.name, title=resignation.title,
-            description=resignation.description, skill=resignation.skill,
-            triggers=resignation.triggers, inputs=resignation.inputs, steps=steps,
+            name=resignation.name,
+            title=resignation.title,
+            description=resignation.description,
+            skill=resignation.skill,
+            triggers=resignation.triggers,
+            inputs=resignation.inputs,
+            steps=steps,
         )
     elif mutant == "unknown_tool":
         steps = [
             model.RoutineStep(
-                key=s.key, no=s.no, title=s.title,
+                key=s.key,
+                no=s.no,
+                title=s.title,
                 tool="preview_document" if s.tool == "preview_doc" else s.tool,
-                args=s.args, requires=s.requires, produces=s.produces,
-                done_when=s.done_when, optional=s.optional, notes=s.notes,
+                args=s.args,
+                requires=s.requires,
+                produces=s.produces,
+                done_when=s.done_when,
+                optional=s.optional,
+                notes=s.notes,
             )
             for s in resignation.steps
         ]
         resignation = model.Routine(
-            name=resignation.name, title=resignation.title, skill=resignation.skill,
-            triggers=resignation.triggers, inputs=resignation.inputs, steps=steps,
+            name=resignation.name,
+            title=resignation.title,
+            skill=resignation.skill,
+            triggers=resignation.triggers,
+            inputs=resignation.inputs,
+            steps=steps,
         )
     elif mutant == "dangling_require":
         steps = list(resignation.steps)
         steps[1] = model.RoutineStep(
-            key=steps[1].key, no=steps[1].no, title=steps[1].title,
-            tool=steps[1].tool, args=steps[1].args,
-            requires=["a_key_nobody_declares"], produces=steps[1].produces,
+            key=steps[1].key,
+            no=steps[1].no,
+            title=steps[1].title,
+            tool=steps[1].tool,
+            args=steps[1].args,
+            requires=["a_key_nobody_declares"],
+            produces=steps[1].produces,
         )
         resignation = model.Routine(
-            name=resignation.name, title=resignation.title, skill=resignation.skill,
-            triggers=resignation.triggers, inputs=resignation.inputs, steps=steps,
+            name=resignation.name,
+            title=resignation.title,
+            skill=resignation.skill,
+            triggers=resignation.triggers,
+            inputs=resignation.inputs,
+            steps=steps,
         )
     elif mutant == "empty_produces":
         steps = list(resignation.steps)
         steps[1] = model.RoutineStep(
-            key=steps[1].key, no=steps[1].no, title=steps[1].title,
-            tool=steps[1].tool, args=steps[1].args, requires=steps[1].requires,
+            key=steps[1].key,
+            no=steps[1].no,
+            title=steps[1].title,
+            tool=steps[1].tool,
+            args=steps[1].args,
+            requires=steps[1].requires,
             produces=[],
         )
         resignation = model.Routine(
-            name=resignation.name, title=resignation.title, skill=resignation.skill,
-            triggers=resignation.triggers, inputs=resignation.inputs, steps=steps,
+            name=resignation.name,
+            title=resignation.title,
+            skill=resignation.skill,
+            triggers=resignation.triggers,
+            inputs=resignation.inputs,
+            steps=steps,
         )
     elif mutant == "arg_ref_dropped":
         steps = list(resignation.steps)
         steps[1] = model.RoutineStep(
-            key=steps[1].key, no=steps[1].no, title=steps[1].title,
-            tool=steps[1].tool, args={"company_name": "$no_such_input"},
-            requires=steps[1].requires, produces=steps[1].produces,
+            key=steps[1].key,
+            no=steps[1].no,
+            title=steps[1].title,
+            tool=steps[1].tool,
+            args={"company_name": "$no_such_input"},
+            requires=steps[1].requires,
+            produces=steps[1].produces,
         )
         resignation = model.Routine(
-            name=resignation.name, title=resignation.title, skill=resignation.skill,
-            triggers=resignation.triggers, inputs=resignation.inputs, steps=steps,
+            name=resignation.name,
+            title=resignation.title,
+            skill=resignation.skill,
+            triggers=resignation.triggers,
+            inputs=resignation.inputs,
+            steps=steps,
         )
 
     routines = [resignation if x.name == resignation.name else x for x in routines]
@@ -567,7 +598,7 @@ def run_checks(mutant: str, flag_on: bool = False) -> Rows:  # noqa: C901
         # Sabotage: re-introduce a collision of the shape that actually shipped
         # — two DIFFERENT functions arriving under one agno name. If this does
         # not turn the assertion red, the assertion is not measuring collisions.
-        full = list(full) + ["list_sources"]
+        full = [*list(full), "list_sources"]
     # ★ full_registry() must return an ORDERED LIST that keeps duplicates. A set
     # here would make this assertion unfalsifiable: collapsing to a set turns a
     # real collision into [], which SATISFIES "no duplicates". That is not a
@@ -576,15 +607,11 @@ def run_checks(mutant: str, flag_on: bool = False) -> Rows:  # noqa: C901
     # The former `registry_deduped` mutant was deleted rather than kept: against
     # a zero-expecting assertion it cannot move the number, so it measured
     # nothing. `registry_collision` is the control that can.
-    r.check("model", "full_registry keeps duplicates (list, not set)",
-            isinstance(full, list), True)
+    r.check("model", "full_registry keeps duplicates (list, not set)", isinstance(full, list), True)
     full_dupes = sorted({n for n in full if full.count(n) > 1})
-    r.check("model", "duplicate tool names across the whole registry",
-            full_dupes, [])
-    r.check("model", "base_tools entries that could not be resolved",
-            len(full_unresolved), 0)
-    r.check("model", "toolkit members declared rather than resolved",
-            len(toolkit_declared), 4)
+    r.check("model", "duplicate tool names across the whole registry", full_dupes, [])
+    r.check("model", "base_tools entries that could not be resolved", len(full_unresolved), 0)
+    r.check("model", "toolkit members declared rather than resolved", len(toolkit_declared), 4)
     # 45 since 2026-08-24: knowledge_tools' colliding `list_sources` was renamed
     # to `list_knowledge_sources`, so a name that used to be swallowed by the
     # collision is now its own entry.
@@ -627,10 +654,8 @@ def run_checks(mutant: str, flag_on: bool = False) -> Rows:  # noqa: C901
     spliced = corpus[1] + "\n" + forced + "\n"
     twice = spliced.count(prompt.START_MARKER)
     r.check("prompt", "marker occurrences after one build", twice, 1)
-    r.check("prompt", "block ends with its own end marker",
-            forced.endswith(prompt.END_MARKER), True)
-    r.check("prompt", "no enabled routine -> placeholder line",
-            "(no routines enabled)" in forced, True)
+    r.check("prompt", "block ends with its own end marker", forced.endswith(prompt.END_MARKER), True)
+    r.check("prompt", "no enabled routine -> placeholder line", "(no routines enabled)" in forced, True)
     del once
 
     # Applying twice must not stack a second block. `_refresh_legal_skills()`
@@ -646,14 +671,10 @@ def run_checks(mutant: str, flag_on: bool = False) -> Rows:  # noqa: C901
     try:
         once_applied = prompt.apply_routines_block("PROMPT BODY\n", routines)
         twice_applied = prompt.apply_routines_block(once_applied, routines)
-        r.check("prompt", "markers after applying once",
-                once_applied.count(prompt.START_MARKER), 1)
-        r.check("prompt", "markers after applying twice",
-                twice_applied.count(prompt.START_MARKER), 1)
-        r.check("prompt", "second apply is a fixed point",
-                twice_applied == once_applied, True)
-        r.check("prompt", "original body survives the splice",
-                twice_applied.startswith("PROMPT BODY\n"), True)
+        r.check("prompt", "markers after applying once", once_applied.count(prompt.START_MARKER), 1)
+        r.check("prompt", "markers after applying twice", twice_applied.count(prompt.START_MARKER), 1)
+        r.check("prompt", "second apply is a fixed point", twice_applied == once_applied, True)
+        r.check("prompt", "original body survives the splice", twice_applied.startswith("PROMPT BODY\n"), True)
     finally:
         prompt.routines_enabled = real_gate  # type: ignore[assignment]
         if mutant == "gate_ignored":
@@ -663,8 +684,7 @@ def run_checks(mutant: str, flag_on: bool = False) -> Rows:  # noqa: C901
     plan_routine = catalog.get("director-resignation")
     all_steps = len(plan_routine.ordered_steps())
     r.check("plan", "director-resignation step count", all_steps, 19)
-    r.check("plan", "director-resignation required inputs",
-            len(plan_routine.required_input_keys()), 4)
+    r.check("plan", "director-resignation required inputs", len(plan_routine.required_input_keys()), 4)
 
     p0 = engine.plan(plan_routine, {})
     r.check("plan", "cold start: missing required inputs", len(p0.missing_inputs), 4)
@@ -674,7 +694,7 @@ def run_checks(mutant: str, flag_on: bool = False) -> Rows:  # noqa: C901
 
     # Walk the routine to completion the way a resumed run would: recompute the
     # plan from state every time, never from a stored cursor.
-    state: Dict[str, Any] = {}
+    state: dict[str, Any] = {}
     steps_run = 0
     guard = 0
     while guard < 200:
@@ -698,14 +718,21 @@ def run_checks(mutant: str, flag_on: bool = False) -> Rows:  # noqa: C901
             break
     r.check("plan", "steps executed to reach done", steps_run, 17)
     r.check("plan", "routine reaches done", engine.plan(plan_routine, state).done, True)
-    r.check("plan", "manual gates recorded",
-            len(state.get(engine.MANUAL_KEY) or []), 1)
+    r.check("plan", "manual gates recorded", len(state.get(engine.MANUAL_KEY) or []), 1)
 
     # A run resumed halfway must land on the SAME next step, from state alone.
     half = dict(state)
-    for key in ["letter_doc", "letter_preview", "letter_template",
-                "resolution_template", "resolution_preview", "resolution_doc",
-                "minutes_template", "minutes_preview", "minutes_doc"]:
+    for key in [
+        "letter_doc",
+        "letter_preview",
+        "letter_template",
+        "resolution_template",
+        "resolution_preview",
+        "resolution_doc",
+        "minutes_template",
+        "minutes_preview",
+        "minutes_doc",
+    ]:
         half.pop(key, None)
     half.pop(engine.MANUAL_KEY, None)
     p_half = engine.plan(plan_routine, half)
@@ -714,24 +741,23 @@ def run_checks(mutant: str, flag_on: bool = False) -> Rows:  # noqa: C901
     r.check("resume", "resumed run is not done", p_half.done, False)
 
     # -- 5. blocking is reported, never guessed around ----------------------
-    blocked_state = {"playbook": "p", "company": "c", "board": "b",
-                     "director_candidates": ["x"]}
+    blocked_state = {"playbook": "p", "company": "c", "board": "b", "director_candidates": ["x"]}
     pb = engine.plan(plan_routine, blocked_state)
     r.check("plan", "blocked run names its missing keys", len(pb.blocked_on) >= 0, True)
     step_letter = plan_routine.step("find_letter_template")
-    r.check("plan", "letter step blocked without director+date",
-            len(engine.missing_requires(step_letter, blocked_state)), 3)
+    r.check(
+        "plan", "letter step blocked without director+date", len(engine.missing_requires(step_letter, blocked_state)), 3
+    )
 
     # -- 6. arg rendering ---------------------------------------------------
     preview = plan_routine.step("preview_letter")
-    args = engine.resolve_args(preview, {"letter_template": "Letter.docx",
-                                         "company_name": "GOLDEN LOTUS TRADING LIMITED"})
+    args = engine.resolve_args(
+        preview, {"letter_template": "Letter.docx", "company_name": "GOLDEN LOTUS TRADING LIMITED"}
+    )
     r.check("args", "resolved template_name", args.get("template_name"), "Letter.docx")
-    r.check("args", "resolved company_name", args.get("company_name"),
-            "GOLDEN LOTUS TRADING LIMITED")
+    r.check("args", "resolved company_name", args.get("company_name"), "GOLDEN LOTUS TRADING LIMITED")
     unresolved_args = engine.resolve_args(preview, {})
-    r.check("args", "unresolved ref stays visible as $key",
-            unresolved_args.get("template_name"), "$letter_template")
+    r.check("args", "unresolved ref stays visible as $key", unresolved_args.get("template_name"), "$letter_template")
 
     # -- 7. advance never mutates the state it was handed -------------------
     before = {"company_name": "EMERALD HOLDINGS LIMITED"}
@@ -743,40 +769,45 @@ def run_checks(mutant: str, flag_on: bool = False) -> Rows:  # noqa: C901
     r.check("state", "advance left caller's dict unchanged", before, snapshot)
 
     # -- 8. is_present: an empty list is an ANSWER --------------------------
-    r.check("state", "empty list counts as present",
-            engine.is_present({"board": []}, "board"), True)
-    r.check("state", "blank string counts as absent",
-            engine.is_present({"board": "   "}, "board"), False)
-    r.check("state", "None counts as absent",
-            engine.is_present({"board": None}, "board"), False)
-    r.check("state", "zero counts as present",
-            engine.is_present({"n": 0}, "n"), True)
+    r.check("state", "empty list counts as present", engine.is_present({"board": []}, "board"), True)
+    r.check("state", "blank string counts as absent", engine.is_present({"board": "   "}, "board"), False)
+    r.check("state", "None counts as absent", engine.is_present({"board": None}, "board"), False)
+    r.check("state", "zero counts as present", engine.is_present({"n": 0}, "n"), True)
 
     # -- 9. matching is gated and specific ----------------------------------
     live = [
-        model.Routine(name=x.name, title=x.title, description=x.description,
-                      skill=x.skill, enabled=True, triggers=x.triggers,
-                      inputs=x.inputs, steps=x.steps)
+        model.Routine(
+            name=x.name,
+            title=x.title,
+            description=x.description,
+            skill=x.skill,
+            enabled=True,
+            triggers=x.triggers,
+            inputs=x.inputs,
+            steps=x.steps,
+        )
         for x in catalog.CATALOG
     ]
     hit = engine.match_routine("U THIHA is resigning from the board", live)
-    r.check("match", "resignation phrase picks the resignation routine",
-            hit.name if hit else None, "director-resignation")
+    r.check(
+        "match", "resignation phrase picks the resignation routine", hit.name if hit else None, "director-resignation"
+    )
     hit2 = engine.match_routine("please appoint a director for Golden Lotus", live)
-    r.check("match", "appointment phrase picks the appointment routine",
-            hit2.name if hit2 else None, "director-appointment")
-    r.check("match", "unrelated text matches nothing",
-            engine.match_routine("what is the weather", live), None)
-    r.check("match", "disabled routines never match",
-            engine.match_routine("is resigning", list(catalog.CATALOG)), None)
-    r.check("match", "select_routine gated by the flag",
-            engine.select_routine("is resigning", live) is not None, expect_flag)
+    r.check(
+        "match", "appointment phrase picks the appointment routine", hit2.name if hit2 else None, "director-appointment"
+    )
+    r.check("match", "unrelated text matches nothing", engine.match_routine("what is the weather", live), None)
+    r.check("match", "disabled routines never match", engine.match_routine("is resigning", list(catalog.CATALOG)), None)
+    r.check(
+        "match",
+        "select_routine gated by the flag",
+        engine.select_routine("is resigning", live) is not None,
+        expect_flag,
+    )
 
     # -- 10. the migration ---------------------------------------------------
     sql = MIGRATION.read_text(encoding="utf-8")
-    body = "\n".join(
-        line for line in sql.splitlines() if not line.strip().startswith("--")
-    )
+    body = "\n".join(line for line in sql.splitlines() if not line.strip().startswith("--"))
     if mutant == "sql_table_missing":
         body = body.replace("CREATE TABLE IF NOT EXISTS routine_step_events", "-- x")
     if mutant == "sql_stamps_itself":
@@ -790,17 +821,19 @@ def run_checks(mutant: str, flag_on: bool = False) -> Rows:  # noqa: C901
     idx_safe = len(re.findall(r"CREATE INDEX IF NOT EXISTS", body))
     r.check("sql", "every CREATE INDEX is IF NOT EXISTS", idx_all, idx_safe)
     r.check("sql", "no %s placeholders in the migration", body.count("%s"), 0)
-    r.check("sql", "migration does not stamp schema_migrations",
-            len(re.findall(r"INSERT\s+INTO\s+schema_migrations", body, re.I)), 0)
-    r.check("sql", "reverse DROPs documented for every table",
-            len(re.findall(r"DROP TABLE IF EXISTS (\w+);", sql)), 5)
+    r.check(
+        "sql",
+        "migration does not stamp schema_migrations",
+        len(re.findall(r"INSERT\s+INTO\s+schema_migrations", body, re.IGNORECASE)),
+        0,
+    )
+    r.check("sql", "reverse DROPs documented for every table", len(re.findall(r"DROP TABLE IF EXISTS (\w+);", sql)), 5)
 
     # Every table store.py writes to must be one this migration creates. This
     # is the cross-check that a rename in one file cannot pass alone.
     store_sql = STORE_PY.read_text(encoding="utf-8")
     used = set(re.findall(r"(?:INSERT INTO|UPDATE|DELETE FROM|FROM)\s+(routine\w*)", store_sql))
-    r.check("sql", "store.py tables missing from migration",
-            len(used - created), 0)
+    r.check("sql", "store.py tables missing from migration", len(used - created), 0)
     r.check("sql", "store.py touches this many routine tables", len(used), 5)
 
     # -- 11. store.py has no import-time infrastructure ---------------------
@@ -819,11 +852,9 @@ def run_checks(mutant: str, flag_on: bool = False) -> Rows:  # noqa: C901
     pkg_dir = REPO / "scout" / "routines"
     py_files = sorted(pkg_dir.glob("*.py"))
     missing_future = [
-        p.name for p in py_files
-        if "from __future__ import annotations" not in p.read_text(encoding="utf-8")
+        p.name for p in py_files if "from __future__ import annotations" not in p.read_text(encoding="utf-8")
     ]
-    r.check("import", "package modules missing the future import",
-            len(missing_future), 0)
+    r.check("import", "package modules missing the future import", len(missing_future), 0)
     r.check("import", "modules in scout/routines", len(py_files), 6)
 
     return r
@@ -840,8 +871,7 @@ ROUTINE_TABLES = [
     "routine_step_events",
 ]
 
-DB_MUTANTS = ["none", "sync_adds_rows", "stale_step_kept",
-              "state_not_persisted", "numeric_truncated"]
+DB_MUTANTS = ["none", "sync_adds_rows", "stale_step_kept", "state_not_persisted", "numeric_truncated"]
 
 
 def _probe_routine(model):
@@ -864,21 +894,29 @@ def _probe_routine(model):
             model.RoutineInput(key="probe_note", label="Note", required=False),
         ],
         steps=[
-            model.RoutineStep(key="first", no=1, title="First",
-                              tool="get_company",
-                              args={"company_name": "$company_name"},
-                              requires=["company_name"], produces=["company"]),
-            model.RoutineStep(key="half", no=1.5, title="Inserted half-step",
-                              tool="get_directors", requires=["company"],
-                              produces=["board"]),
-            model.RoutineStep(key="gate", no=2.25, title="Human gate",
-                              requires=["board"],
-                              done_when=model.DONE_MANUAL),
+            model.RoutineStep(
+                key="first",
+                no=1,
+                title="First",
+                tool="get_company",
+                args={"company_name": "$company_name"},
+                requires=["company_name"],
+                produces=["company"],
+            ),
+            model.RoutineStep(
+                key="half",
+                no=1.5,
+                title="Inserted half-step",
+                tool="get_directors",
+                requires=["company"],
+                produces=["board"],
+            ),
+            model.RoutineStep(key="gate", no=2.25, title="Human gate", requires=["board"], done_when=model.DONE_MANUAL),
         ],
     )
 
 
-def _counts(cur) -> Dict[str, int]:
+def _counts(cur) -> dict[str, int]:
     out = {}
     for table in ROUTINE_TABLES:
         cur.execute(f"SELECT count(*) FROM {table}")
@@ -886,7 +924,7 @@ def _counts(cur) -> Dict[str, int]:
     return out
 
 
-def run_db_checks(mutant: str = "none") -> Rows:  # noqa: C901
+def run_db_checks(mutant: str = "none") -> Rows:
     """Exercise every store.py function against a real PostgreSQL.
 
     SAFETY. This refuses to run unless all five routine tables exist. No
@@ -921,8 +959,7 @@ def run_db_checks(mutant: str = "none") -> Rows:  # noqa: C901
     cur.execute("SELECT version(), current_database(), current_user")
     version, dbname, dbuser = cur.fetchone()
     cur.execute(
-        "SELECT table_name FROM information_schema.tables "
-        "WHERE table_schema='public' AND table_name = ANY(%s)",
+        "SELECT table_name FROM information_schema.tables WHERE table_schema='public' AND table_name = ANY(%s)",
         (ROUTINE_TABLES,),
     )
     present = sorted(x[0] for x in cur.fetchall())
@@ -936,15 +973,14 @@ def run_db_checks(mutant: str = "none") -> Rows:  # noqa: C901
         "('schema_migrations','legal_skills','templates','companies')"
     )
     live_markers = cur.fetchone()[0]
-    print(f"live-app tables present (schema_migrations/legal_skills/templates/"
-          f"companies): {live_markers}/4")
+    print(f"live-app tables present (schema_migrations/legal_skills/templates/companies): {live_markers}/4")
     if live_markers == 4:
-        cur.execute("SELECT count(*) FROM schema_migrations "
-                    "WHERE filename = 'migration_022_routines.sql'")
+        cur.execute("SELECT count(*) FROM schema_migrations WHERE filename = 'migration_022_routines.sql'")
         print(f"migration_022 stamped: {cur.fetchone()[0]}")
 
     if len(present) != 5:
-        cur.close(); conn.close()
+        cur.close()
+        conn.close()
         raise SystemExit(
             f"REFUSING TO RUN: only {len(present)}/5 routine tables exist in "
             f"database {dbname!r}. Apply db/migration_022_routines.sql first, "
@@ -956,11 +992,11 @@ def run_db_checks(mutant: str = "none") -> Rows:  # noqa: C901
     print(f"row counts before: {before}\n")
 
     probe = _probe_routine(model)
-    all_routines = list(catalog.CATALOG) + [probe]
+    all_routines = [*list(catalog.CATALOG), probe]
     names = [x.name for x in all_routines]
-    executed = {k: False for k in
-                ["sync_catalog", "load_routines", "start_run", "record_event",
-                 "load_run", "finish_run"]}
+    executed = dict.fromkeys(
+        ["sync_catalog", "load_routines", "start_run", "record_event", "load_run", "finish_run"], False
+    )
 
     try:
         # -- sync_catalog --------------------------------------------------
@@ -971,32 +1007,27 @@ def run_db_checks(mutant: str = "none") -> Rows:  # noqa: C901
         after1 = _counts(cur)
         want_steps = sum(len(x.ordered_steps()) for x in all_routines)
         want_inputs = sum(len(x.inputs) for x in all_routines)
-        r.check("db", "routines rows added",
-                after1["routines"] - before["routines"], 4)
-        r.check("db", "routine_steps rows added",
-                after1["routine_steps"] - before["routine_steps"], want_steps)
-        r.check("db", "routine_inputs rows added",
-                after1["routine_inputs"] - before["routine_inputs"], want_inputs)
+        r.check("db", "routines rows added", after1["routines"] - before["routines"], 4)
+        r.check("db", "routine_steps rows added", after1["routine_steps"] - before["routine_steps"], want_steps)
+        r.check("db", "routine_inputs rows added", after1["routine_inputs"] - before["routine_inputs"], want_inputs)
 
         # -- sync is idempotent --------------------------------------------
         if mutant == "sync_adds_rows":
             # Sabotage: a sync keyed on something other than `name`, which is
             # what losing the ON CONFLICT clause would amount to — a second
             # pass inserting a parallel set instead of updating in place.
-            store.sync_catalog([
-                model.Routine(name=x.name + "-dup", title=x.title, skill=x.skill,
-                              inputs=x.inputs, steps=x.steps)
-                for x in all_routines
-            ])
+            store.sync_catalog(
+                [
+                    model.Routine(name=x.name + "-dup", title=x.title, skill=x.skill, inputs=x.inputs, steps=x.steps)
+                    for x in all_routines
+                ]
+            )
             names.extend(x.name + "-dup" for x in all_routines)
         store.sync_catalog(all_routines)
         after2 = _counts(cur)
-        r.check("db", "second sync adds no routines",
-                after2["routines"] - after1["routines"], 0)
-        r.check("db", "second sync adds no steps",
-                after2["routine_steps"] - after1["routine_steps"], 0)
-        r.check("db", "second sync adds no inputs",
-                after2["routine_inputs"] - after1["routine_inputs"], 0)
+        r.check("db", "second sync adds no routines", after2["routines"] - after1["routines"], 0)
+        r.check("db", "second sync adds no steps", after2["routine_steps"] - after1["routine_steps"], 0)
+        r.check("db", "second sync adds no inputs", after2["routine_inputs"] - after1["routine_inputs"], 0)
 
         # -- a step DELETED from the catalogue must leave the DB ------------
         # This is what the DELETE-and-rewrite in sync_catalog actually buys.
@@ -1005,8 +1036,11 @@ def run_db_checks(mutant: str = "none") -> Rows:  # noqa: C901
         # removed from source lingering in the table, still ordered into the
         # sequence, with no read path anywhere that would show it as stale.
         trimmed = model.Routine(
-            name=probe.name, title=probe.title, description=probe.description,
-            skill=probe.skill, inputs=probe.inputs,
+            name=probe.name,
+            title=probe.title,
+            description=probe.description,
+            skill=probe.skill,
+            inputs=probe.inputs,
             steps=[s for s in probe.steps if s.key != "gate"],
         )
         store.sync_catalog([trimmed])
@@ -1020,127 +1054,153 @@ def run_db_checks(mutant: str = "none") -> Rows:  # noqa: C901
             )
         cur.execute(
             "SELECT count(*) FROM routine_steps s JOIN routines x ON x.id = s.routine_id "
-            "WHERE x.name = %s AND s.step_key = 'gate'", (probe.name,))
-        r.check("db", "a step removed from source leaves the table",
-                cur.fetchone()[0], 0)
+            "WHERE x.name = %s AND s.step_key = 'gate'",
+            (probe.name,),
+        )
+        r.check("db", "a step removed from source leaves the table", cur.fetchone()[0], 0)
         store.sync_catalog([probe])  # put it back for the checks below
         cur.execute(
-            "SELECT count(*) FROM routine_steps s JOIN routines x ON x.id = s.routine_id "
-            "WHERE x.name = %s", (probe.name,))
-        r.check("db", "re-syncing restores the full step list",
-                cur.fetchone()[0], len(probe.steps))
+            "SELECT count(*) FROM routine_steps s JOIN routines x ON x.id = s.routine_id WHERE x.name = %s",
+            (probe.name,),
+        )
+        r.check("db", "re-syncing restores the full step list", cur.fetchone()[0], len(probe.steps))
 
         # -- load_routines: the JSONB / NUMERIC round-trip ------------------
         loaded = {x.name: x for x in store.load_routines(enabled_only=False)}
         executed["load_routines"] = True
-        r.check("db", "load_routines returned every synced routine",
-                len([n for n in names if n in loaded]), 4)
+        r.check("db", "load_routines returned every synced routine", len([n for n in names if n in loaded]), 4)
 
         src_probe, db_probe = probe, loaded.get("probe-fictional-chain")
         db_nos = [s.no for s in db_probe.ordered_steps()] if db_probe else []
         if mutant == "numeric_truncated":
             db_nos = [float(int(n)) for n in db_nos]
-        r.check("db", "NUMERIC(6,2) step numbers survive the round-trip",
-                db_nos, [1.0, 1.5, 2.25])
+        r.check("db", "NUMERIC(6,2) step numbers survive the round-trip", db_nos, [1.0, 1.5, 2.25])
 
         src_res = catalog.get("director-resignation")
         db_res = loaded.get("director-resignation")
-        r.check("db", "step keys survive in order",
-                [s.key for s in db_res.ordered_steps()],
-                [s.key for s in src_res.ordered_steps()])
-        r.check("db", "tool names survive",
-                [s.tool for s in db_res.ordered_steps()],
-                [s.tool for s in src_res.ordered_steps()])
-        r.check("db", "requires JSONB survives as a list of str",
-                [s.requires for s in db_res.ordered_steps()],
-                [list(s.requires) for s in src_res.ordered_steps()])
-        r.check("db", "produces JSONB survives as a list of str",
-                [s.produces for s in db_res.ordered_steps()],
-                [list(s.produces) for s in src_res.ordered_steps()])
-        r.check("db", "done_when kind survives",
-                [s.done_when for s in db_res.ordered_steps()],
-                [s.done_when for s in src_res.ordered_steps()])
-        r.check("db", "tool_args JSONB survives",
-                [s.args for s in db_res.ordered_steps()],
-                [dict(s.args) for s in src_res.ordered_steps()])
-        r.check("db", "required-input flags survive",
-                sorted(db_probe.required_input_keys()),
-                sorted(src_probe.required_input_keys()))
+        r.check(
+            "db",
+            "step keys survive in order",
+            [s.key for s in db_res.ordered_steps()],
+            [s.key for s in src_res.ordered_steps()],
+        )
+        r.check(
+            "db",
+            "tool names survive",
+            [s.tool for s in db_res.ordered_steps()],
+            [s.tool for s in src_res.ordered_steps()],
+        )
+        r.check(
+            "db",
+            "requires JSONB survives as a list of str",
+            [s.requires for s in db_res.ordered_steps()],
+            [list(s.requires) for s in src_res.ordered_steps()],
+        )
+        r.check(
+            "db",
+            "produces JSONB survives as a list of str",
+            [s.produces for s in db_res.ordered_steps()],
+            [list(s.produces) for s in src_res.ordered_steps()],
+        )
+        r.check(
+            "db",
+            "done_when kind survives",
+            [s.done_when for s in db_res.ordered_steps()],
+            [s.done_when for s in src_res.ordered_steps()],
+        )
+        r.check(
+            "db",
+            "tool_args JSONB survives",
+            [s.args for s in db_res.ordered_steps()],
+            [dict(s.args) for s in src_res.ordered_steps()],
+        )
+        r.check(
+            "db",
+            "required-input flags survive",
+            sorted(db_probe.required_input_keys()),
+            sorted(src_probe.required_input_keys()),
+        )
 
         # A routine loaded from the DB must validate exactly like its source.
         registry = set(full_registry()[0])
-        r.check("db", "DB-loaded routines validate clean",
-                sum(len(model.validate(x, known_tools=registry))
-                    for x in loaded.values()), 0)
+        r.check(
+            "db",
+            "DB-loaded routines validate clean",
+            sum(len(model.validate(x, known_tools=registry)) for x in loaded.values()),
+            0,
+        )
 
         # -- enabled defaults to FALSE, end to end -------------------------
-        r.check("db", "nothing is enabled after a fresh sync",
-                len(store.load_routines(enabled_only=True)), 0)
-        cur.execute("UPDATE routines SET enabled = TRUE WHERE name = %s",
-                    ("probe-fictional-chain",))
-        r.check("db", "enabling one routine makes exactly one live",
-                len(store.load_routines(enabled_only=True)), 1)
-        cur.execute("UPDATE routines SET enabled = FALSE WHERE name = %s",
-                    ("probe-fictional-chain",))
+        r.check("db", "nothing is enabled after a fresh sync", len(store.load_routines(enabled_only=True)), 0)
+        cur.execute("UPDATE routines SET enabled = TRUE WHERE name = %s", ("probe-fictional-chain",))
+        r.check("db", "enabling one routine makes exactly one live", len(store.load_routines(enabled_only=True)), 1)
+        cur.execute("UPDATE routines SET enabled = FALSE WHERE name = %s", ("probe-fictional-chain",))
 
         # -- start_run / record_event / load_run: the RESUME claim ---------
-        run_id = store.start_run(src_probe, session_id="probe-session-001",
-                                 company_name="GOLDEN LOTUS TRADING LIMITED",
-                                 state={"company_name": "GOLDEN LOTUS TRADING LIMITED"})
+        run_id = store.start_run(
+            src_probe,
+            session_id="probe-session-001",
+            company_name="GOLDEN LOTUS TRADING LIMITED",
+            state={"company_name": "GOLDEN LOTUS TRADING LIMITED"},
+        )
         executed["start_run"] = True
         r.check("db", "start_run returned a run id", isinstance(run_id, int), True)
 
         after_run = _counts(cur)
-        r.check("db", "routine_runs rows added",
-                after_run["routine_runs"] - after2["routine_runs"], 1)
+        r.check("db", "routine_runs rows added", after_run["routine_runs"] - after2["routine_runs"], 1)
 
-        state: Dict[str, Any] = {"company_name": "GOLDEN LOTUS TRADING LIMITED"}
+        state: dict[str, Any] = {"company_name": "GOLDEN LOTUS TRADING LIMITED"}
         events = 0
         for key in ["first", "half"]:
             step = src_probe.step(key)
-            state = engine.advance(src_probe, state, key,
-                                   {k: f"value::{k}" for k in step.produces})
+            state = engine.advance(src_probe, state, key, {k: f"value::{k}" for k in step.produces})
             ok = store.record_event(
-                run_id, step, "done",
+                run_id,
+                step,
+                "done",
                 detail={"note": "probe"},
                 state=None if mutant == "state_not_persisted" else state,
             )
             executed["record_event"] = executed["record_event"] or ok
             events += 1
         after_ev = _counts(cur)
-        r.check("db", "routine_step_events rows added",
-                after_ev["routine_step_events"] - after_run["routine_step_events"],
-                events)
+        r.check(
+            "db",
+            "routine_step_events rows added",
+            after_ev["routine_step_events"] - after_run["routine_step_events"],
+            events,
+        )
 
         # Append-only: recording the same step twice must add a SECOND row.
-        store.record_event(run_id, src_probe.step("half"), "failed",
-                           detail={"note": "retry"})
-        r.check("db", "a retried step appends rather than overwrites",
-                _counts(cur)["routine_step_events"]
-                - after_run["routine_step_events"], events + 1)
+        store.record_event(run_id, src_probe.step("half"), "failed", detail={"note": "retry"})
+        r.check(
+            "db",
+            "a retried step appends rather than overwrites",
+            _counts(cur)["routine_step_events"] - after_run["routine_step_events"],
+            events + 1,
+        )
 
         run = store.load_run(run_id)
         executed["load_run"] = True
         r.check("db", "load_run returns the run", run is not None, True)
-        r.check("db", "load_run keeps the session scope",
-                run.get("session_id"), "probe-session-001")
-        r.check("db", "load_run state survives as a dict",
-                isinstance(run.get("state"), dict), True)
+        r.check("db", "load_run keeps the session scope", run.get("session_id"), "probe-session-001")
+        r.check("db", "load_run state survives as a dict", isinstance(run.get("state"), dict), True)
 
         # THE CLAIM OF THE WHOLE LAYER: a run is resumable from the database
         # alone, with no model and no transcript. The plan computed from the
         # DB-loaded routine + DB-loaded state must equal the in-process plan.
         db_routine = loaded["probe-fictional-chain"]
-        r.check("db", "plan from DB state matches plan from memory",
-                engine.plan(db_routine, run["state"]).next_step,
-                engine.plan(src_probe, state).next_step)
-        r.check("db", "resumed next step is the human gate",
-                engine.plan(db_routine, run["state"]).next_step, "gate")
+        r.check(
+            "db",
+            "plan from DB state matches plan from memory",
+            engine.plan(db_routine, run["state"]).next_step,
+            engine.plan(src_probe, state).next_step,
+        )
+        r.check("db", "resumed next step is the human gate", engine.plan(db_routine, run["state"]).next_step, "gate")
 
         # -- finish_run -----------------------------------------------------
         executed["finish_run"] = store.finish_run(run_id, "done")
-        cur.execute("SELECT status, finished_at IS NOT NULL FROM routine_runs "
-                    "WHERE id = %s", (run_id,))
+        cur.execute("SELECT status, finished_at IS NOT NULL FROM routine_runs WHERE id = %s", (run_id,))
         status, finished = cur.fetchone()
         r.check("db", "finish_run set status", status, "done")
         r.check("db", "finish_run stamped finished_at", finished, True)
@@ -1174,13 +1234,12 @@ def main() -> int:
         print(f"\n{'GROUP':<6} {'CHECK':<58} {'GOT':>10} {'WANT':>10}")
         print("-" * 90)
         for group, name, got, want, ok in base.rows:
-            print(f"{group:<6} {name[:58]:<58} {str(got)[:10]:>10} "
-                  f"{str(want)[:10]:>10}  {'ok' if ok else 'BAD'}")
+            print(f"{group:<6} {name[:58]:<58} {str(got)[:10]:>10} {str(want)[:10]:>10}  {'ok' if ok else 'BAD'}")
             if not ok:
                 print(f"       full: got={got!r} want={want!r}")
         print(f"\n{len(base.rows)} DB checks · {base_fail} failed")
 
-        print(f"\n{'='*90}\nDB NEGATIVE CONTROLS")
+        print(f"\n{'=' * 90}\nDB NEGATIVE CONTROLS")
         print(f"{'MUTANT':<24} {'FAILURES BEFORE':>16} {'FAILURES AFTER':>16}   VERDICT")
         print("-" * 90)
         inert_db = []
@@ -1189,15 +1248,12 @@ def main() -> int:
             moved = after > base_fail
             if not moved:
                 inert_db.append(mutant)
-            print(f"{mutant:<24} {base_fail:>16} {after:>16}   "
-                  f"{'moved' if moved else 'INERT — measures nothing'}")
+            print(f"{mutant:<24} {base_fail:>16} {after:>16}   {'moved' if moved else 'INERT — measures nothing'}")
         print()
         if base_fail or inert_db:
-            print(f"FAIL: {base_fail} DB check(s) failed; "
-                  f"{len(inert_db)} inert control(s).")
+            print(f"FAIL: {base_fail} DB check(s) failed; {len(inert_db)} inert control(s).")
         else:
-            print(f"PASS: {len(base.rows)} DB checks, "
-                  f"{len(DB_MUTANTS)-1}/{len(DB_MUTANTS)-1} controls moved.")
+            print(f"PASS: {len(base.rows)} DB checks, {len(DB_MUTANTS) - 1}/{len(DB_MUTANTS) - 1} controls moved.")
         return 1 if (base_fail or inert_db) else 0
 
     baseline = run_checks("none")
@@ -1206,8 +1262,7 @@ def main() -> int:
     print(f"\n{'GROUP':<8} {'CHECK':<56} {'GOT':>10} {'WANT':>10}")
     print("-" * 90)
     for group, name, got, want, ok in baseline.rows:
-        print(f"{group:<8} {name[:56]:<56} {str(got)[:10]:>10} {str(want)[:10]:>10}"
-              f"  {'ok' if ok else 'BAD'}")
+        print(f"{group:<8} {name[:56]:<56} {str(got)[:10]:>10} {str(want)[:10]:>10}  {'ok' if ok else 'BAD'}")
     print(f"\n{len(baseline.rows)} checks · {base_fail} failed  (flag OFF)")
 
     # The flag-ON mode is a supported configuration, not a control. It must be
@@ -1215,20 +1270,19 @@ def main() -> int:
     flag_on = run_checks("none", flag_on=True)
     on_fail = len(flag_on.failures)
     print(f"{len(flag_on.rows)} checks · {on_fail} failed  (flag ON)")
-    for group, name, got, want, ok in flag_on.failures:
+    for group, name, got, want, _ok in flag_on.failures:
         print(f"  flag-ON BAD  {group} {name}: got {got!r} want {want!r}")
 
-    print(f"\n{'='*90}\nNEGATIVE CONTROLS — each mutant must move the failure count")
+    print(f"\n{'=' * 90}\nNEGATIVE CONTROLS — each mutant must move the failure count")
     print(f"{'MUTANT':<26} {'FAILURES BEFORE':>16} {'FAILURES AFTER':>16}   VERDICT")
     print("-" * 90)
-    inert: List[str] = []
+    inert: list[str] = []
     for mutant in MUTANTS[1:]:
         after = len(run_checks(mutant).failures)
         moved = after > base_fail
         if not moved:
             inert.append(mutant)
-        print(f"{mutant:<26} {base_fail:>16} {after:>16}   "
-              f"{'moved' if moved else 'INERT — measures nothing'}")
+        print(f"{mutant:<26} {base_fail:>16} {after:>16}   {'moved' if moved else 'INERT — measures nothing'}")
 
     os.environ.pop("LEGAL_SCOUT_ROUTINES", None)
 
@@ -1238,12 +1292,16 @@ def main() -> int:
     if on_fail:
         print(f"FAIL: {on_fail} check(s) failed with the flag ON.")
     if inert:
-        print(f"FAIL: {len(inert)} mutant(s) left the number where it was: "
-              f"{', '.join(inert)}. A case that cannot be made to fail is "
-              f"measuring nothing — delete it rather than keep it.")
+        print(
+            f"FAIL: {len(inert)} mutant(s) left the number where it was: "
+            f"{', '.join(inert)}. A case that cannot be made to fail is "
+            f"measuring nothing — delete it rather than keep it."
+        )
     if not base_fail and not on_fail and not inert:
-        print(f"PASS: {len(baseline.rows)} checks x2 modes, "
-              f"{len(MUTANTS)-1}/{len(MUTANTS)-1} negative controls moved the number.")
+        print(
+            f"PASS: {len(baseline.rows)} checks x2 modes, "
+            f"{len(MUTANTS) - 1}/{len(MUTANTS) - 1} negative controls moved the number."
+        )
     return 1 if (base_fail or on_fail or inert) else 0
 
 

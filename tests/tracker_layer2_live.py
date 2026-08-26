@@ -44,7 +44,7 @@ TIMEOUT = int(os.environ.get("RUN_TIMEOUT", "240"))
 
 # Tools that mean the agent stopped to ask a human.
 ASK_TOOLS = {"ask_questions"}
-PICKER_HINT = re.compile(r"choose_|lookup_|picker", re.I)
+PICKER_HINT = re.compile(r"choose_|lookup_|picker", re.IGNORECASE)
 
 
 def login():
@@ -69,7 +69,7 @@ def _multipart(fields):
     boundary = "----scoutTracker"
     parts = []
     for k, v in fields.items():
-        parts.append(f"--{boundary}\r\nContent-Disposition: form-data; name=\"{k}\"\r\n\r\n{v}\r\n")
+        parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n')
     parts.append(f"--{boundary}--\r\n")
     return boundary, "".join(parts).encode()
 
@@ -143,47 +143,54 @@ def run_chat(token, message, session_id, user_id=None):
 # expect: "asks"  → must pause for input (ask_questions or a picker)
 #         "lists" → must answer, naming the templates in `must_mention`
 CASES = [
-    ("A0", "lists",
-     "Provide all relevant templates required for an Annual General Meeting",
-     ["Notice of Calling", "Notice of Annual General Meeting", "Minutes", "Resolution In Writing"]),
-    ("A1", "asks",
-     "Prepare Notice of Calling for Annual General Meeting for City Holdings", []),
-    ("A2", "asks",
-     "Prepare Notice of Annual General Meeting to Shareholders for City Holdings", []),
-    ("A3", "asks",
-     "Prepare Annual General Meeting Minutes for City Holdings", []),
-    ("A4", "asks",
-     "Prepare Annual General Meeting Minutes for City Mart Holding", []),
-    ("A5", "asks",
-     "Prepare Shareholders Resolution in Writing for AGM of City Mart Holding", []),
-
-    ("B0", "lists",
-     "What documents are required to set up a company?",
-     ["Director Consent", "Shareholder Consent"]),
-    ("B1", "asks",
-     "Prepare director consent form (non group member) to appoint in a new company. "
-     "Use information of Min Min from people database", []),
-    ("B2", "asks",
-     "To appoint a director in a new company, create a director consent form for Min Min "
-     "using information from people database", []),
-    ("B3", "asks",
-     "Prepare a shareholder consent form for Soe Moe Thu using information from people database", []),
-    ("B4", "asks",
-     "Prepare a directors resolution for Pahtama Group Co., Ltd to set up a new company "
-     "and appointment of directors", []),
-
-    ("C1", "asks",
-     "Using the information in people database, prepare a director consent form (group member) "
-     "for Min Min to appoint in City Mart Holding.", []),
-    ("C3", "asks",
-     "Prepare resignation letter of Daw Win Win Tint from City Holdings", []),
-    ("C4", "asks",
-     "Prepare a shareholders meeting minutes for director appointment only for City Holdings", []),
+    (
+        "A0",
+        "lists",
+        "Provide all relevant templates required for an Annual General Meeting",
+        ["Notice of Calling", "Notice of Annual General Meeting", "Minutes", "Resolution In Writing"],
+    ),
+    ("A1", "asks", "Prepare Notice of Calling for Annual General Meeting for City Holdings", []),
+    ("A2", "asks", "Prepare Notice of Annual General Meeting to Shareholders for City Holdings", []),
+    ("A3", "asks", "Prepare Annual General Meeting Minutes for City Holdings", []),
+    ("A4", "asks", "Prepare Annual General Meeting Minutes for City Mart Holding", []),
+    ("A5", "asks", "Prepare Shareholders Resolution in Writing for AGM of City Mart Holding", []),
+    ("B0", "lists", "What documents are required to set up a company?", ["Director Consent", "Shareholder Consent"]),
+    (
+        "B1",
+        "asks",
+        "Prepare director consent form (non group member) to appoint in a new company. "
+        "Use information of Min Min from people database",
+        [],
+    ),
+    (
+        "B2",
+        "asks",
+        "To appoint a director in a new company, create a director consent form for Min Min "
+        "using information from people database",
+        [],
+    ),
+    ("B3", "asks", "Prepare a shareholder consent form for Soe Moe Thu using information from people database", []),
+    (
+        "B4",
+        "asks",
+        "Prepare a directors resolution for Pahtama Group Co., Ltd to set up a new company "
+        "and appointment of directors",
+        [],
+    ),
+    (
+        "C1",
+        "asks",
+        "Using the information in people database, prepare a director consent form (group member) "
+        "for Min Min to appoint in City Mart Holding.",
+        [],
+    ),
+    ("C3", "asks", "Prepare resignation letter of Daw Win Win Tint from City Holdings", []),
+    ("C4", "asks", "Prepare a shareholders meeting minutes for director appointment only for City Holdings", []),
 ]
 
 
 def verdict(case, result):
-    cid, expect, _prompt, must_mention = case
+    _cid, expect, _prompt, must_mention = case
     if result["error"]:
         return "ERROR", result["error"]
 
@@ -192,9 +199,7 @@ def verdict(case, result):
             asked = "; ".join(q for q in result["questions"] if q)[:150]
             return "PASS", f"paused and asked — {asked or 'picker card'}"
         return "FAIL", (
-            "answered without asking — "
-            f"tools={result['tools'][:5] or 'none'} · "
-            f"reply={result['content'][:90]!r}"
+            f"answered without asking — tools={result['tools'][:5] or 'none'} · reply={result['content'][:90]!r}"
         )
 
     # expect == "lists"
@@ -224,7 +229,7 @@ def main():
         cid, expect, prompt, _ = case
         if wanted and cid not in wanted:
             continue
-        print(f"\n{'='*78}\n[{cid}] expect={expect}\n> {prompt}", flush=True)
+        print(f"\n{'=' * 78}\n[{cid}] expect={expect}\n> {prompt}", flush=True)
         try:
             result = run_chat(token, prompt, f"Test {cid} — {stamp}", user_id)
         except Exception as e:

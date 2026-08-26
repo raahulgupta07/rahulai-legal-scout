@@ -32,9 +32,9 @@ from __future__ import annotations
 
 import logging
 
+from scout.memory import sql as _sql
 from scout.memory.flags import memory_enabled
 from scout.memory.scope import MemoryScopeError, _coerce_company_id
-from scout.memory import sql as _sql
 from scout.memory.store import (
     _enter_savepoint,
     _release_savepoint,
@@ -60,7 +60,7 @@ BY_EXACT_NAME = "exact_name"
 MIN_CANDIDATE_CHARS = 2
 
 
-class Resolution(object):
+class Resolution:
     """The answer to "which company is this?".
 
     ``status`` is one of RESOLVED / AMBIGUOUS / NONE. ``company_id`` is set
@@ -68,12 +68,18 @@ class Resolution(object):
     None, not a guess.
     """
 
-    __slots__ = ("status", "company_id", "company_name", "registration_number",
-                 "candidates", "match_kind", "query")
+    __slots__ = ("candidates", "company_id", "company_name", "match_kind", "query", "registration_number", "status")
 
-    def __init__(self, status, company_id=None, company_name=None,
-                 registration_number=None, candidates=None, match_kind=None,
-                 query=None):
+    def __init__(
+        self,
+        status,
+        company_id=None,
+        company_name=None,
+        registration_number=None,
+        candidates=None,
+        match_kind=None,
+        query=None,
+    ):
         self.status = status
         self.company_id = company_id
         self.company_name = company_name
@@ -99,9 +105,7 @@ class Resolution(object):
         }
 
     def __repr__(self):
-        return "Resolution(%s, company_id=%r, candidates=%d)" % (
-            self.status, self.company_id, len(self.candidates)
-        )
+        return f"Resolution({self.status}, company_id={self.company_id!r}, candidates={len(self.candidates)})"
 
 
 def _row_to_candidate(row):

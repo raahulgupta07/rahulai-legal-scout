@@ -10,9 +10,9 @@ Usage:
     model = get_model("chat")  # → "google/gemini-3.6-flash"
 """
 
-import os
 import json
 import logging
+import os
 
 # Centralized OpenRouter base URL — configurable via env var
 OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
@@ -41,6 +41,7 @@ def _load_from_db():
     conn = None
     try:
         from db.connection import get_db_conn
+
         conn = get_db_conn()
         cur = conn.cursor()
         cur.execute("SELECT value FROM app_settings WHERE key = 'ai_models'")
@@ -78,13 +79,14 @@ def save_models(config: dict):
     conn = None
     try:
         from db.connection import get_db_conn
+
         conn = get_db_conn()
         cur = conn.cursor()
         value = json.dumps(config)
         cur.execute(
             "INSERT INTO app_settings (key, value) VALUES ('ai_models', %s) "
             "ON CONFLICT (key) DO UPDATE SET value = %s, updated_at = CURRENT_TIMESTAMP",
-            (value, value)
+            (value, value),
         )
         conn.commit()
         cur.close()
@@ -108,6 +110,7 @@ _tz_cache = {"value": None, "expires": 0}
 def get_timezone() -> str:
     """Get configured timezone from app_settings. Cached for 60 seconds."""
     import time
+
     now = time.time()
     if _tz_cache["value"] and now < _tz_cache["expires"]:
         return _tz_cache["value"]
@@ -115,6 +118,7 @@ def get_timezone() -> str:
     conn = None
     try:
         from db.connection import get_db_conn
+
         conn = get_db_conn()
         cur = conn.cursor()
         cur.execute("SELECT value FROM app_settings WHERE key = 'timezone'")
@@ -137,12 +141,14 @@ def save_timezone(tz: str):
     conn = None
     try:
         from db.connection import get_db_conn
+
         conn = get_db_conn()
         cur = conn.cursor()
         cur.execute(
             "INSERT INTO app_settings (key, value) VALUES ('timezone', %s) "
             "ON CONFLICT (key) DO UPDATE SET value = %s, updated_at = CURRENT_TIMESTAMP",
-            (tz, tz))
+            (tz, tz),
+        )
         conn.commit()
         cur.close()
     except Exception as e:
@@ -155,9 +161,11 @@ def save_timezone(tz: str):
 
 def get_current_datetime() -> str:
     """Get current date/time in configured timezone."""
-    from datetime import datetime, timezone as tz
+    from datetime import datetime
+
     try:
         import zoneinfo
+
         zone = zoneinfo.ZoneInfo(get_timezone())
         now = datetime.now(zone)
     except Exception:
@@ -168,19 +176,15 @@ def get_current_datetime() -> str:
 def get_current_date() -> str:
     """Get current date only in configured timezone."""
     from datetime import datetime
+
     try:
         import zoneinfo
+
         zone = zoneinfo.ZoneInfo(get_timezone())
         now = datetime.now(zone)
     except Exception:
         now = datetime.now()
     return now.strftime("%Y-%m-%d")
-
-
-
-
-
-
 
 
 def clear_cache():

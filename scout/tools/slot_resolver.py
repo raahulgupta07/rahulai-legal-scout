@@ -48,9 +48,7 @@ from scout.tools.field_aliases import normalize_field
 # that is six signatures deep and every caller would have to be correct. A
 # ContextVar is per-context, not a shared global: concurrent runs cannot see
 # each other's value, which is the property the threading would have given us.
-_SESSION_SCOPE: contextvars.ContextVar[str] = contextvars.ContextVar(
-    "legalscout_session_scope", default=""
-)
+_SESSION_SCOPE: contextvars.ContextVar[str] = contextvars.ContextVar("legalscout_session_scope", default="")
 
 
 @contextlib.contextmanager
@@ -76,10 +74,19 @@ def current_session_scope() -> str:
     """
     return _SESSION_SCOPE.get()
 
-SLOT_KINDS = frozenset({
-    "signatory", "attendee", "chairperson", "resigning_director",
-    "new_director", "representative", "shareholder_list", "auditor",
-})
+
+SLOT_KINDS = frozenset(
+    {
+        "signatory",
+        "attendee",
+        "chairperson",
+        "resigning_director",
+        "new_director",
+        "representative",
+        "shareholder_list",
+        "auditor",
+    }
+)
 
 SLOT_OF = frozenset({"document_company", "corporate_shareholder", "people_register"})
 
@@ -105,7 +112,7 @@ try:  # app.slot_contract is authored in parallel; stay usable without it
         if _value:
             _CONTRACT_OF = frozenset(_value)
             break
-except Exception:  # noqa: BLE001 - module is optional at runtime
+except Exception:
     _slot_contract = None
 
 if _CONTRACT_KINDS:
@@ -139,7 +146,10 @@ PICKER_KINDS = {
 # the INCOMING director was later reused as the RESIGNING one.
 _KIND_PATTERNS = (
     ("resigning_director", r"resign|outgoing|stepping[ _-]?down"),
-    ("new_director", r"new[ _-]?director|appointed[ _-]?director|incoming[ _-]?director|appointee|being[ _-]?appointed|to[ _-]?be[ _-]?appointed"),
+    (
+        "new_director",
+        r"new[ _-]?director|appointed[ _-]?director|incoming[ _-]?director|appointee|being[ _-]?appointed|to[ _-]?be[ _-]?appointed",
+    ),
     ("chairperson", r"chair"),
     ("representative", r"represent|authoris?ed[ _-]?person|authoriz?ed[ _-]?person"),
     ("attendee", r"attend|present[ _-]?member|persons[ _-]?present"),
@@ -163,6 +173,7 @@ def classify_kind(text: str) -> str:
         if re.search(pattern, probe):
             return kind
     return ""
+
 
 _ARRAY_PATH = re.compile(r"^(\w+)\[(\d+)\](?:\.(\w+))?$")
 _INDEX_IN_NAME = re.compile(r"(?:^|[^0-9a-z])(\d+)(?:[^0-9a-z]|$)")
@@ -247,7 +258,7 @@ def normalise_entry(placeholder: str, entry: Any) -> dict:
                 normalised = _contract_normalise(*args)
             except TypeError:
                 continue
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
                 _logger.warning(f"slot_contract.normalise_legacy_entry failed for '{placeholder}': {e}")
                 break
             if isinstance(normalised, dict):
@@ -268,7 +279,7 @@ def is_valid_entry(entry: dict) -> bool:
             # 0; tolerate a bare bool in case the contract's shape changes.
             ok = _contract_validate(entry)
             return bool(ok[0] if isinstance(ok, tuple) else ok)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             _logger.warning(f"slot_contract.validate_mapping_entry failed: {e}")
 
     if not isinstance(entry, dict):
@@ -280,11 +291,7 @@ def is_valid_entry(entry: dict) -> bool:
         return bool(entry.get("db_column")) and "[" not in str(entry.get("db_column"))
     if source == "slot":
         slot = entry.get("slot")
-        return (
-            isinstance(slot, dict)
-            and slot.get("kind") in SLOT_KINDS
-            and slot.get("of") in SLOT_OF
-        )
+        return isinstance(slot, dict) and slot.get("kind") in SLOT_KINDS and slot.get("of") in SLOT_OF
     return entry.get("default") != "today"
 
 
@@ -356,7 +363,12 @@ def _correct_member_slot(placeholder: str, slot: dict) -> dict:
         _logger.warning(
             "slot_resolver: %r is trained as kind=%r of=%r, but it names a MEMBER — "
             "reading it as kind=%r of=%r. Re-train step 5.5 to fix it at source.",
-            placeholder, kind, slot.get("of"), corrected["kind"], corrected["of"])
+            placeholder,
+            kind,
+            slot.get("of"),
+            corrected["kind"],
+            corrected["of"],
+        )
     return corrected
 
 
@@ -390,7 +402,7 @@ def _coerce_parties(value: Any) -> list[dict]:
 
     if isinstance(value, str):
         text = value.strip()
-        if text.startswith("{") or text.startswith("["):
+        if text.startswith(("{", "[")):
             try:
                 return _coerce_parties(json.loads(text))
             except (ValueError, TypeError):
@@ -508,7 +520,7 @@ def _parties_from_document(document_id: Any, slot: dict) -> list[dict]:
         )
         rows = cur.fetchall()
         cur.close()
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         _logger.warning(f"Failed to load document_signatories for document {document_id}: {e}")
         return []
     finally:
@@ -590,7 +602,7 @@ def _parties_from_picker_log(company_name: str | None, slot: dict) -> list[dict]
         )
         row = cur.fetchone()
         cur.close()
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         _logger.warning(f"Failed to read party_selections for '{company_name}': {e}")
         return []
     finally:
@@ -662,7 +674,6 @@ def corporate_shareholder_directors(corporate_name: str) -> list[dict]:
     conn = None
     try:
         from db.connection import get_db_conn
-
         from scout.tools.people_picker import _directors_of
 
         conn = get_db_conn()
@@ -670,7 +681,7 @@ def corporate_shareholder_directors(corporate_name: str) -> list[dict]:
         resolved = _directors_of(cur, corporate_name)
         cur.close()
         return resolved.get("candidates", []) if resolved.get("found") else []
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         _logger.warning(f"Failed to load directors of corporate shareholder '{corporate_name}': {e}")
         return []
     finally:
@@ -682,8 +693,11 @@ def _corporate_shareholder_name(data: dict, company_name: str | None) -> str:
     """Which corporate shareholder a corporate_shareholder slot belongs to."""
     if isinstance(data, dict):
         for key in (
-            "corporate_shareholder_name", "corporate_shareholder", "signing_shareholder",
-            "corporate_shareholder_3_name", "shareholder_company_name",
+            "corporate_shareholder_name",
+            "corporate_shareholder",
+            "signing_shareholder",
+            "corporate_shareholder_3_name",
+            "shareholder_company_name",
         ):
             value = data.get(key)
             if value and str(value).strip().upper() != "TBD":
@@ -704,7 +718,7 @@ def _corporate_shareholder_name(data: dict, company_name: str | None) -> str:
         )
         row = cur.fetchone()
         cur.close()
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         _logger.warning(f"Failed to load shareholder_links for '{company_name}': {e}")
         return ""
     finally:
@@ -739,11 +753,14 @@ def _corporate_shareholder_name(data: dict, company_name: str | None) -> str:
         for party in _member_family_parties(data or {}, company_name):
             if not _party_is_corporate(party):
                 continue
-            name = (party.get("name") or party.get("full_name") or "").strip() \
-                if isinstance(party, dict) else str(party).strip()
+            name = (
+                (party.get("name") or party.get("full_name") or "").strip()
+                if isinstance(party, dict)
+                else str(party).strip()
+            )
             if name:
                 return name
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         _logger.warning(f"corporate-member fallback failed for '{company_name}': {e}")
     return ""
 
@@ -809,9 +826,7 @@ def companion_identifier(
         if _role_prefix(key, _NAME_ATTR_RE) != prefix and key_norm != prefix:
             continue
 
-        parties = selected_parties(
-            key, entry, data, document_id=document_id, company_name=company_name
-        )
+        parties = selected_parties(key, entry, data, document_id=document_id, company_name=company_name)
         for party in parties:
             identifier = str(party.get("identifier") or "").strip()
             if identifier:
@@ -844,9 +859,7 @@ def resolve_slot(
     if not slot:
         return None
 
-    parties = selected_parties(
-        placeholder, entry, data, document_id=document_id, company_name=company_name
-    )
+    parties = selected_parties(placeholder, entry, data, document_id=document_id, company_name=company_name)
     if parties:
         return render_parties(placeholder, slot, parties, blank=blank)
 
@@ -895,8 +908,9 @@ def _member_family_parties(data: dict, company_name: str | None) -> list[dict]:
     Used to suppress phantom numbered-slot asks (finding F1)."""
     try:
         from scout.tools.repeat_regions import _parties_for_family
+
         return _parties_for_family("member", "name", data or {}, company_name) or []
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         _logger.warning(f"member-family resolve failed for {company_name!r}: {e}")
         return []
 
@@ -904,8 +918,9 @@ def _member_family_parties(data: dict, company_name: str | None) -> list[dict]:
 def _party_is_corporate(party: dict) -> bool:
     try:
         from scout.tools.repeat_regions import _is_corporate
+
         return _is_corporate(party if isinstance(party, dict) else {"name": str(party)})
-    except Exception:  # noqa: BLE001
+    except Exception:
         return False
 
 
@@ -918,8 +933,9 @@ def _repeat_family(placeholder: str) -> str | None:
     """
     try:
         from scout.tools.repeat_regions import _family
+
         return _family(placeholder or "")
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         _logger.warning(f"repeat_regions family classify failed for {placeholder!r}: {e}")
         return None
 
@@ -955,8 +971,9 @@ def _member_position_covered(placeholder: str, member_parties: list[dict]) -> bo
         return True
     try:
         from scout.tools.repeat_regions import _render_value, _tail_attr
+
         return bool(_render_value(member_parties[position - 1], _tail_attr(placeholder)))
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         _logger.warning(f"member-position render check failed for {placeholder!r}: {e}")
         return False
 
@@ -1007,15 +1024,14 @@ def _family_tail(placeholder: str) -> str:
     """The attribute a numbered placeholder renders (name / nrc / shares)."""
     try:
         from scout.tools.repeat_regions import _tail_attr
+
         return _tail_attr(placeholder or "")
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         _logger.warning(f"repeat_regions tail classify failed for {placeholder!r}: {e}")
         return "name"
 
 
-def _family_parties(
-    family: str, tail: str, data: dict, company_name: str | None
-) -> list[dict]:
+def _family_parties(family: str, tail: str, data: dict, company_name: str | None) -> list[dict]:
     """The party list `repeat_regions` will expand `family` to.
 
     Empty means "we cannot prove how many parties there are", which is NOT the
@@ -1024,14 +1040,19 @@ def _family_parties(
     """
     try:
         from scout.tools.repeat_regions import _parties_for_family
+
         parties = _parties_for_family(family, tail, data or {}, company_name) or []
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         _logger.warning(f"party-list resolve failed for family {family!r}: {e}")
         return []
     if len(parties) > _MAX_PARTY_POSITIONS:
         _logger.warning(
             "slot_resolver: %r resolved to %d parties for %r — capping the ask at %d",
-            family, len(parties), company_name, _MAX_PARTY_POSITIONS)
+            family,
+            len(parties),
+            company_name,
+            _MAX_PARTY_POSITIONS,
+        )
         return parties[:_MAX_PARTY_POSITIONS]
     return parties
 
@@ -1073,8 +1094,7 @@ def _patterns_for_party(patterns: dict, party: dict) -> list[tuple[str, dict]]:
     items = list(patterns.items())
     corporate = _party_is_corporate(party)
     suited = [
-        (pattern, entry) for pattern, entry in items
-        if bool(_CORPORATE_SLOT_RE.search(_norm(pattern))) == corporate
+        (pattern, entry) for pattern, entry in items if bool(_CORPORATE_SLOT_RE.search(_norm(pattern))) == corporate
     ]
     return suited or items
 
@@ -1113,7 +1133,9 @@ def _positions_beyond_template(
     if extras:
         _logger.info(
             "slot_resolver: %d party position(s) beyond the template's numbered "
-            "slots — asking from the real party list, not the layout", len(extras))
+            "slots — asking from the real party list, not the layout",
+            len(extras),
+        )
     return extras, counts
 
 
@@ -1176,9 +1198,14 @@ def _corp_rep_resolvable(party: dict, data: dict) -> bool:
 # the ask step exists, so no suppression rule below may touch them. (Pronouns and
 # dates are not slots at all — they are user_input entries this function never
 # sees — so they keep being asked for free.)
-_NEVER_SUPPRESS_KINDS = frozenset({
-    "new_director", "resigning_director", "chairperson", "auditor",
-})
+_NEVER_SUPPRESS_KINDS = frozenset(
+    {
+        "new_director",
+        "resigning_director",
+        "chairperson",
+        "auditor",
+    }
+)
 
 # Families whose numbered positions are DISTINCT PARTIES by definition and whose
 # size no register can establish. `appointed_director` is the case: the people
@@ -1195,7 +1222,7 @@ _NEVER_SUPPRESS_KINDS = frozenset({
 # would interrogate a company that has one.
 _DISTINCT_POSITION_FAMILIES = frozenset({"appointed_director"})
 
-_CORPORATE_SLOT_RE = re.compile(r"corporate", re.I)
+_CORPORATE_SLOT_RE = re.compile(r"corporate", re.IGNORECASE)
 
 
 def collect_slot_requests(
@@ -1254,9 +1281,12 @@ def collect_slot_requests(
         if kind in ("shareholder_list", "attendee") and member_parties:
             continue
         # Corporate representative: skip unless a real corporate member needs one.
-        if kind == "representative" and request["of"] == "corporate_shareholder":
-            if not corp_members or not corp_needs_rep:
-                continue
+        if (
+            kind == "representative"
+            and request["of"] == "corporate_shareholder"
+            and (not corp_members or not corp_needs_rep)
+        ):
+            continue
 
         # A numbered position past the end of the real party list. The expander
         # DELETES that unit, so the finished document has no such line and the
@@ -1291,9 +1321,7 @@ def collect_slot_requests(
             # register shrinks out of the document entirely). Checked per position
             # rather than per kind so a slot that classifies as something else but
             # still belongs to the member family is caught too.
-            if _repeat_family(placeholder) == "member" and _member_position_covered(
-                placeholder, member_parties
-            ):
+            if _repeat_family(placeholder) == "member" and _member_position_covered(placeholder, member_parties):
                 continue
 
         # One question per ROLE, except in a repeating region whose real size we
@@ -1306,12 +1334,13 @@ def collect_slot_requests(
         # separate parties: either the real party list gave us a count, or the
         # family is one whose numbered slots are distinct people by definition
         # (`_DISTINCT_POSITION_FAMILIES`) and the template declares them.
-        per_position = bool(real_count) or (
-            family in _DISTINCT_POSITION_FAMILIES and bool(position)
-        )
+        per_position = bool(real_count) or (family in _DISTINCT_POSITION_FAMILIES and bool(position))
         key = (
-            request["kind"], request["of"], request["candidates_from"],
-            request["multi"], position if per_position else None,
+            request["kind"],
+            request["of"],
+            request["candidates_from"],
+            request["multi"],
+            position if per_position else None,
         )
         if key in seen:
             continue

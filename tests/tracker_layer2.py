@@ -69,7 +69,7 @@ ScriptedAgentRuntime, candidate = _RT.ScriptedAgentRuntime, _RT.candidate
 
 # Tools that mean the agent stopped to ask a human.
 ASK_TOOLS = {"ask_questions"}
-PICKER_HINT = re.compile(r"choose_|lookup_|picker", re.I)
+PICKER_HINT = re.compile(r"choose_|lookup_|picker", re.IGNORECASE)
 
 
 def run_chat(runtime, message, session_id, user_id=None):
@@ -134,42 +134,49 @@ def run_chat(runtime, message, session_id, user_id=None):
 # expect: "asks"  → must pause for input (ask_questions or a picker)
 #         "lists" → must answer, naming the templates in `must_mention`
 CASES = [
-    ("A0", "lists",
-     "Provide all relevant templates required for an Annual General Meeting",
-     ["Notice of Calling", "Notice of Annual General Meeting", "Minutes", "Resolution In Writing"]),
-    ("A1", "asks",
-     "Prepare Notice of Calling for Annual General Meeting for City Holdings", []),
-    ("A2", "asks",
-     "Prepare Notice of Annual General Meeting to Shareholders for City Holdings", []),
-    ("A3", "asks",
-     "Prepare Annual General Meeting Minutes for City Holdings", []),
-    ("A4", "asks",
-     "Prepare Annual General Meeting Minutes for City Mart Holding", []),
-    ("A5", "asks",
-     "Prepare Shareholders Resolution in Writing for AGM of City Mart Holding", []),
-
-    ("B0", "lists",
-     "What documents are required to set up a company?",
-     ["Director Consent", "Shareholder Consent"]),
-    ("B1", "asks",
-     "Prepare director consent form (non group member) to appoint in a new company. "
-     "Use information of Min Min from people database", []),
-    ("B2", "asks",
-     "To appoint a director in a new company, create a director consent form for Min Min "
-     "using information from people database", []),
-    ("B3", "asks",
-     "Prepare a shareholder consent form for Soe Moe Thu using information from people database", []),
-    ("B4", "asks",
-     "Prepare a directors resolution for Pahtama Group Co., Ltd to set up a new company "
-     "and appointment of directors", []),
-
-    ("C1", "asks",
-     "Using the information in people database, prepare a director consent form (group member) "
-     "for Min Min to appoint in City Mart Holding.", []),
-    ("C3", "asks",
-     "Prepare resignation letter of Daw Win Win Tint from City Holdings", []),
-    ("C4", "asks",
-     "Prepare a shareholders meeting minutes for director appointment only for City Holdings", []),
+    (
+        "A0",
+        "lists",
+        "Provide all relevant templates required for an Annual General Meeting",
+        ["Notice of Calling", "Notice of Annual General Meeting", "Minutes", "Resolution In Writing"],
+    ),
+    ("A1", "asks", "Prepare Notice of Calling for Annual General Meeting for City Holdings", []),
+    ("A2", "asks", "Prepare Notice of Annual General Meeting to Shareholders for City Holdings", []),
+    ("A3", "asks", "Prepare Annual General Meeting Minutes for City Holdings", []),
+    ("A4", "asks", "Prepare Annual General Meeting Minutes for City Mart Holding", []),
+    ("A5", "asks", "Prepare Shareholders Resolution in Writing for AGM of City Mart Holding", []),
+    ("B0", "lists", "What documents are required to set up a company?", ["Director Consent", "Shareholder Consent"]),
+    (
+        "B1",
+        "asks",
+        "Prepare director consent form (non group member) to appoint in a new company. "
+        "Use information of Min Min from people database",
+        [],
+    ),
+    (
+        "B2",
+        "asks",
+        "To appoint a director in a new company, create a director consent form for Min Min "
+        "using information from people database",
+        [],
+    ),
+    ("B3", "asks", "Prepare a shareholder consent form for Soe Moe Thu using information from people database", []),
+    (
+        "B4",
+        "asks",
+        "Prepare a directors resolution for Pahtama Group Co., Ltd to set up a new company "
+        "and appointment of directors",
+        [],
+    ),
+    (
+        "C1",
+        "asks",
+        "Using the information in people database, prepare a director consent form (group member) "
+        "for Min Min to appoint in City Mart Holding.",
+        [],
+    ),
+    ("C3", "asks", "Prepare resignation letter of Daw Win Win Tint from City Holdings", []),
+    ("C4", "asks", "Prepare a shareholders meeting minutes for director appointment only for City Holdings", []),
 ]
 
 
@@ -218,75 +225,106 @@ def lists(items, extra="Here are the documents you will need: "):
     return [Complete(extra + ", ".join(items) + ".")]
 
 
-_A0 = ["Notice of Calling of Annual General Meeting",
-       "Notice of Annual General Meeting to Shareholders",
-       "Annual General Meeting Minutes",
-       "Shareholders Resolution In Writing"]
-_B0 = ["Director Consent Form", "Shareholder Consent Form",
-       "Directors Resolution", "Company Constitution"]
+_A0 = [
+    "Notice of Calling of Annual General Meeting",
+    "Notice of Annual General Meeting to Shareholders",
+    "Annual General Meeting Minutes",
+    "Shareholders Resolution In Writing",
+]
+_B0 = ["Director Consent Form", "Shareholder Consent Form", "Directors Resolution", "Company Constitution"]
 
 SCRIPTS = {
     # A0 — a pure listing question. It must ANSWER; pausing is not the pass
     # condition here, it is merely allowed.
-    "A0": {"golden": lists(_A0),
-           # Names three of the four. The tracker's complaint was documents the
-           # agent forgot to mention, so the mutant drops one.
-           "mutant": lists(_A0[:3])},
-
-    "A1": {"golden": asks_via_questions("What is the date of the Annual General Meeting?"),
-           "mutant": guesses("I have prepared the Notice of Calling using today's date.")},
-    "A2": {"golden": asks_via_questions("Which director signs the notice?"),
-           "mutant": guesses("Prepared, signed by the first director on the register.")},
-    "A3": {"golden": asks_via_questions("Who chaired the meeting?"),
-           # "not asked chair person" — the tracker's own words.
-           "mutant": guesses("Minutes prepared with the first director as chair.")},
-    "A4": {"golden": asks_via_questions("What is the meeting date?"),
-           "mutant": guesses("Minutes prepared, dated today.")},
-    "A5": {"golden": asks_via_picker("sign the AGM resolution",
-                                     ["KYAW THU SOE", "PHYOE MIN KYAW"],
-                                     company="CITY MART HOLDING COMPANY LIMITED"),
-           "mutant": guesses("Resolution prepared and signed by MIN MIN.")},
-
+    "A0": {
+        "golden": lists(_A0),
+        # Names three of the four. The tracker's complaint was documents the
+        # agent forgot to mention, so the mutant drops one.
+        "mutant": lists(_A0[:3]),
+    },
+    "A1": {
+        "golden": asks_via_questions("What is the date of the Annual General Meeting?"),
+        "mutant": guesses("I have prepared the Notice of Calling using today's date."),
+    },
+    "A2": {
+        "golden": asks_via_questions("Which director signs the notice?"),
+        "mutant": guesses("Prepared, signed by the first director on the register."),
+    },
+    "A3": {
+        "golden": asks_via_questions("Who chaired the meeting?"),
+        # "not asked chair person" — the tracker's own words.
+        "mutant": guesses("Minutes prepared with the first director as chair."),
+    },
+    "A4": {
+        "golden": asks_via_questions("What is the meeting date?"),
+        "mutant": guesses("Minutes prepared, dated today."),
+    },
+    "A5": {
+        "golden": asks_via_picker(
+            "sign the AGM resolution", ["KYAW THU SOE", "PHYOE MIN KYAW"], company="CITY MART HOLDING COMPANY LIMITED"
+        ),
+        "mutant": guesses("Resolution prepared and signed by MIN MIN."),
+    },
     # B0 — lists AND then offers a follow-up chip. That is the DESIRED
     # behaviour, not a partial one: an earlier version of `verdict()` failed a
     # run that named every template and then asked "generate one now?". The
     # golden script deliberately pauses after a complete answer, so a
     # regression back to that stricter rule fails here.
-    "B0": {"golden": [Text(content="Here are the documents you will need: "
-                                   + ", ".join(_B0) + "."),
-                      Ask([{"id": "q1", "text": "Shall I generate one now?",
-                            "options": ["Yes", "No"]}])],
-           # Incomplete list AND a pause — the branch that has to report both.
-           "mutant": [Text(content="You will need a Director Consent Form."),
-                      Ask([{"id": "q1", "text": "Shall I generate it now?"}])]},
-
-    "B1": {"golden": asks_via_questions("Which company is the director being appointed to?"),
-           "mutant": guesses("Consent form prepared for Min Min.")},
-    "B2": {"golden": asks_via_questions("What is the appointment date?"),
-           "mutant": guesses("Consent form prepared, dated today.")},
-    "B3": {"golden": asks_via_questions("How many shares does the shareholder hold?"),
-           "mutant": guesses("Shareholder consent prepared for Soe Moe Thu.")},
-    "B4": {"golden": asks_via_picker("be appointed as director",
-                                     ["MIN MIN", "SOE MOE THU", "WIN WIN TINT"],
-                                     company="PAHTAMA GROUP CO., LTD",
-                                     tool="choose_person_from_register"),
-           # "the system is automatically picking up the first director".
-           "mutant": guesses("Resolution prepared appointing MIN MIN.")},
-
-    "C1": {"golden": asks_via_picker("represent the corporate shareholder",
-                                     ["KYAW THU SOE", "PHYOE MIN KYAW"],
-                                     company="CITY MART HOLDING COMPANY LIMITED",
-                                     tool="choose_representative_director"),
-           "mutant": guesses("Consent form prepared for Min Min at City Mart Holding.")},
-    "C3": {"golden": asks_via_questions("What is the effective date of resignation?"),
-           "mutant": guesses("Resignation letter prepared, effective today.")},
-    "C4": {"golden": asks_via_questions("Who chaired the shareholders meeting?"),
-           "mutant": guesses("Minutes prepared with the first director as chair.")},
+    "B0": {
+        "golden": [
+            Text(content="Here are the documents you will need: " + ", ".join(_B0) + "."),
+            Ask([{"id": "q1", "text": "Shall I generate one now?", "options": ["Yes", "No"]}]),
+        ],
+        # Incomplete list AND a pause — the branch that has to report both.
+        "mutant": [
+            Text(content="You will need a Director Consent Form."),
+            Ask([{"id": "q1", "text": "Shall I generate it now?"}]),
+        ],
+    },
+    "B1": {
+        "golden": asks_via_questions("Which company is the director being appointed to?"),
+        "mutant": guesses("Consent form prepared for Min Min."),
+    },
+    "B2": {
+        "golden": asks_via_questions("What is the appointment date?"),
+        "mutant": guesses("Consent form prepared, dated today."),
+    },
+    "B3": {
+        "golden": asks_via_questions("How many shares does the shareholder hold?"),
+        "mutant": guesses("Shareholder consent prepared for Soe Moe Thu."),
+    },
+    "B4": {
+        "golden": asks_via_picker(
+            "be appointed as director",
+            ["MIN MIN", "SOE MOE THU", "WIN WIN TINT"],
+            company="PAHTAMA GROUP CO., LTD",
+            tool="choose_person_from_register",
+        ),
+        # "the system is automatically picking up the first director".
+        "mutant": guesses("Resolution prepared appointing MIN MIN."),
+    },
+    "C1": {
+        "golden": asks_via_picker(
+            "represent the corporate shareholder",
+            ["KYAW THU SOE", "PHYOE MIN KYAW"],
+            company="CITY MART HOLDING COMPANY LIMITED",
+            tool="choose_representative_director",
+        ),
+        "mutant": guesses("Consent form prepared for Min Min at City Mart Holding."),
+    },
+    "C3": {
+        "golden": asks_via_questions("What is the effective date of resignation?"),
+        "mutant": guesses("Resignation letter prepared, effective today."),
+    },
+    "C4": {
+        "golden": asks_via_questions("Who chaired the shareholders meeting?"),
+        "mutant": guesses("Minutes prepared with the first director as chair."),
+    },
 }
 
 
 def verdict(case, result):
-    cid, expect, _prompt, must_mention = case
+    _cid, expect, _prompt, must_mention = case
     if result["error"]:
         return "ERROR", result["error"]
 
@@ -295,9 +333,7 @@ def verdict(case, result):
             asked = "; ".join(q for q in result["questions"] if q)[:150]
             return "PASS", f"paused and asked — {asked or 'picker card'}"
         return "FAIL", (
-            "answered without asking — "
-            f"tools={result['tools'][:5] or 'none'} · "
-            f"reply={result['content'][:90]!r}"
+            f"answered without asking — tools={result['tools'][:5] or 'none'} · reply={result['content'][:90]!r}"
         )
 
     # expect == "lists"
@@ -320,18 +356,20 @@ def verdict(case, result):
 # ── protocol checks ─────────────────────────────────────────────────
 # Branches of the classifier that no case script reaches on its own.
 
+
 def protocol_checks():
     """(name, expected_status, script) — each run through the same pipeline."""
     return [
         # A failed run must classify as ERROR, not as a silent pass. Nothing in
         # the case list produces one.
-        ("error-run", "ERROR",
-         [ToolCall("get_template", {}, result="ok"),
-          Error("provider rejected the dangling tool call")]),
+        (
+            "error-run",
+            "ERROR",
+            [ToolCall("get_template", {}, result="ok"), Error("provider rejected the dangling tool call")],
+        ),
         # An empty reply with no pause is not an "ask". The blank-bubble bug
         # made this exact shape, and it must read as FAIL for an "asks" case.
-        ("empty-reply", "FAIL",
-         [ToolCall("get_template", {}, result="ok"), Complete("")]),
+        ("empty-reply", "FAIL", [ToolCall("get_template", {}, result="ok"), Complete("")]),
     ]
 
 
@@ -345,7 +383,7 @@ def main():
         if wanted and cid not in wanted:
             continue
         scripts = SCRIPTS[cid]
-        print(f"\n{'='*78}\n[{cid}] expect={expect}\n> {prompt}", flush=True)
+        print(f"\n{'=' * 78}\n[{cid}] expect={expect}\n> {prompt}", flush=True)
 
         for variant, want_status in (("golden", "PASS"), ("mutant", "FAIL")):
             runtime = ScriptedAgentRuntime(scripts[variant])
@@ -360,11 +398,13 @@ def main():
                 print(f"         asked: {q[:110]}", flush=True)
             if result["content"]:
                 print(f"         reply: {result['content'][:120]}", flush=True)
-            print(f"      -> {status} (want {want_status}) {'OK' if ok else '<<< SUITE FAILURE'}"
-                  f": {detail[:110]}", flush=True)
+            print(
+                f"      -> {status} (want {want_status}) {'OK' if ok else '<<< SUITE FAILURE'}: {detail[:110]}",
+                flush=True,
+            )
 
     if not wanted:
-        print(f"\n{'='*78}\nprotocol checks", flush=True)
+        print(f"\n{'=' * 78}\nprotocol checks", flush=True)
         for name, want_status, script in protocol_checks():
             runtime = ScriptedAgentRuntime(script)
             result = run_chat(runtime, "probe", f"protocol {name}", 1)
@@ -375,8 +415,10 @@ def main():
             if not ok:
                 failures += 1
             rows.append((name, status, want_status, ok, detail))
-            print(f"  {name:<14} -> {status} (want {want_status}) "
-                  f"{'OK' if ok else '<<< SUITE FAILURE'}: {detail[:90]}", flush=True)
+            print(
+                f"  {name:<14} -> {status} (want {want_status}) {'OK' if ok else '<<< SUITE FAILURE'}: {detail[:90]}",
+                flush=True,
+            )
 
     print(f"\n\n{'CASE':<16} {'GOT':<7} {'WANT':<7} {'':<4} DETAIL")
     print("-" * 100)
@@ -385,8 +427,10 @@ def main():
 
     print(f"\nSUMMARY: {len(rows)} checks · {failures} unexpected")
     if failures:
-        print("A mutant that did not FAIL means the verdict rule it targets no "
-              "longer discriminates — treat it as a broken gate, not a flake.")
+        print(
+            "A mutant that did not FAIL means the verdict rule it targets no "
+            "longer discriminates — treat it as a broken gate, not a flake."
+        )
     return 1 if failures else 0
 
 

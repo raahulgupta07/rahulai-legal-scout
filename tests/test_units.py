@@ -31,23 +31,21 @@ from pathlib import Path
 # the same order uvicorn uses and breaks the cycle. This is why the suite runs
 # in the container rather than on the host.
 sys.path.insert(0, "/app")
-import app.main  # noqa: F401,E402  — import for its side effect on module order
-
-from scout.tools.field_aliases import (  # noqa: E402
+from scout.tools import ask_questions as aq
+from scout.tools import fill_view as fv
+from scout.tools import people_picker as pp
+from scout.tools import repeat_regions as rr
+from scout.tools import slot_resolver as sr
+from scout.tools.field_aliases import (
     canonical_field,
     normalize_field,
     tokens_match,
 )
-from scout.tools.placeholders import (  # noqa: E402
+from scout.tools.placeholders import (
     is_empty_placeholder,
     new_empty_counter,
     placeholder_name,
 )
-from scout.tools import ask_questions as aq  # noqa: E402
-from scout.tools import fill_view as fv  # noqa: E402
-from scout.tools import people_picker as pp  # noqa: E402
-from scout.tools import repeat_regions as rr  # noqa: E402
-from scout.tools import slot_resolver as sr  # noqa: E402
 
 REPO = Path("/app")
 
@@ -78,10 +76,10 @@ def register_has(company: str) -> bool:
     """True when `company` exists in the register, for fixture-dependent cases."""
     try:
         from scout.tools.companies_db import get_all_companies
+
         target = company.strip().lower()
-        return any(target in str(c.get("name") or "").strip().lower()
-                   for c in get_all_companies(limit=300))
-    except Exception:  # noqa: BLE001 — no DB rows is a skip, not an error
+        return any(target in str(c.get("name") or "").strip().lower() for c in get_all_companies(limit=300))
+    except Exception:
         return False
 
 
@@ -93,27 +91,38 @@ def register_has(company: str) -> bool:
 #     out blank.
 # ===========================================================================
 def test_placeholders():
-    eq("U1a", "U+00A0 inside a placeholder folds to a normal space",
-       placeholder_name(("individual\xa0shareholder_1_name", None, None)),
-       "individual shareholder_1_name")
-    eq("U1b", "zero-width space is stripped",
-       placeholder_name(("director​_name", None, None)), "director_name")
-    eq("U1c", "an ordinary name is untouched",
-       placeholder_name(("meeting_date", None, None)), "meeting_date")
-    eq("U1d", "surrounding whitespace is trimmed",
-       placeholder_name(("  chairperson_name  ", None, None)), "chairperson_name")
-    eq("U1e", "the second capture group is used when the first is empty",
-       placeholder_name((None, "company_name", None)), "company_name")
+    eq(
+        "U1a",
+        "U+00A0 inside a placeholder folds to a normal space",
+        placeholder_name(("individual\xa0shareholder_1_name", None, None)),
+        "individual shareholder_1_name",
+    )
+    eq("U1b", "zero-width space is stripped", placeholder_name(("director\u200b_name", None, None)), "director_name")
+    eq("U1c", "an ordinary name is untouched", placeholder_name(("meeting_date", None, None)), "meeting_date")
+    eq(
+        "U1d",
+        "surrounding whitespace is trimmed",
+        placeholder_name(("  chairperson_name  ", None, None)),
+        "chairperson_name",
+    )
+    eq(
+        "U1e",
+        "the second capture group is used when the first is empty",
+        placeholder_name((None, "company_name", None)),
+        "company_name",
+    )
 
     counter = new_empty_counter()
     first = placeholder_name((None, None, None), counter)
     second = placeholder_name((None, None, None), counter)
-    check("U1f", "bare slots get distinct synthetic names",
-          bool(first) and bool(second) and first != second, f"{first!r} then {second!r}")
-    eq("U1g", "a bare slot with no counter stays empty",
-       placeholder_name((None, None, None)), "")
-    check("U1h", "is_empty_placeholder recognises a synthetic name",
-          is_empty_placeholder(first), f"{first!r}")
+    check(
+        "U1f",
+        "bare slots get distinct synthetic names",
+        bool(first) and bool(second) and first != second,
+        f"{first!r} then {second!r}",
+    )
+    eq("U1g", "a bare slot with no counter stays empty", placeholder_name((None, None, None)), "")
+    check("U1h", "is_empty_placeholder recognises a synthetic name", is_empty_placeholder(first), f"{first!r}")
 
 
 # ===========================================================================
@@ -122,11 +131,19 @@ def test_placeholders():
 def test_field_aliases():
     eq("U2a", "spaces and case normalise", normalize_field("Company Name"), "company_name")
     eq("U2b", "normalising is idempotent", normalize_field("company_name"), "company_name")
-    eq("U2c", "normalising folds U+00A0 too",
-       normalize_field("individual\xa0shareholder_1_name"), "individual_shareholder_1_name")
+    eq(
+        "U2c",
+        "normalising folds U+00A0 too",
+        normalize_field("individual\xa0shareholder_1_name"),
+        "individual_shareholder_1_name",
+    )
     eq("U2d", "canonical_field maps a known alias", canonical_field("nrc"), "nrc_no")
-    check("U2e", "tokens_match does not equate a numbered slot with the generic key",
-          tokens_match("shareholder_1_name", "shareholder_name") is False, "")
+    check(
+        "U2e",
+        "tokens_match does not equate a numbered slot with the generic key",
+        tokens_match("shareholder_1_name", "shareholder_name") is False,
+        "",
+    )
 
 
 # ===========================================================================
@@ -151,11 +168,14 @@ def test_classify_kind():
     for cid, text, want in cases:
         eq(cid, f"prose purpose {text!r}", sr.classify_kind(text), want)
 
-    eq("U3j", "an unrelated string classifies as unknown, not a guess",
-       sr.classify_kind("the meeting date"), "")
+    eq("U3j", "an unrelated string classifies as unknown, not a guess", sr.classify_kind("the meeting date"), "")
     eq("U3k", "empty input classifies as unknown", sr.classify_kind(""), "")
-    check("U3l", "resigning outranks the generic director pattern",
-          sr.classify_kind("director resigning from the board") == "resigning_director", "")
+    check(
+        "U3l",
+        "resigning outranks the generic director pattern",
+        sr.classify_kind("director resigning from the board") == "resigning_director",
+        "",
+    )
 
 
 # ===========================================================================
@@ -188,8 +208,12 @@ def test_session_scope():
     # The read-back must refuse to answer with no conversation in scope: that is
     # the Fill-in view, which supplies its own values and must inherit nothing.
     slot = {"kind": "new_director", "of": "people_register"}
-    eq("U4i", "picker log returns nothing when no session is in scope",
-       sr._parties_from_picker_log("ANY COMPANY LIMITED", slot), [])
+    eq(
+        "U4i",
+        "picker log returns nothing when no session is in scope",
+        sr._parties_from_picker_log("ANY COMPANY LIMITED", slot),
+        [],
+    )
 
 
 # ===========================================================================
@@ -219,56 +243,82 @@ def test_companion_identifier():
         ("U5j", "registration_number"),
         ("U5k", "meeting_date"),
     ]:
-        eq(cid, f"{ph!r} is not a person identifier",
-           sr._role_prefix(ph, sr._IDENTIFIER_ATTR_RE), "")
+        eq(cid, f"{ph!r} is not a person identifier", sr._role_prefix(ph, sr._IDENTIFIER_ATTR_RE), "")
 
     mapping = {
-        "new_director_name": {"source": "slot",
-                              "slot": {"of": "people_register", "kind": "new_director", "multi": False}},
+        "new_director_name": {
+            "source": "slot",
+            "slot": {"of": "people_register", "kind": "new_director", "multi": False},
+        },
         "new_director_identification_number": {"source": "user_input", "slot": None},
     }
     person = {"name": "SOE MOE THU", "identifier": "12/SAKHANA(N)021426", "party_type": "individual"}
 
-    eq("U5l", "the NRC comes from the person the name slot resolved to",
-       sr.companion_identifier("new_director_identification_number", mapping,
-                               {"new_director_name": person}),
-       "12/SAKHANA(N)021426")
-    eq("U5m", "no resolved person means the field is still asked",
-       sr.companion_identifier("new_director_identification_number", mapping, {}), None)
-    eq("U5n", "a person with no identifier on file does not fabricate one",
-       sr.companion_identifier("new_director_identification_number", mapping,
-                               {"new_director_name": {"name": "NO NRC PERSON"}}), None)
-    eq("U5o", "a non-identifier placeholder is left alone",
-       sr.companion_identifier("meeting_date", mapping, {"new_director_name": person}), None)
-    eq("U5p", "a company registration number is not answered from a person",
-       sr.companion_identifier("company_registration_number", mapping,
-                               {"new_director_name": person}), None)
+    eq(
+        "U5l",
+        "the NRC comes from the person the name slot resolved to",
+        sr.companion_identifier("new_director_identification_number", mapping, {"new_director_name": person}),
+        "12/SAKHANA(N)021426",
+    )
+    eq(
+        "U5m",
+        "no resolved person means the field is still asked",
+        sr.companion_identifier("new_director_identification_number", mapping, {}),
+        None,
+    )
+    eq(
+        "U5n",
+        "a person with no identifier on file does not fabricate one",
+        sr.companion_identifier(
+            "new_director_identification_number", mapping, {"new_director_name": {"name": "NO NRC PERSON"}}
+        ),
+        None,
+    )
+    eq(
+        "U5o",
+        "a non-identifier placeholder is left alone",
+        sr.companion_identifier("meeting_date", mapping, {"new_director_name": person}),
+        None,
+    )
+    eq(
+        "U5p",
+        "a company registration number is not answered from a person",
+        sr.companion_identifier("company_registration_number", mapping, {"new_director_name": person}),
+        None,
+    )
 
 
 # ===========================================================================
 # U6  Party coercion — whatever a picker or the model hands back
 # ===========================================================================
 def test_party_coercion():
-    eq("U6a", "a dict becomes one party",
-       sr._coerce_parties({"name": "A B", "identifier": "X1"}),
-       [{"name": "A B", "identifier": "X1", "party_type": "individual", "representative": ""}])
-    eq("U6b", "a list of names becomes many parties",
-       [p["name"] for p in sr._coerce_parties(["A", "B"])], ["A", "B"])
+    eq(
+        "U6a",
+        "a dict becomes one party",
+        sr._coerce_parties({"name": "A B", "identifier": "X1"}),
+        [{"name": "A B", "identifier": "X1", "party_type": "individual", "representative": ""}],
+    )
+    eq("U6b", "a list of names becomes many parties", [p["name"] for p in sr._coerce_parties(["A", "B"])], ["A", "B"])
     eq("U6c", "TBD is not a person", sr._coerce_parties("TBD"), [])
     eq("U6d", "empty input yields no parties", sr._coerce_parties(""), [])
     eq("U6e", "None yields no parties", sr._coerce_parties(None), [])
-    eq("U6f", "a JSON string is parsed",
-       [p["name"] for p in sr._coerce_parties('[{"name": "C D"}]')], ["C D"])
-    eq("U6g", "an unanswered picker payload yields no parties",
-       sr._coerce_parties({"candidates": [{"name": "X"}]}), [])
-    eq("U6h", "nrc_passport_no is accepted as the identifier",
-       sr._coerce_parties({"name": "E F", "nrc_passport_no": "9/ABC(N)1"})[0]["identifier"], "9/ABC(N)1")
+    eq("U6f", "a JSON string is parsed", [p["name"] for p in sr._coerce_parties('[{"name": "C D"}]')], ["C D"])
+    eq("U6g", "an unanswered picker payload yields no parties", sr._coerce_parties({"candidates": [{"name": "X"}]}), [])
+    eq(
+        "U6h",
+        "nrc_passport_no is accepted as the identifier",
+        sr._coerce_parties({"name": "E F", "nrc_passport_no": "9/ABC(N)1"})[0]["identifier"],
+        "9/ABC(N)1",
+    )
 
     eq("U6i", "slot_of returns None for a non-slot entry", sr.slot_of({"source": "user_input"}), None)
-    eq("U6j", "slot_of returns the descriptor for a slot entry",
-       sr.slot_of({"source": "slot", "slot": {"kind": "signatory"}}), {"kind": "signatory"})
-    eq("U6k", "a slot entry with no kind is not a slot",
-       sr.slot_of({"source": "slot", "slot": {}}), None)
+    eq(
+        "U6j",
+        "slot_of returns the descriptor for a slot entry",
+        sr.slot_of({"source": "slot", "slot": {"kind": "signatory"}}),
+        {"kind": "signatory"},
+    )
+    eq("U6k", "a slot entry with no kind is not a slot", sr.slot_of({"source": "slot", "slot": {}}), None)
 
 
 # ===========================================================================
@@ -288,8 +338,12 @@ def test_person_guard():
         role = aq._person_role(q)
         check(cid, f"blocked: {q}", role is not None, f"role={role!r}")
         if role is not None:
-            check(cid + "-p", "the blocked question names a real picker pair",
-                  role in aq._PICKER_FOR_ROLE, f"role={role!r}")
+            check(
+                cid + "-p",
+                "the blocked question names a real picker pair",
+                role in aq._PICKER_FOR_ROLE,
+                f"role={role!r}",
+            )
 
     must_allow = [
         ("U7h", "What is the proposed name of the new company?"),
@@ -317,27 +371,37 @@ def test_person_guard():
     ]
     allowed, blocked = aq._split_person_questions(questions)
     eq("U7t", "mixed batch keeps the legitimate questions", allowed, ["q0", "q2"])
-    eq("U7u", "mixed batch blocks only the person question",
-       [b["id"] for b in blocked], ["q1"])
-    check("U7v", "a blocked question names the tools to call instead",
-          bool(blocked) and len(blocked[0].get("call_instead") or []) == 2,
-          str(blocked[0].get("call_instead") if blocked else None))
+    eq("U7u", "mixed batch blocks only the person question", [b["id"] for b in blocked], ["q1"])
+    check(
+        "U7v",
+        "a blocked question names the tools to call instead",
+        bool(blocked) and len(blocked[0].get("call_instead") or []) == 2,
+        str(blocked[0].get("call_instead") if blocked else None),
+    )
 
     # A question offering options is a constrained pick, not free text.
-    with_options = [{"id": "q0", "text": "Which director should sign?",
-                     "options": ["A", "B"]}]
+    with_options = [{"id": "q0", "text": "Which director should sign?", "options": ["A", "B"]}]
     allowed_o, blocked_o = aq._split_person_questions(with_options)
     eq("U7w", "an option-bearing question is left alone", (allowed_o, blocked_o), (["q0"], []))
 
-    eq("U7x", "answers for blocked questions are dropped",
-       aq._filter_answers({"q0": "2026-09-15", "q1": "Typed Name"}, questions, ["q0", "q2"]),
-       {"q0": "2026-09-15"})
-    eq("U7y", "id-keyed answer lists are filtered the same way",
-       aq._filter_answers([{"id": "q0", "answer": "x"}, {"id": "q1", "answer": "y"}],
-                          questions, ["q0", "q2"]),
-       [{"id": "q0", "answer": "x"}])
-    eq("U7z", "an unrecognised answer shape passes through untouched",
-       aq._filter_answers("just a string", questions, ["q0"]), "just a string")
+    eq(
+        "U7x",
+        "answers for blocked questions are dropped",
+        aq._filter_answers({"q0": "2026-09-15", "q1": "Typed Name"}, questions, ["q0", "q2"]),
+        {"q0": "2026-09-15"},
+    )
+    eq(
+        "U7y",
+        "id-keyed answer lists are filtered the same way",
+        aq._filter_answers([{"id": "q0", "answer": "x"}, {"id": "q1", "answer": "y"}], questions, ["q0", "q2"]),
+        [{"id": "q0", "answer": "x"}],
+    )
+    eq(
+        "U7z",
+        "an unrecognised answer shape passes through untouched",
+        aq._filter_answers("just a string", questions, ["q0"]),
+        "just a string",
+    )
 
 
 # ===========================================================================
@@ -351,23 +415,22 @@ def test_person_guard():
 def test_picker_payload():
     payload = pp._payload(picker="choose_director", candidates=[], session="sess-42")
     eq("U8a", "the lookup payload carries the session", payload.get("session"), "sess-42")
-    eq("U8b", "the picker reads the session back out",
-       pp._session_from_payload(json.dumps(payload)), "sess-42")
-    eq("U8c", "a dict payload works as well as a JSON string",
-       pp._session_from_payload(payload), "sess-42")
-    eq("U8d", "malformed JSON yields no session rather than raising",
-       pp._session_from_payload("{not json"), "")
-    eq("U8e", "an absent session field yields empty",
-       pp._session_from_payload('{"candidates": []}'), "")
+    eq("U8b", "the picker reads the session back out", pp._session_from_payload(json.dumps(payload)), "sess-42")
+    eq("U8c", "a dict payload works as well as a JSON string", pp._session_from_payload(payload), "sess-42")
+    eq("U8d", "malformed JSON yields no session rather than raising", pp._session_from_payload("{not json"), "")
+    eq("U8e", "an absent session field yields empty", pp._session_from_payload('{"candidates": []}'), "")
     eq("U8f", "None yields empty", pp._session_from_payload(None), "")
     eq("U8g", "a non-object payload yields empty", pp._session_from_payload("[1,2,3]"), "")
 
-    eq("U8h", "a prose purpose is recorded under the role it names",
-       pp._classify_purpose("select the new director to be appointed"), "new_director")
+    eq(
+        "U8h",
+        "a prose purpose is recorded under the role it names",
+        pp._classify_purpose("select the new director to be appointed"),
+        "new_director",
+    )
 
     cand = pp._candidate(person_id=7, name="A B", identifier="1/AB(N)2")
-    eq("U8i", "a candidate keeps its identifier so the NRC travels with the pick",
-       cand["identifier"], "1/AB(N)2")
+    eq("U8i", "a candidate keeps its identifier so the NRC travels with the pick", cand["identifier"], "1/AB(N)2")
     eq("U8j", "a candidate is individual unless told otherwise", cand["party_type"], "individual")
 
 
@@ -375,35 +438,47 @@ def test_picker_payload():
 # U9  Repeat regions — grow/shrink party blocks to the real count
 # ===========================================================================
 def test_repeat_regions():
-    eq("U9a", "'name' is checked before 'share' so shareholder_1_name is a name",
-       rr._tail_attr("shareholder_1_name"), "name")
+    eq(
+        "U9a",
+        "'name' is checked before 'share' so shareholder_1_name is a name",
+        rr._tail_attr("shareholder_1_name"),
+        "name",
+    )
     eq("U9b", "an NRC tail is an nrc", rr._tail_attr("shareholder_1_nrc"), "nrc")
     eq("U9c", "a passport tail is an nrc", rr._tail_attr("director_passport"), "nrc")
     eq("U9d", "a percentage tail", rr._tail_attr("shareholder_1_percentage"), "percentage")
-    eq("U9e", "a space-delimited share count is shares",
-       rr._tail_attr("number of shares"), "shares")
-    eq("U9f", "'shareholder' alone is not a share count",
-       rr._tail_attr("shareholder_1"), "name")
+    eq("U9e", "a space-delimited share count is shares", rr._tail_attr("number of shares"), "shares")
+    eq("U9f", "'shareholder' alone is not a share count", rr._tail_attr("shareholder_1"), "name")
     # KNOWN GAP, asserted so a fix is noticed rather than silently changing
     # behaviour: `\bshares?\b` needs a non-word delimiter and `_` is a word
     # character, so the underscore spelling falls through to the "name"
     # fallback. `number_of_shares` is a real placeholder in a real template. It
     # only misrenders if it sits INSIDE a repeat region — standalone it never
     # reaches _tail_attr — which has not been confirmed either way.
-    eq("U9e2", "KNOWN GAP: the underscore spelling is not recognised as shares",
-       rr._tail_attr("number_of_shares"), "name")
+    eq(
+        "U9e2",
+        "KNOWN GAP: the underscore spelling is not recognised as shares",
+        rr._tail_attr("number_of_shares"),
+        "name",
+    )
 
     # Real DICA data spells the corporate type "Company", not "corporate".
     eq("U9g", "type 'Company' is corporate", rr._is_corporate({"type": "Company"}), True)
     eq("U9h", "type 'corporate' is corporate", rr._is_corporate({"type": "corporate"}), True)
-    eq("U9i", "type 'Individual' is not corporate",
-       rr._is_corporate({"type": "Individual"}), False)
-    eq("U9j", "an unlabelled company name falls back to the name heuristic",
-       rr._is_corporate({"name": "PAHTAMA GROUP CO., LTD"}), True)
-    eq("U9k", "an unlabelled person name is not corporate",
-       rr._is_corporate({"name": "SOE MOE THU"}), False)
-    eq("U9l", "an explicit individual label beats a company-looking name",
-       rr._is_corporate({"type": "individual", "name": "LIMITED HOLDINGS"}), False)
+    eq("U9i", "type 'Individual' is not corporate", rr._is_corporate({"type": "Individual"}), False)
+    eq(
+        "U9j",
+        "an unlabelled company name falls back to the name heuristic",
+        rr._is_corporate({"name": "PAHTAMA GROUP CO., LTD"}),
+        True,
+    )
+    eq("U9k", "an unlabelled person name is not corporate", rr._is_corporate({"name": "SOE MOE THU"}), False)
+    eq(
+        "U9l",
+        "an explicit individual label beats a company-looking name",
+        rr._is_corporate({"type": "individual", "name": "LIMITED HOLDINGS"}),
+        False,
+    )
 
     # --- U18 ---------------------------------------------------------------
     # The signature table in several templates has NO header row: the
@@ -429,8 +504,7 @@ def test_repeat_regions():
         return d, t
 
     d, t = _signing_doc()
-    eq("U18a", "a headerless signature table is still recognised",
-       rr._signing_rows_to_scan(t) is not None, True)
+    eq("U18a", "a headerless signature table is still recognised", rr._signing_rows_to_scan(t) is not None, True)
 
     # An ordinary table with no signing cue above it must stay untouched.
     plain = _Docx()
@@ -438,11 +512,14 @@ def test_repeat_regions():
     pt = plain.add_table(rows=2, cols=1)
     pt.cell(0, 0).text = "[individual shareholder_name]"
     pt.cell(1, 0).text = "Date: [date]"
-    eq("U18b", "a table with no signing cue above it is not claimed",
-       rr._signing_rows_to_scan(pt), None)
+    eq("U18b", "a table with no signing cue above it is not claimed", rr._signing_rows_to_scan(pt), None)
 
-    eq("U18c", "'Represented by' marks a corporate signatory group",
-       bool(rr._CORP_SIGN_RE.search("(Represented by its authorized director)")), True)
+    eq(
+        "U18c",
+        "'Represented by' marks a corporate signatory group",
+        bool(rr._CORP_SIGN_RE.search("(Represented by its authorized director)")),
+        True,
+    )
 
     # One corporate member -> exactly ONE signatory block, and its name appears
     # exactly once. Two would be the shipped bug.
@@ -453,51 +530,65 @@ def test_repeat_regions():
         {"members": [member], "authorized_director_name": "PHYOE MIN KYAW"},
     )
     vals = list(synth.values())
-    eq("U18d", "the sole corporate member signs exactly once",
-       vals.count("CITY HOLDINGS LIMITED"), 1)
+    eq("U18d", "the sole corporate member signs exactly once", vals.count("CITY HOLDINGS LIMITED"), 1)
     # …and the representative is the person who was CHOSEN, not a register
     # ordering. `authorized_director_name` is the key the picker writes; it was
     # absent from the lookup list, which sent this to the positional fallback.
-    eq("U18e", "the chosen representative is used, not a positional guess",
-       "PHYOE MIN KYAW" in vals, True)
+    eq("U18e", "the chosen representative is used, not a positional guess", "PHYOE MIN KYAW" in vals, True)
 
     # The three real custom_data shapes observed on live runs (documents 73–75).
     # The same slot arrives under two spellings and EITHER can hold the answer,
     # so the pick is on content: a candidate equal to `director_name` is the
     # untouched per-company default, one that differs is somebody's choice.
     corp = {"name": "CITY HOLDINGS LIMITED", "type": "Company"}
-    eq("U18h", "the space spelling wins when the underscore one is the default",
-       rr._corp_representative(corp, {
-           "director_name": "KYAW THU SOE",
-           "authorized director_name": "PHYOE MIN KYAW",
-           "authorized_director_name": "KYAW THU SOE"}),
-       "PHYOE MIN KYAW")
-    eq("U18i", "the underscore spelling is honoured when it holds the answer",
-       rr._corp_representative(corp, {
-           "director_name": "KYAW THU SOE",
-           "authorized_director_name": "PHYOE MIN KYAW"}),
-       "PHYOE MIN KYAW")
-    eq("U18j", "a candidate matching the default is still used, never re-guessed",
-       rr._corp_representative(corp, {
-           "director_name": "PHYOE MIN KYAW",
-           "authorized_director_name": "PHYOE MIN KYAW"}),
-       "PHYOE MIN KYAW")
+    eq(
+        "U18h",
+        "the space spelling wins when the underscore one is the default",
+        rr._corp_representative(
+            corp,
+            {
+                "director_name": "KYAW THU SOE",
+                "authorized director_name": "PHYOE MIN KYAW",
+                "authorized_director_name": "KYAW THU SOE",
+            },
+        ),
+        "PHYOE MIN KYAW",
+    )
+    eq(
+        "U18i",
+        "the underscore spelling is honoured when it holds the answer",
+        rr._corp_representative(corp, {"director_name": "KYAW THU SOE", "authorized_director_name": "PHYOE MIN KYAW"}),
+        "PHYOE MIN KYAW",
+    )
+    eq(
+        "U18j",
+        "a candidate matching the default is still used, never re-guessed",
+        rr._corp_representative(
+            corp, {"director_name": "PHYOE MIN KYAW", "authorized_director_name": "PHYOE MIN KYAW"}
+        ),
+        "PHYOE MIN KYAW",
+    )
     # `corporate_shareholder_3_name` is the MEMBER's own name. It used to be read
     # as a representative, putting the company on its own signature line.
     # (The register fallback below it may still supply a director here — what must
     # never come back is the company itself.)
-    eq("U18k", "the corporate member is never its own authorised director",
-       rr._corp_representative(corp, {"corporate_shareholder_3_name": "CITY HOLDINGS LIMITED"})
-       != "CITY HOLDINGS LIMITED", True)
+    eq(
+        "U18k",
+        "the corporate member is never its own authorised director",
+        rr._corp_representative(corp, {"corporate_shareholder_3_name": "CITY HOLDINGS LIMITED"})
+        != "CITY HOLDINGS LIMITED",
+        True,
+    )
 
     # Five individual members -> five blocks, no repeats.
     d, _t = _signing_doc()
-    people = [{"name": n, "type": "Individual"} for n in
-              ("PHYOE MIN KYAW", "MYO MIN KYAW", "MIN MIN", "WIN WIN TINT", "ZAW MIN LATT")]
+    people = [
+        {"name": n, "type": "Individual"}
+        for n in ("PHYOE MIN KYAW", "MYO MIN KYAW", "MIN MIN", "WIN WIN TINT", "ZAW MIN LATT")
+    ]
     synth = rr.expand_repeat_regions(d, {"members": people})
     got = [v for v in synth.values() if v]
-    eq("U18f", "every individual member gets exactly one block",
-       sorted(got), sorted(p["name"] for p in people))
+    eq("U18f", "every individual member gets exactly one block", sorted(got), sorted(p["name"] for p in people))
 
     # Empty data must remain a no-op on every template shape.
     d, t = _signing_doc()
@@ -510,11 +601,9 @@ def test_repeat_regions():
 # U10 Fill-in view labels
 # ===========================================================================
 def test_fill_view():
-    eq("U10a", "a synthetic repeat-region token reads as a party",
-       fv._blank_label("__rr_1__"), "Party 1")
+    eq("U10a", "a synthetic repeat-region token reads as a party", fv._blank_label("__rr_1__"), "Party 1")
     eq("U10b", "the party number is preserved", fv._blank_label("__rr_12__"), "Party 12")
-    eq("U10c", "an ordinary key is titlecased",
-       fv._blank_label("meeting_date"), "Meeting Date")
+    eq("U10c", "an ordinary key is titlecased", fv._blank_label("meeting_date"), "Meeting Date")
 
 
 # ===========================================================================
@@ -544,7 +633,7 @@ def test_blank_reporting():
     try:
         sd._note_blank("subscription_amount")
         check("U10f", "noting outside a generation is a no-op", True)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         check("U10f", "noting outside a generation is a no-op", False, repr(e))
 
     # With a collector set, the placeholder is recorded.
@@ -552,29 +641,32 @@ def test_blank_reporting():
     try:
         sd._note_blank("subscription_amount")
         sd._note_blank("new_company_name")
-        sd._note_blank("")                      # falsy names are not recorded
+        sd._note_blank("")  # falsy names are not recorded
         got = sorted(sd._blanked_placeholders.get())
-        eq("U10g", "blanked fields are collected", got,
-           ["new_company_name", "subscription_amount"])
+        eq("U10g", "blanked fields are collected", got, ["new_company_name", "subscription_amount"])
     finally:
         sd._blanked_placeholders.reset(token)
 
     # Reset must actually clear it: a blank from one document attributed to the
     # next would be worse than not reporting at all.
-    eq("U10h", "the collector is cleared after a generation",
-       sd._blanked_placeholders.get(), None)
+    eq("U10h", "the collector is cleared after a generation", sd._blanked_placeholders.get(), None)
 
     # The wiring: generation must fold blanks into the validation and flip
     # is_valid. Asserted on the SOURCE because running a real generation needs
     # a database; the strings below are the ones that carry the behaviour.
     src = (REPO / "scout/tools/smart_doc.py").read_text()
-    body = "\n".join(l for l in src.split("\n") if not l.lstrip().startswith("#"))
-    check("U10i", "find_replacement notes the field it empties",
-       "_note_blank(placeholder)" in body)
-    check("U10j", "generation folds blanks into unfilled_names",
-       '"unfilled_names"] = _names' in body or "unfilled_names\"] = _names" in body)
-    check("U10k", "generation marks a blanked document invalid",
-       '"is_valid"] = False' in body or 'is_valid\"] = False' in body)
+    body = "\n".join(line for line in src.split("\n") if not line.lstrip().startswith("#"))
+    check("U10i", "find_replacement notes the field it empties", "_note_blank(placeholder)" in body)
+    check(
+        "U10j",
+        "generation folds blanks into unfilled_names",
+        '"unfilled_names"] = _names' in body or 'unfilled_names"] = _names' in body,
+    )
+    check(
+        "U10k",
+        "generation marks a blanked document invalid",
+        '"is_valid"] = False' in body or 'is_valid"] = False' in body,
+    )
 
 
 # ===========================================================================
@@ -589,8 +681,7 @@ def test_structural_contracts():
     # A paused tool must not declare run_context — see the U8 comment.
     offenders = []
     for src, label in ((picker_src, "people_picker"), (aq_src, "ask_questions")):
-        for m in re.finditer(r"@tool\([^)]*requires_user_input[^)]*\)\s*\ndef (\w+)\(([^)]*)\)",
-                             src, re.S):
+        for m in re.finditer(r"@tool\([^)]*requires_user_input[^)]*\)\s*\ndef (\w+)\(([^)]*)\)", src, re.DOTALL):
             if "run_context" in m.group(2):
                 offenders.append(f"{label}.{m.group(1)}")
     eq("U11a", "no paused tool declares run_context", offenders, [])
@@ -606,8 +697,9 @@ def test_structural_contracts():
 
     # A tool the prompt names but that is not registered fails silently: the
     # model follows the instruction, finds nothing, and ends the turn empty.
-    mismatches = getattr(__import__("scout.agent", fromlist=["_PROMPT_TOOL_MISMATCHES"]),
-                         "_PROMPT_TOOL_MISMATCHES", None)
+    mismatches = getattr(
+        __import__("scout.agent", fromlist=["_PROMPT_TOOL_MISMATCHES"]), "_PROMPT_TOOL_MISMATCHES", None
+    )
     eq("U11d", "every tool named in the prompt is registered", mismatches or [], [])
 
     # The picker read-back is only safe because it is scoped three ways.
@@ -617,15 +709,19 @@ def test_structural_contracts():
     # fixed window that happened to reach it would make U11h flip on an edit to
     # a comment.
     _start = resolver_src.find("SELECT selection FROM party_selections")
-    query = resolver_src[_start:resolver_src.find('"""', _start)]
+    query = resolver_src[_start : resolver_src.find('"""', _start)]
     for cid, needle, why in [
         ("U11e", "session_id = %s", "scoped to the conversation"),
         ("U11f", "slot_kind = %s", "scoped to the role"),
         ("U11g", "LOWER(company_name) = LOWER(%s)", "scoped to the company"),
     ]:
         check(cid, f"picker read-back is {why}", needle in query, "")
-    check("U11h", "the read-back tolerates no unscoped legacy rows",
-          "slot_kind = ''" not in query and "session_id = ''" not in query, "")
+    check(
+        "U11h",
+        "the read-back tolerates no unscoped legacy rows",
+        "slot_kind = ''" not in query and "session_id = ''" not in query,
+        "",
+    )
 
     # Every caller of an AgentOS route must be able to find the JWT.
     #
@@ -645,17 +741,24 @@ def test_structural_contracts():
     ]:
         path = ui / rel
         if not path.exists():
-            check(cid, f"{fn_label} falls back to the stored JWT", True,
-                  "SKIPPED — frontend sources not present in this image")
+            check(
+                cid,
+                f"{fn_label} falls back to the stored JWT",
+                True,
+                "SKIPPED — frontend sources not present in this image",
+            )
             continue
         src = path.read_text()
         builds_bearer = "Bearer ${" in src
         # Match the CALL, not the bare word: both files explain `ls_token` in a
         # comment, so `"ls_token" in src` passes even with the fallback deleted.
         reads_token = re.search(r"localStorage\.getItem\(\s*['\"]ls_token['\"]\s*\)", src) is not None
-        check(cid, f"{fn_label} falls back to the stored JWT",
-              (not builds_bearer) or reads_token,
-              "builds an Authorization header but never reads localStorage.ls_token")
+        check(
+            cid,
+            f"{fn_label} falls back to the stored JWT",
+            (not builds_bearer) or reads_token,
+            "builds an Authorization header but never reads localStorage.ls_token",
+        )
 
     # The silent-stop nudge must not decide "did tool work" from the final chunk.
     #
@@ -670,19 +773,26 @@ def test_structural_contracts():
     # and reported PASS while the real UI hung.
     handler = ui / "hooks/useAIStreamHandler.tsx"
     if not handler.exists():
-        check("U11k", "the silent-stop nudge counts tools from the stream", True,
-              "SKIPPED — frontend sources not present in this image")
+        check(
+            "U11k",
+            "the silent-stop nudge counts tools from the stream",
+            True,
+            "SKIPPED — frontend sources not present in this image",
+        )
     else:
         src = handler.read_text()
-        m = re.search(r"const\s+didToolWork\s*=(.+?)\n\s*const\s", src, re.S)
+        m = re.search(r"const\s+didToolWork\s*=(.+?)\n\s*const\s", src, re.DOTALL)
         expr = m.group(1) if m else ""
         counts_stream = "toolsThisRunRef.current" in expr
         # A ref that is never incremented is the same bug wearing a new name.
         increments = re.search(r"toolsThisRunRef\.current\s*\+=\s*1", src) is not None
         resets = len(re.findall(r"toolsThisRunRef\.current\s*=\s*0", src))
-        check("U11k", "the silent-stop nudge counts tools from the stream",
-              bool(m) and counts_stream and increments and resets >= 2,
-              f"didToolWork={expr.strip()[:60]!r} increments={increments} resets={resets}")
+        check(
+            "U11k",
+            "the silent-stop nudge counts tools from the stream",
+            bool(m) and counts_stream and increments and resets >= 2,
+            f"didToolWork={expr.strip()[:60]!r} increments={increments} resets={resets}",
+        )
 
         # An empty turn after a document tool must be closed from the tool
         # result, not by buying a second inference.
@@ -700,14 +810,18 @@ def test_structural_contracts():
         # closing sentence exists, or the user gets the tool's sentence AND a
         # duplicate run.
         guards = len(re.findall(r"!closeFromTool\s*&&", src))
-        renders = re.search(r"if\s*\(closeFromTool\)\s*\{\s*//[^\n]*\n\s*updatedContent\s*=\s*closeFromTool", src) is not None
+        renders = (
+            re.search(r"if\s*\(closeFromTool\)\s*\{\s*//[^\n]*\n\s*updatedContent\s*=\s*closeFromTool", src) is not None
+        )
         # The ref holds a {content, approval} object now, so a per-stream reset
         # clears it to null rather than to the empty string it started as.
         cleared = len(re.findall(r"closingFromToolRef\.current\s*=\s*(?:''|null)", src))
-        check("U11l", "an empty turn is closed from the document tool result",
-              builds and captured and guards >= 2 and renders and cleared >= 2,
-              f"builder={builds} captured={captured} guards={guards} "
-              f"renders={renders} resets={cleared}")
+        check(
+            "U11l",
+            "an empty turn is closed from the document tool result",
+            builds and captured and guards >= 2 and renders and cleared >= 2,
+            f"builder={builds} captured={captured} guards={guards} renders={renders} resets={cleared}",
+        )
 
         # A stalled PREVIEW must be given back the approval it owed.
         #
@@ -726,27 +840,25 @@ def test_structural_contracts():
         approval_builder = "buildApprovalFromPreview" in src
         approval_set = "APPROVAL_DOC_TOOLS" in src
         # preview_doc closing the turn silently is the bug this replaced.
-        not_closable = re.search(
-            r"CLOSABLE_DOC_TOOLS = new Set\(\[([^\]]*)\]", src, re.S
-        )
+        not_closable = re.search(r"CLOSABLE_DOC_TOOLS = new Set\(\[([^\]]*)\]", src, re.DOTALL)
         closable_body = not_closable.group(1) if not_closable else ""
         preview_excluded = "preview_doc" not in closable_body
         carried = "pending_approval: closeFromTool?.approval" in src
-        prompt = (ui / "components/chat/ApprovalPrompt.tsx")
-        sends_message = (
-            prompt.exists() and "setPendingMessage(option)" in prompt.read_text()
-        )
+        prompt = ui / "components/chat/ApprovalPrompt.tsx"
+        sends_message = prompt.exists() and "setPendingMessage(option)" in prompt.read_text()
         rendered = "ApprovalPrompt approval={message.pending_approval}" in (
             (ui / "components/chat/ChatArea/Messages/Messages.tsx").read_text()
             if (ui / "components/chat/ChatArea/Messages/Messages.tsx").exists()
             else ""
         )
-        check("U11m", "a stalled preview is given back its approval card",
-              approval_builder and approval_set and preview_excluded
-              and carried and sends_message and rendered,
-              f"builder={approval_builder} set={approval_set} "
-              f"preview_excluded_from_closable={preview_excluded} "
-              f"carried={carried} sends={sends_message} rendered={rendered}")
+        check(
+            "U11m",
+            "a stalled preview is given back its approval card",
+            approval_builder and approval_set and preview_excluded and carried and sends_message and rendered,
+            f"builder={approval_builder} set={approval_set} "
+            f"preview_excluded_from_closable={preview_excluded} "
+            f"carried={carried} sends={sends_message} rendered={rendered}",
+        )
 
     # The tool list the model reads must be GENERATED, and a mismatch must be fatal.
     #
@@ -763,10 +875,14 @@ def test_structural_contracts():
     #
     # A log line is worth what someone reading it is worth. The inventory is now
     # built from the live registry, and startup refuses on a mismatch.
-    agent_src = (REPO / "scout" / "agent.py")
+    agent_src = REPO / "scout" / "agent.py"
     if not agent_src.exists():
-        check("U13", "the tool inventory is generated and mismatches are fatal", True,
-              "SKIPPED — scout/agent.py not present")
+        check(
+            "U13",
+            "the tool inventory is generated and mismatches are fatal",
+            True,
+            "SKIPPED — scout/agent.py not present",
+        )
     else:
         a = agent_src.read_text()
         generates = "_build_tool_inventory" in a and "TOOL_INVENTORY_BLOCK" in a
@@ -778,10 +894,13 @@ def test_structural_contracts():
         # The agno Function wrapper keeps its purpose on .description; __doc__
         # is the class docstring, which described agno for 24 of 45 tools.
         real_desc = "Model for storing functions" in a and 'getattr(fn, "description"' in a
-        check("U13", "the tool inventory is generated and mismatches are fatal",
-              generates and injected and shared and fatal and real_desc,
-              f"generates={generates} injected={injected} shared_registry={shared} "
-              f"fatal={fatal} real_descriptions={real_desc}")
+        check(
+            "U13",
+            "the tool inventory is generated and mismatches are fatal",
+            generates and injected and shared and fatal and real_desc,
+            f"generates={generates} injected={injected} shared_registry={shared} "
+            f"fatal={fatal} real_descriptions={real_desc}",
+        )
 
     # A stream that delivers nothing must never render as an answer.
     #
@@ -799,8 +918,12 @@ def test_structural_contracts():
     # "Unexpected token '<'".
     stream = ui / "hooks/useAIResponseStream.tsx"
     if not stream.exists():
-        check("U15", "an empty stream is reported, not painted as a reply", True,
-              "SKIPPED — frontend sources not present in this image")
+        check(
+            "U15",
+            "an empty stream is reported, not painted as a reply",
+            True,
+            "SKIPPED — frontend sources not present in this image",
+        )
     else:
         s = stream.read_text()
         counts = "delivered += 1" in s and "let delivered = 0" in s
@@ -809,12 +932,13 @@ def test_structural_contracts():
         wired = len(re.findall(r"parseBuffer\(buffer, countingChunk\)", s)) >= 2
         # Generous window: the branch carries the explanatory comment before the
         # call, and a 300-char bound failed on correct code.
-        text_first = re.search(
-            r"if \(!response\.ok\)[\s\S]{0,800}?response\.text\(\)", s) is not None
-        check("U15", "an empty stream is reported, not painted as a reply",
-              counts and raises and wired and text_first,
-              f"counts={counts} raises={raises} both_parse_sites={wired} "
-              f"reads_text_before_json={text_first}")
+        text_first = re.search(r"if \(!response\.ok\)[\s\S]{0,800}?response\.text\(\)", s) is not None
+        check(
+            "U15",
+            "an empty stream is reported, not painted as a reply",
+            counts and raises and wired and text_first,
+            f"counts={counts} raises={raises} both_parse_sites={wired} reads_text_before_json={text_first}",
+        )
 
     # The agent must never be able to send an email by itself.
     #
@@ -831,8 +955,7 @@ def test_structural_contracts():
     # "confirmed" parameter either: a flag set by the same model whose judgement
     # is being checked is not an approval.
     if not agent_src.exists():
-        check("U14", "the agent cannot send an email without a human", True,
-              "SKIPPED — scout/agent.py not present")
+        check("U14", "the agent cannot send an email without a human", True, "SKIPPED — scout/agent.py not present")
     else:
         a = agent_src.read_text()
         tool = re.search(r"def send_email_tool\(([\s\S]*?)\n(?=\w|@)", a)
@@ -845,16 +968,18 @@ def test_structural_contracts():
         # Delivery endpoint exists, demands a token, and claims the row before
         # touching SMTP so a double click cannot send twice.
         gated = '@app.post("/api/email/queued/{email_id}/send")' in m
-        needs_auth = bool(re.search(
-            r'/api/email/queued/\{email_id\}/send"\)[\s\S]{0,400}?if not user:[\s\S]{0,80}?401', m))
-        claims_first = bool(re.search(
-            r"SET status = 'sending'[\s\S]{0,200}?WHERE id = %s AND status = 'queued'", m))
-        check("U14", "the agent cannot send an email without a human",
-              bool(tool) and no_smtp and queues and no_confirm_arg
-              and gated and needs_auth and claims_first,
-              f"tool_found={bool(tool)} no_smtp={no_smtp} queues={queues} "
-              f"no_confirm_arg={no_confirm_arg} endpoint={gated} "
-              f"auth={needs_auth} claims_before_send={claims_first}")
+        needs_auth = bool(
+            re.search(r'/api/email/queued/\{email_id\}/send"\)[\s\S]{0,400}?if not user:[\s\S]{0,80}?401', m)
+        )
+        claims_first = bool(re.search(r"SET status = 'sending'[\s\S]{0,200}?WHERE id = %s AND status = 'queued'", m))
+        check(
+            "U14",
+            "the agent cannot send an email without a human",
+            bool(tool) and no_smtp and queues and no_confirm_arg and gated and needs_auth and claims_first,
+            f"tool_found={bool(tool)} no_smtp={no_smtp} queues={queues} "
+            f"no_confirm_arg={no_confirm_arg} endpoint={gated} "
+            f"auth={needs_auth} claims_before_send={claims_first}",
+        )
 
     # No foreign-jurisdiction statute may be cited by this product.
     #
@@ -886,13 +1011,15 @@ def test_structural_contracts():
     def _docstring_nodes(tree):
         out = set()
         for node in _ast.walk(tree):
-            if not isinstance(node, (_ast.Module, _ast.FunctionDef,
-                                     _ast.AsyncFunctionDef, _ast.ClassDef)):
+            if not isinstance(node, (_ast.Module, _ast.FunctionDef, _ast.AsyncFunctionDef, _ast.ClassDef)):
                 continue
             body = getattr(node, "body", None) or []
-            if (body and isinstance(body[0], _ast.Expr)
-                    and isinstance(body[0].value, _ast.Constant)
-                    and isinstance(body[0].value.value, str)):
+            if (
+                body
+                and isinstance(body[0], _ast.Expr)
+                and isinstance(body[0].value, _ast.Constant)
+                and isinstance(body[0].value.value, str)
+            ):
                 out.add(id(body[0].value))
         return out
 
@@ -913,16 +1040,11 @@ def test_structural_contracts():
                     continue
                 skip = _docstring_nodes(tree)
                 for node in _ast.walk(tree):
-                    if (not isinstance(node, _ast.Constant)
-                            or not isinstance(node.value, str)
-                            or id(node) in skip):
+                    if not isinstance(node, _ast.Constant) or not isinstance(node.value, str) or id(node) in skip:
                         continue
                     for statute in FOREIGN_STATUTES:
                         if statute in node.value:
-                            hits.append(
-                                f"{path.relative_to(REPO)}:{node.lineno} "
-                                f"{node.value[:60]!r}"
-                            )
+                            hits.append(f"{path.relative_to(REPO)}:{node.lineno} {node.value[:60]!r}")
                 continue
             # .sql / .json — the migration that removes these has to name them.
             if path.name.startswith("migration_018"):
@@ -934,8 +1056,9 @@ def test_structural_contracts():
                 for statute in FOREIGN_STATUTES:
                     if statute in line:
                         hits.append(f"{path.relative_to(REPO)}:{lineno} {stripped[:60]}")
-    check("U12", "no foreign-jurisdiction statute is cited as Myanmar law",
-          not hits, "; ".join(hits[:4]) if hits else "")
+    check(
+        "U12", "no foreign-jurisdiction statute is cited as Myanmar law", not hits, "; ".join(hits[:4]) if hits else ""
+    )
 
     # The routing data files describe THIS product, and their tool names are real.
     #
@@ -959,10 +1082,15 @@ def test_structural_contracts():
     routing = REPO / "scout" / "knowledge" / "routing" / "intents.json"
     sources = REPO / "scout" / "knowledge" / "sources" / "files.json"
     if not routing.exists() or not sources.exists():
-        check("U16", "prompt routing data names real tools and real directories",
-              True, "SKIPPED — knowledge data files not present")
+        check(
+            "U16",
+            "prompt routing data names real tools and real directories",
+            True,
+            "SKIPPED — knowledge data files not present",
+        )
     else:
         import json as _json
+
         intents = _json.loads(routing.read_text())
         filesrc = _json.loads(sources.read_text())
 
@@ -975,8 +1103,8 @@ def test_structural_contracts():
         # Compare against the LIVE registry. Skipped rather than failed when the
         # agent cannot be imported, so this stays runnable outside the container.
         try:
-            import app.main  # noqa: F401 — breaks the scout/app circular import
             from scout.agent import scout as _scout
+
             registered = set()
             for t in _scout.tools or []:
                 n = getattr(t, "__name__", None) or getattr(t, "name", None)
@@ -985,7 +1113,7 @@ def test_structural_contracts():
                 fns = getattr(t, "functions", None)
                 if isinstance(fns, dict):
                     registered.update(str(k) for k in fns)
-        except Exception:  # noqa: BLE001
+        except Exception:
             registered = set()
 
         unregistered = sorted(named - registered) if registered else []
@@ -995,14 +1123,15 @@ def test_structural_contracts():
         # tool that is not registered: it tries, finds nothing, and says nothing.
         try:
             from scout.paths import DOCUMENTS_DIR as _DOCS
+
             docs_root = Path(_DOCS)
-        except Exception:  # noqa: BLE001
+        except Exception:
             docs_root = REPO / "documents"
 
         def _resolve(p: str) -> Path:
             p = p.strip().rstrip("/")
             if p.startswith("documents/"):
-                return docs_root / p[len("documents/"):]
+                return docs_root / p[len("documents/") :]
             return REPO / p
 
         advertised = [d["name"] for d in filesrc.get("directories", []) if d.get("name")]
@@ -1012,8 +1141,14 @@ def test_structural_contracts():
         # Vocabulary from the product this boilerplate came from. None of it
         # describes anything in Legal Scout.
         FOREIGN_VOCAB = [
-            "company-docs", "engineering-docs", "data-exports",
-            "employee-handbook", "Employee Handbook", "OKR", "PTO", "runbook",
+            "company-docs",
+            "engineering-docs",
+            "data-exports",
+            "employee-handbook",
+            "Employee Handbook",
+            "OKR",
+            "PTO",
+            "runbook",
         ]
 
         # Judge what RENDERS, not the commentary — the same rule U12 applies by
@@ -1023,9 +1158,7 @@ def test_structural_contracts():
         # text instead would make this check fail on its own fix.
         def _rendered(node):
             if isinstance(node, dict):
-                return " ".join(
-                    _rendered(v) for k, v in node.items() if not str(k).startswith("_")
-                )
+                return " ".join(_rendered(v) for k, v in node.items() if not str(k).startswith("_"))
             if isinstance(node, list):
                 return " ".join(_rendered(v) for v in node)
             return str(node)
@@ -1033,13 +1166,15 @@ def test_structural_contracts():
         blob = _rendered(intents) + " " + _rendered(filesrc)
         stowaways = sorted({v for v in FOREIGN_VOCAB if v in blob})
 
-        check("U16", "prompt routing data names real tools and real directories",
-              not unregistered and not ghosts and not stowaways,
-              f"unregistered_tools={unregistered or 'none'} "
-              f"nonexistent_dirs={ghosts or 'none'} "
-              f"foreign_vocab={stowaways or 'none'} "
-              f"(registry_{'loaded' if registered else 'UNAVAILABLE—tool check skipped'})")
-
+        check(
+            "U16",
+            "prompt routing data names real tools and real directories",
+            not unregistered and not ghosts and not stowaways,
+            f"unregistered_tools={unregistered or 'none'} "
+            f"nonexistent_dirs={ghosts or 'none'} "
+            f"foreign_vocab={stowaways or 'none'} "
+            f"(registry_{'loaded' if registered else 'UNAVAILABLE—tool check skipped'})",
+        )
 
     # The documents tree must never be served without a token.
     #
@@ -1059,12 +1194,12 @@ def test_structural_contracts():
     # would still pass a check that only greps for the name.
     main_src = REPO / "app" / "main.py"
     if not main_src.exists():
-        check("U17", "the documents tree is not served without a token", True,
-              "SKIPPED — app/main.py not present")
+        check("U17", "the documents tree is not served without a token", True, "SKIPPED — app/main.py not present")
     else:
         m = main_src.read_text()
-        declared = re.search(
-            r"STATIC_PROTECTED_ROOTS\s*=\s*frozenset\(\{([\s\S]{0,400}?)\}\)", m)
+        # \s* between the paren and the brace: a formatter may split
+        # `frozenset({` across lines, and the control is no weaker for it.
+        declared = re.search(r"STATIC_PROTECTED_ROOTS\s*=\s*frozenset\(\s*\{([\s\S]{0,400}?)\}\s*\)", m)
         covers_documents = bool(declared and '"documents"' in declared.group(1))
 
         gate = re.search(r"if root in AGENTOS_PROTECTED_ROOTS or root in STATIC_PROTECTED_ROOTS", m)
@@ -1073,7 +1208,7 @@ def test_structural_contracts():
 
         # The gate must read the cookie, or a plain <a href> download breaks:
         # an anchor cannot set an Authorization header.
-        after_gate = m[gate.start():early_return.start()] if ordered else ""
+        after_gate = m[gate.start() : early_return.start()] if ordered else ""
         uses_request_jwt = "_request_jwt(request)" in after_gate
 
         # And the dead whitelist entry must not come back. Scoped to the
@@ -1081,15 +1216,17 @@ def test_structural_contracts():
         # paths for mkdir, and a file-wide scan flags those instead — failing on
         # correct code, which is how U15 broke once already.
         routes_block = re.search(r"PUBLIC_ROUTES\s*=\s*\[([\s\S]*?)\n\]", m)
-        no_dead_entry = bool(routes_block) and not re.search(
-            r'^\s*"/documents', routes_block.group(1), re.M)
+        no_dead_entry = bool(routes_block) and not re.search(r'^\s*"/documents', routes_block.group(1), re.MULTILINE)
 
-        check("U17", "the documents tree is not served without a token",
-              covers_documents and ordered and uses_request_jwt and no_dead_entry,
-              f"declares_documents={covers_documents} "
-              f"gate_before_api_early_return={ordered} "
-              f"reads_cookie_via_request_jwt={uses_request_jwt} "
-              f"no_public_documents_entry={no_dead_entry}")
+        check(
+            "U17",
+            "the documents tree is not served without a token",
+            covers_documents and ordered and uses_request_jwt and no_dead_entry,
+            f"declares_documents={covers_documents} "
+            f"gate_before_api_early_return={ordered} "
+            f"reads_cookie_via_request_jwt={uses_request_jwt} "
+            f"no_public_documents_entry={no_dead_entry}",
+        )
 
 
 # ===========================================================================
@@ -1098,7 +1235,6 @@ def test_structural_contracts():
 #     is called. Both have produced legally wrong documents.
 # ===========================================================================
 def test_register_authority():
-    import app.main as _app_main  # noqa: F401 — already imported at bootstrap
     import scout.agent as _agent
     from db.connection import get_db_conn
 
@@ -1134,15 +1270,22 @@ def test_register_authority():
             # columns. Same 6-char prefix rule the /api/skills validator uses.
             if any(t.startswith(r[:6]) or r.startswith(t[:6]) for t in registry):
                 bad.setdefault(sname, []).append(r)
-    check("U19b", "every enabled skill body names only registered tools",
-          not bad, f"{bad}" if bad else "")
+    check("U19b", "every enabled skill body names only registered tools", not bad, f"{bad}" if bad else "")
 
     # The two specific names that shipped, asserted by hand so a future
     # re-seed of migration 014 cannot quietly reintroduce them.
-    eq("U19c", "preview_document is not a tool (preview_doc is)",
-       ("preview_document" in registry, "preview_doc" in registry), (False, True))
-    eq("U19d", "list_tracked_documents is not a tool (list_documents is)",
-       ("list_tracked_documents" in registry, "list_documents" in registry), (False, True))
+    eq(
+        "U19c",
+        "preview_document is not a tool (preview_doc is)",
+        ("preview_document" in registry, "preview_doc" in registry),
+        (False, True),
+    )
+    eq(
+        "U19d",
+        "list_tracked_documents is not a tool (list_documents is)",
+        ("list_tracked_documents" in registry, "list_documents" in registry),
+        (False, True),
+    )
 
     # --- U20: legacy cessation ---------------------------------------------
     # `_registered_people` filters cessation in SQL, but `_directors_of` falls
@@ -1151,27 +1294,44 @@ def test_register_authority():
     # offered its RESIGNED directors as current, which is how a person with no
     # authority reaches a signature block.
     from datetime import date, timedelta
+
     past = (date.today() - timedelta(days=30)).isoformat()
     future = (date.today() + timedelta(days=120)).isoformat()
 
     def _names(entries):
         return [c.get("name") for c in pp._legacy_people(entries, "Director")]
 
-    eq("U20a", "a director who has already ceased is not offered",
-       _names([{"name": "GONE", "date_of_cessation": past}, {"name": "HERE"}]), ["HERE"])
-    eq("U20b", "the alternate spelling is honoured too",
-       _names([{"name": "GONE", "resigned_date": past}, {"name": "HERE"}]), ["HERE"])
+    eq(
+        "U20a",
+        "a director who has already ceased is not offered",
+        _names([{"name": "GONE", "date_of_cessation": past}, {"name": "HERE"}]),
+        ["HERE"],
+    )
+    eq(
+        "U20b",
+        "the alternate spelling is honoured too",
+        _names([{"name": "GONE", "resigned_date": past}, {"name": "HERE"}]),
+        ["HERE"],
+    )
     # Safe direction: shown, not hidden. A name the user can see can be
     # declined; a name never shown cannot be chosen.
-    eq("U20c", "a FUTURE cessation is still in office today",
-       _names([{"name": "STILL SERVING", "date_of_cessation": future}]), ["STILL SERVING"])
-    eq("U20d", "a blank marker is not a resignation",
-       _names([{"name": "FINE", "date_of_cessation": "-"}]), ["FINE"])
-    eq("U20e", "an unreadable date does not silently remove anybody",
-       _names([{"name": "FINE", "date_of_cessation": "01/12/2024"}]), ["FINE"])
+    eq(
+        "U20c",
+        "a FUTURE cessation is still in office today",
+        _names([{"name": "STILL SERVING", "date_of_cessation": future}]),
+        ["STILL SERVING"],
+    )
+    eq("U20d", "a blank marker is not a resignation", _names([{"name": "FINE", "date_of_cessation": "-"}]), ["FINE"])
+    eq(
+        "U20e",
+        "an unreadable date does not silently remove anybody",
+        _names([{"name": "FINE", "date_of_cessation": "01/12/2024"}]),
+        ["FINE"],
+    )
     # …and the user must be able to SEE a pending departure before signing.
-    sub = pp._legacy_people([{"name": "STILL SERVING", "date_of_cessation": future}],
-                            "Director")[0].get("subtitle") or ""
+    sub = (
+        pp._legacy_people([{"name": "STILL SERVING", "date_of_cessation": future}], "Director")[0].get("subtitle") or ""
+    )
     check("U20f", "a pending departure is visible on the candidate", future in sub, sub)
 
     # --- U21: a representative must be on THAT company's board -------------
@@ -1183,28 +1343,45 @@ def test_register_authority():
     # so they SKIP rather than fail — a correct empty product must not report red.
     board = rr._board_of("CITY HOLDINGS LIMITED") if register_has("CITY HOLDINGS") else []
     if not board:
-        for cid, nm in (("U21a", "the member company's board is readable"),
-                        ("U21b", "a director of the SUBJECT company is refused as the member's rep"),
-                        ("U21c", "a director who IS on that board is accepted")):
+        for cid, nm in (
+            ("U21a", "the member company's board is readable"),
+            ("U21b", "a director of the SUBJECT company is refused as the member's rep"),
+            ("U21c", "a director who IS on that board is accepted"),
+        ):
             skip(cid, nm, "needs CITY HOLDINGS LIMITED and its directors in the register")
     else:
         check("U21a", "the member company's board is readable", len(board) > 0, f"{board}")
     if board:
         outsider = "KYAW THU SOE"
-        check("U21b", "a director of the SUBJECT company is refused as the member's rep",
-              rr._corp_representative({"name": "CITY HOLDINGS LIMITED", "type": "Company"},
-                                      {"authorized director_name": outsider}) != outsider,
-              f"board={board}")
+        check(
+            "U21b",
+            "a director of the SUBJECT company is refused as the member's rep",
+            rr._corp_representative(
+                {"name": "CITY HOLDINGS LIMITED", "type": "Company"}, {"authorized director_name": outsider}
+            )
+            != outsider,
+            f"board={board}",
+        )
         insider = board[0]
-        eq("U21c", "a director who IS on that board is accepted",
-           rr._corp_representative({"name": "CITY HOLDINGS LIMITED", "type": "Company"},
-                                   {"authorized director_name": insider}), insider)
+        eq(
+            "U21c",
+            "a director who IS on that board is accepted",
+            rr._corp_representative(
+                {"name": "CITY HOLDINGS LIMITED", "type": "Company"}, {"authorized director_name": insider}
+            ),
+            insider,
+        )
     # An unregistered member company cannot be checked. Refusing there would
     # blank the line for every corporate member not in the register, so it fails
     # OPEN — deliberately, and logged.
-    eq("U21d", "an unverifiable company fails open rather than blanking the line",
-       rr._corp_representative({"name": "NOT IN THE REGISTER PTE LTD", "type": "Company"},
-                               {"authorized director_name": "SOMEBODY"}), "SOMEBODY")
+    eq(
+        "U21d",
+        "an unverifiable company fails open rather than blanking the line",
+        rr._corp_representative(
+            {"name": "NOT IN THE REGISTER PTE LTD", "type": "Company"}, {"authorized director_name": "SOMEBODY"}
+        ),
+        "SOMEBODY",
+    )
 
     # --- U22: member slots are typed, not positional -----------------------
     # slots 1-2 were ASSUMED individual and slot 3 corporate, from a flat
@@ -1215,6 +1392,7 @@ def test_register_authority():
     # Needs both the template ON DISK and the company in the register, so it
     # skips on a fresh install for the same reason as U21.
     from scout.tools.smart_doc import prepare_document_data
+
     _tpl = "Shareholders Resolution In Writing - Director Appointment.docx"
     # NOT REPO/"documents" — that is /app/documents, which does not exist. The
     # templates are a bind mount at /documents, which is prepare_document_data's
@@ -1224,23 +1402,25 @@ def test_register_authority():
     prepared = prepare_document_data(_tpl, "CITY MART HOLDING COMPANY LIMITED") if _have else {}
     cd = (prepared or {}).get("company_data") or {}
     if not cd:
-        why = ("needs CITY MART HOLDING COMPANY LIMITED in the register and the "
-               "Director Appointment template on disk")
-        for cid, nm in (("U22a", "the sole CORPORATE member fills the corporate slot"),
-                        ("U22b", "and does NOT fill the individual slot"),
-                        ("U22c", "the space spelling agrees with the underscore one"),
-                        ("U22d", "the untyped slot still carries the member")):
+        why = "needs CITY MART HOLDING COMPANY LIMITED in the register and the Director Appointment template on disk"
+        for cid, nm in (
+            ("U22a", "the sole CORPORATE member fills the corporate slot"),
+            ("U22b", "and does NOT fill the individual slot"),
+            ("U22c", "the space spelling agrees with the underscore one"),
+            ("U22d", "the untyped slot still carries the member"),
+        ):
             skip(cid, nm, why if _have is False else f"{why} (prepare returned {sorted(prepared or {})[:6]})")
     else:
-        eq("U22a", "the sole CORPORATE member fills the corporate slot",
-           cd.get("corporate_shareholder_3_name"), "CITY HOLDINGS LIMITED")
-        eq("U22b", "and does NOT fill the individual slot",
-           cd.get("individual_shareholder_1_name"), "TBD")
-        eq("U22c", "the space spelling agrees with the underscore one",
-           cd.get("individual shareholder_1_name"), "TBD")
+        eq(
+            "U22a",
+            "the sole CORPORATE member fills the corporate slot",
+            cd.get("corporate_shareholder_3_name"),
+            "CITY HOLDINGS LIMITED",
+        )
+        eq("U22b", "and does NOT fill the individual slot", cd.get("individual_shareholder_1_name"), "TBD")
+        eq("U22c", "the space spelling agrees with the underscore one", cd.get("individual shareholder_1_name"), "TBD")
         # The generic, type-agnostic slots still list every member in order.
-        eq("U22d", "the untyped slot still carries the member",
-           cd.get("shareholder_1_name"), "CITY HOLDINGS LIMITED")
+        eq("U22d", "the untyped slot still carries the member", cd.get("shareholder_1_name"), "CITY HOLDINGS LIMITED")
 
 
 def main():
@@ -1261,7 +1441,7 @@ def main():
     ):
         try:
             fn()
-        except Exception as e:  # noqa: BLE001 — a crashing group is a failure, not a stop
+        except Exception as e:
             check(fn.__name__, f"{fn.__name__} raised", False, f"{type(e).__name__}: {e}")
 
     width = max(len(r[2]) for r in _results)
@@ -1281,9 +1461,11 @@ def main():
             print(f"{cid:<8} {result:<8} {name:<{width}}")
 
     total = len(_results)
-    print(f"\nSUMMARY: PASS={total - failed - skipped}"
-          + (f" · SKIP={skipped}" if skipped else "")
-          + (f" · FAIL={failed}" if failed else ""))
+    print(
+        f"\nSUMMARY: PASS={total - failed - skipped}"
+        + (f" · SKIP={skipped}" if skipped else "")
+        + (f" · FAIL={failed}" if failed else "")
+    )
     return 1 if failed else 0
 
 

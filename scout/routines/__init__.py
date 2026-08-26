@@ -62,11 +62,11 @@ from scout.routines.model import (
 from scout.routines.prompt import apply_routines_block, build_routines_block
 
 __all__ = [
-    "FLAG_ENV",
-    "MANUAL_KEY",
     "DONE_ALWAYS",
     "DONE_MANUAL",
     "DONE_PRODUCED",
+    "FLAG_ENV",
+    "MANUAL_KEY",
     "Plan",
     "Routine",
     "RoutineInput",

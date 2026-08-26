@@ -27,7 +27,7 @@ dev/test environment has no psycopg, and the flag-off path must not need one.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional, Protocol
+from typing import Any, Protocol
 
 from scout.effects.model import Effect
 from scout.effects.turn import TurnContext
@@ -62,7 +62,7 @@ UPDATE effect_turns
 class Sink(Protocol):
     def open_turn(self, ctx: TurnContext) -> None: ...
     def close_turn(self, ctx: TurnContext) -> None: ...
-    def write(self, effect: Effect) -> Optional[int]: ...
+    def write(self, effect: Effect) -> int | None: ...
 
 
 class NullSink:
@@ -74,7 +74,7 @@ class NullSink:
     def close_turn(self, ctx: TurnContext) -> None:
         return None
 
-    def write(self, effect: Effect) -> Optional[int]:
+    def write(self, effect: Effect) -> int | None:
         return None
 
 
@@ -82,9 +82,9 @@ class MemorySink:
     """Collects effects in a list. For tests; never wired in production."""
 
     def __init__(self) -> None:
-        self.turns: List[TurnContext] = []
-        self.closed: List[TurnContext] = []
-        self.effects: List[Effect] = []
+        self.turns: list[TurnContext] = []
+        self.closed: list[TurnContext] = []
+        self.effects: list[Effect] = []
 
     def open_turn(self, ctx: TurnContext) -> None:
         self.turns.append(ctx)
@@ -92,15 +92,15 @@ class MemorySink:
     def close_turn(self, ctx: TurnContext) -> None:
         self.closed.append(ctx)
 
-    def write(self, effect: Effect) -> Optional[int]:
+    def write(self, effect: Effect) -> int | None:
         self.effects.append(effect)
         return len(self.effects)
 
     # Convenience for assertions.
-    def kinds(self) -> List[str]:
+    def kinds(self) -> list[str]:
         return [e.kind for e in self.effects]
 
-    def by_kind(self, kind: str) -> List[Effect]:
+    def by_kind(self, kind: str) -> list[Effect]:
         return [e for e in self.effects if e.kind == kind]
 
 
@@ -120,7 +120,7 @@ class PostgresSink:
 
         return get_db_conn(autocommit=True)
 
-    def _json(self, value: Optional[Dict[str, Any]]) -> Optional[str]:
+    def _json(self, value: dict[str, Any] | None) -> str | None:
         if value is None:
             return None
         import json
@@ -143,7 +143,7 @@ class PostgresSink:
         finally:
             conn.close()
 
-    def write(self, effect: Effect) -> Optional[int]:
+    def write(self, effect: Effect) -> int | None:
         row = effect.as_row()
         conn = self._connect()
         try:
@@ -173,7 +173,7 @@ class PostgresSink:
             conn.close()
 
 
-_sink: Optional[Sink] = None
+_sink: Sink | None = None
 
 
 def get_sink() -> Sink:
@@ -189,7 +189,7 @@ def get_sink() -> Sink:
     return _sink
 
 
-def set_sink(sink: Optional[Sink]) -> None:
+def set_sink(sink: Sink | None) -> None:
     """Install a sink (tests). ``None`` restores the default."""
     global _sink
     _sink = sink

@@ -12,18 +12,17 @@ import os
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional, List, Dict
+from typing import Any
 
 import httpx
 from docx import Document
-from psycopg import connect
+
 from db.connection import get_db_conn
 from scout.tools.placeholders import PLACEHOLDER_PATTERN, new_empty_counter, placeholder_name
 
 
 def get_db_connection():
     """Get database connection."""
-    import os
 
     return get_db_conn()
 
@@ -72,7 +71,7 @@ def extract_placeholders(template_path: Path) -> dict[str, Any]:
     }
 
 
-def classify_template_fields(template_text: str, fields: List[str]) -> Dict[str, Any]:
+def classify_template_fields(template_text: str, fields: list[str]) -> dict[str, Any]:
     """
     Use Claude Haiku via OpenRouter to classify each placeholder field as
     db_field, user_input, or flag static text warnings.
@@ -114,6 +113,7 @@ def classify_template_fields(template_text: str, fields: List[str]) -> Dict[str,
 
     try:
         from app.model_config import OPENROUTER_BASE_URL
+
         response = httpx.post(
             f"{OPENROUTER_BASE_URL}/chat/completions",
             headers={
@@ -165,16 +165,29 @@ def classify_template_fields(template_text: str, fields: List[str]) -> Dict[str,
         return _fallback_classification(fields)
 
 
-def _fallback_classification(fields: List[str]) -> Dict[str, Any]:
+def _fallback_classification(fields: list[str]) -> dict[str, Any]:
     """Fallback classification when AI is unavailable — uses heuristic rules."""
     # Common DB fields (company-level data)
     DB_KEYWORDS = {
-        "company", "company_name", "registration", "registration_number",
-        "company_registration_number", "registered_office", "address",
-        "directors", "shareholders", "total_shares", "total_capital",
-        "currency", "date_of_incorporation", "company_type",
-        "principal_place_of_business", "group_company", "foreign_company",
-        "individual_shareholder", "corporate_shareholder",
+        "company",
+        "company_name",
+        "registration",
+        "registration_number",
+        "company_registration_number",
+        "registered_office",
+        "address",
+        "directors",
+        "shareholders",
+        "total_shares",
+        "total_capital",
+        "currency",
+        "date_of_incorporation",
+        "company_type",
+        "principal_place_of_business",
+        "group_company",
+        "foreign_company",
+        "individual_shareholder",
+        "corporate_shareholder",
     }
 
     db_fields = []
@@ -215,7 +228,9 @@ def _get_template_text(template_path: Path) -> str:
     return "\n".join(parts)
 
 
-def save_template_to_db(name: str, path: str, fields: List[str], details: Dict, document_type: str = None) -> bool:
+def save_template_to_db(
+    name: str, path: str, fields: list[str], details: dict, document_type: str | None = None
+) -> bool:
     """Save template to database with all fields."""
     conn = None
     try:
@@ -343,7 +358,7 @@ def save_template_to_db(name: str, path: str, fields: List[str], details: Dict, 
             conn.close()
 
 
-def get_template_from_db(name: str) -> Optional[Dict]:
+def get_template_from_db(name: str) -> dict | None:
     """Get template from database."""
     conn = None
     try:
@@ -375,7 +390,7 @@ def get_template_from_db(name: str) -> Optional[Dict]:
             conn.close()
 
 
-def get_all_templates_from_db() -> List[Dict]:
+def get_all_templates_from_db() -> list[dict]:
     """Get all templates from database."""
     conn = None
     try:
@@ -492,7 +507,7 @@ def analyze_template(template_name: str, documents_dir: str = "/documents") -> d
     }
 
 
-def get_template_info(template_name: str) -> Optional[dict]:
+def get_template_info(template_name: str) -> dict | None:
     """Get saved template info from database."""
     return get_template_from_db(template_name)
 
@@ -552,12 +567,12 @@ def list_analyzed_templates() -> list:
 NEW_COMPANY_SETUP_GROUP = "new_company_setup"
 
 
-def get_templates_by_group(group: str) -> List[Dict]:
+def get_templates_by_group(group: str) -> list[dict]:
     """Return only templates tagged with the given template_group."""
     return [t for t in get_all_templates_from_db() if (t.get("template_group") or "") == group]
 
 
-def set_template_group(name: str, group: Optional[str]) -> bool:
+def set_template_group(name: str, group: str | None) -> bool:
     """Tag (or untag with None) a template's group. Used by admin UI."""
     conn = None
     try:

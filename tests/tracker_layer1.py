@@ -74,11 +74,7 @@ def offers_candidates(blanks, kind, min_count=1):
 
 def candidates_include(blanks, kind, expected_names):
     hits = [b for b in blanks if b.get("kind") == kind]
-    pool = {
-        (c.get("value") or "").strip().upper()
-        for b in hits
-        for c in (b.get("candidates") or [])
-    }
+    pool = {(c.get("value") or "").strip().upper() for b in hits for c in (b.get("candidates") or [])}
     missing = [n for n in expected_names if n.strip().upper() not in pool]
     return not missing, ("all present" if not missing else f"missing {missing}; pool={sorted(pool)}")
 
@@ -115,9 +111,7 @@ def pronoun_offers_gender(blanks):
     if not hits:
         return None, "no pronoun blank in this template"
     pool = {(c.get("value") or "").lower() for b in hits for c in (b.get("candidates") or [])}
-    ok = any("he" == v or v.startswith("he") for v in pool) and any(
-        "she" == v or v.startswith("she") for v in pool
-    )
+    ok = any(v == "he" or v.startswith("he") for v in pool) and any(v == "she" or v.startswith("she") for v in pool)
     return ok, f"pronoun candidates: {sorted(pool)}"
 
 
@@ -136,8 +130,7 @@ DC_GROUP = "Director Consent Form - Group Member Appointment.docx"
 DC_NON = "Director Consent Form - Non-Group Member Appointment.docx"
 ISH_CONSENT = "Individual Shareholder Consent Form.docx"
 CORP_CONSENT = (
-    "Corporate Shareholder Consent - Directors Resolution for "
-    "New Company Setup and Director Appointment.docx"
+    "Corporate Shareholder Consent - Directors Resolution for New Company Setup and Director Appointment.docx"
 )
 RESIGN_LETTER = "Director Resignation Letter.docx"
 
@@ -152,60 +145,111 @@ PAHTAMA = "PAHTAMA GROUP COMPANY LIMITED"
 
 CASES = [
     # ── Group A: AGM templates ──
-    ("A1", "Notice of Calling for AGM — signing offers a director to pick",
-     NOTICE_CALL, CITY_HOLDINGS, lambda b: offers_candidates(b, "person")),
-    ("A1b", "Notice of Calling for AGM — date not auto-filled",
-     NOTICE_CALL, CITY_HOLDINGS, dates_not_autofilled),
-    ("A2", "Notice of AGM to Shareholders — dates not auto-filled",
-     NOTICE_SH, CITY_HOLDINGS, dates_not_autofilled),
-    ("A2b", "Notice of AGM to Shareholders — offers people to pick",
-     NOTICE_SH, CITY_HOLDINGS, lambda b: offers_candidates(b, "person")),
-    ("A3", "AGM Minutes (individual shareholders) — dates not auto-filled",
-     AGM, CITY_HOLDINGS, dates_not_autofilled),
-    ("A3b", "AGM Minutes — attendees/signers offered from the register",
-     AGM, CITY_HOLDINGS, lambda b: offers_candidates(b, "person", 2)),
-    ("A3c", "AGM Minutes — chairperson candidates include real directors",
-     AGM, CITY_HOLDINGS, lambda b: candidates_include(b, "person", ["MIN MIN"])),
-    ("A3d", "AGM Minutes — pronoun offers he/she",
-     AGM, CITY_HOLDINGS, pronoun_offers_gender),
-    ("A4", "AGM Minutes (corporate + individual) — dates not auto-filled",
-     AGM, FLYING, dates_not_autofilled),
-    ("A4b", "AGM Minutes (corporate + individual) — people offered",
-     AGM, FLYING, lambda b: offers_candidates(b, "person", 2)),
-    ("A5", "Shareholders Resolution for AGM — dates not auto-filled",
-     SH_RES_AGM, FLYING, dates_not_autofilled),
-    ("A5b", "Shareholders Resolution for AGM — signers offered",
-     SH_RES_AGM, FLYING, lambda b: offers_candidates(b, "person")),
-
+    (
+        "A1",
+        "Notice of Calling for AGM — signing offers a director to pick",
+        NOTICE_CALL,
+        CITY_HOLDINGS,
+        lambda b: offers_candidates(b, "person"),
+    ),
+    ("A1b", "Notice of Calling for AGM — date not auto-filled", NOTICE_CALL, CITY_HOLDINGS, dates_not_autofilled),
+    ("A2", "Notice of AGM to Shareholders — dates not auto-filled", NOTICE_SH, CITY_HOLDINGS, dates_not_autofilled),
+    (
+        "A2b",
+        "Notice of AGM to Shareholders — offers people to pick",
+        NOTICE_SH,
+        CITY_HOLDINGS,
+        lambda b: offers_candidates(b, "person"),
+    ),
+    ("A3", "AGM Minutes (individual shareholders) — dates not auto-filled", AGM, CITY_HOLDINGS, dates_not_autofilled),
+    (
+        "A3b",
+        "AGM Minutes — attendees/signers offered from the register",
+        AGM,
+        CITY_HOLDINGS,
+        lambda b: offers_candidates(b, "person", 2),
+    ),
+    (
+        "A3c",
+        "AGM Minutes — chairperson candidates include real directors",
+        AGM,
+        CITY_HOLDINGS,
+        lambda b: candidates_include(b, "person", ["MIN MIN"]),
+    ),
+    ("A3d", "AGM Minutes — pronoun offers he/she", AGM, CITY_HOLDINGS, pronoun_offers_gender),
+    ("A4", "AGM Minutes (corporate + individual) — dates not auto-filled", AGM, FLYING, dates_not_autofilled),
+    (
+        "A4b",
+        "AGM Minutes (corporate + individual) — people offered",
+        AGM,
+        FLYING,
+        lambda b: offers_candidates(b, "person", 2),
+    ),
+    ("A5", "Shareholders Resolution for AGM — dates not auto-filled", SH_RES_AGM, FLYING, dates_not_autofilled),
+    (
+        "A5b",
+        "Shareholders Resolution for AGM — signers offered",
+        SH_RES_AGM,
+        FLYING,
+        lambda b: offers_candidates(b, "person"),
+    ),
     # ── Group B: new company setup ──
-    ("B1", "Director Consent (Non-Group) — dates not auto-filled",
-     DC_NON, CITY_HOLDINGS, dates_not_autofilled),
-    ("B1b", "Director Consent (Non-Group) — director offered from register",
-     DC_NON, CITY_HOLDINGS, lambda b: offers_candidates(b, "person")),
-    ("B2", "Director Consent (Group) — dates not auto-filled",
-     DC_GROUP, CITY_HOLDINGS, dates_not_autofilled),
-    ("B2b", "Director Consent (Group) — director offered from register",
-     DC_GROUP, CITY_HOLDINGS, lambda b: offers_candidates(b, "person")),
-    ("B3", "Individual Shareholder Consent — dates not auto-filled",
-     ISH_CONSENT, CITY_HOLDINGS, dates_not_autofilled),
-    ("B3b", "Individual Shareholder Consent — shareholder offered",
-     ISH_CONSENT, CITY_HOLDINGS, lambda b: offers_candidates(b, "person")),
-    ("B4", "Corporate Shareholder Consent — dates not auto-filled",
-     CORP_CONSENT, PAHTAMA, dates_not_autofilled),
-    ("B4b", "Corporate Shareholder Consent — signing directors offered",
-     CORP_CONSENT, PAHTAMA, lambda b: offers_candidates(b, "person", 2)),
-
+    ("B1", "Director Consent (Non-Group) — dates not auto-filled", DC_NON, CITY_HOLDINGS, dates_not_autofilled),
+    (
+        "B1b",
+        "Director Consent (Non-Group) — director offered from register",
+        DC_NON,
+        CITY_HOLDINGS,
+        lambda b: offers_candidates(b, "person"),
+    ),
+    ("B2", "Director Consent (Group) — dates not auto-filled", DC_GROUP, CITY_HOLDINGS, dates_not_autofilled),
+    (
+        "B2b",
+        "Director Consent (Group) — director offered from register",
+        DC_GROUP,
+        CITY_HOLDINGS,
+        lambda b: offers_candidates(b, "person"),
+    ),
+    ("B3", "Individual Shareholder Consent — dates not auto-filled", ISH_CONSENT, CITY_HOLDINGS, dates_not_autofilled),
+    (
+        "B3b",
+        "Individual Shareholder Consent — shareholder offered",
+        ISH_CONSENT,
+        CITY_HOLDINGS,
+        lambda b: offers_candidates(b, "person"),
+    ),
+    ("B4", "Corporate Shareholder Consent — dates not auto-filled", CORP_CONSENT, PAHTAMA, dates_not_autofilled),
+    (
+        "B4b",
+        "Corporate Shareholder Consent — signing directors offered",
+        CORP_CONSENT,
+        PAHTAMA,
+        lambda b: offers_candidates(b, "person", 2),
+    ),
     # ── Group C: change of directors ──
-    ("C1", "Director Consent (Group) for existing company — dates not auto",
-     DC_GROUP, CITY_MART, dates_not_autofilled),
-    ("C2", "Director Consent (Non-Group) for existing company — dates not auto",
-     DC_NON, CITY_MART, dates_not_autofilled),
-    ("C3", "Resignation Letter — date not auto-filled",
-     RESIGN_LETTER, CITY_HOLDINGS, dates_not_autofilled),
-    ("C3b", "Resignation Letter — resigning director offered, not guessed",
-     RESIGN_LETTER, CITY_HOLDINGS, lambda b: offers_candidates(b, "person")),
-    ("C3c", "Resignation Letter — candidates include Win Win Tint",
-     RESIGN_LETTER, CITY_HOLDINGS, lambda b: candidates_include(b, "person", ["WIN WIN TINT"])),
+    ("C1", "Director Consent (Group) for existing company — dates not auto", DC_GROUP, CITY_MART, dates_not_autofilled),
+    (
+        "C2",
+        "Director Consent (Non-Group) for existing company — dates not auto",
+        DC_NON,
+        CITY_MART,
+        dates_not_autofilled,
+    ),
+    ("C3", "Resignation Letter — date not auto-filled", RESIGN_LETTER, CITY_HOLDINGS, dates_not_autofilled),
+    (
+        "C3b",
+        "Resignation Letter — resigning director offered, not guessed",
+        RESIGN_LETTER,
+        CITY_HOLDINGS,
+        lambda b: offers_candidates(b, "person"),
+    ),
+    (
+        "C3c",
+        "Resignation Letter — candidates include Win Win Tint",
+        RESIGN_LETTER,
+        CITY_HOLDINGS,
+        lambda b: candidates_include(b, "person", ["WIN WIN TINT"]),
+    ),
 ]
 
 
