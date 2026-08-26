@@ -56,7 +56,7 @@ interface NavItem {
  */
 const NAV: NavItem[] = [
   { name: 'Overview', href: '/admin/overview', Icon: LayoutGrid, minRole: 'user' },
-  { name: 'Registers', href: '/admin/registers', Icon: Files, minRole: 'editor' },
+  { name: 'Registers', href: '/admin/registers', Icon: Files, minRole: 'user' },
   { name: 'Settings', href: '/admin/settings', Icon: Settings, minRole: 'admin' }
 ]
 

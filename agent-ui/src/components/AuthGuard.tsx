@@ -35,7 +35,9 @@ const RANK: Record<string, number> = { user: 0, editor: 1, admin: 2 }
  */
 const ROUTE_MIN_ROLE: [string, keyof typeof RANK][] = [
   ["/admin/overview", "user"],
-  ["/admin/registers", "editor"],
+  // Viewing the registers is open to anyone signed in; CHANGING them is not,
+  // and that is enforced by require_write on the server, not by this line.
+  ["/admin/registers", "user"],
   ["/admin/settings", "editor"],
   // Legacy routes still redirect through the guard — keep them gated.
   ["/admin/dashboard", "user"],

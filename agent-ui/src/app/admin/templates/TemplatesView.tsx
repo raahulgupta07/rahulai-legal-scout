@@ -15,6 +15,8 @@ import {
 } from "lucide-react"
 import apiClient, { authFetch } from "@/lib/api-client"
 import { toast } from "sonner"
+import ReadOnlyNotice from "@/components/ui/ReadOnlyNotice"
+import { useCanWrite } from "@/app/admin/roleClient"
 import { useActivityTray } from "@/hooks/useActivityTray"
 import { kickTrainingPoll } from "@/hooks/useTrainingJob"
 import DocViewer from "@/components/ui/DocViewer"
@@ -117,6 +119,8 @@ function ChipList({ items, tone = "neutral" }: { items: any[]; tone?: Tone }) {
 }
 
 export default function TemplatesView() {
+  // Rendering only. The server refuses the write regardless (require_write).
+  const mayWrite = useCanWrite()
   const [templates, setTemplates] = useState<Template[]>([])
   const [selectedTemplate, setSelectedTemplate] = useState<Template | null>(null)
   const [loading, setLoading] = useState(true)
@@ -637,7 +641,7 @@ export default function TemplatesView() {
                 <Badge tone="neutral">{t.total_fields || rawFields.length || 0} placeholders</Badge>
               </>
             }
-            actions={
+            actions={mayWrite ? (<>
               <>
                 <Button
                   onClick={() => window.open(apiClient.downloadTemplate(t.name), "_blank")}
@@ -649,7 +653,7 @@ export default function TemplatesView() {
                   Generate document
                 </Button>
               </>
-            }
+            </>) : undefined}
           />
 
           {/* ONE scroll region for the whole detail — the preview no longer has
@@ -1087,7 +1091,7 @@ export default function TemplatesView() {
             </>
           }
           description="Word templates the agent fills. Training reads each one through a sixteen-stage pipeline so the agent knows what it is for and which fields it needs."
-          actions={
+          actions={mayWrite ? (<>
             <>
               <Button
                 onClick={() => {
@@ -1115,7 +1119,7 @@ export default function TemplatesView() {
                 Upload
               </Button>
             </>
-          }
+          </>) : undefined}
         />
 
         {templates.length > 0 && (
@@ -1147,6 +1151,7 @@ export default function TemplatesView() {
         )}
 
         <PageBody className="space-y-4">
+        <ReadOnlyNotice what="the template register" />
           {trainingStale && (
             <Notice tone="warn" title="Training is out of date">
               <div className="flex items-center justify-between gap-3 flex-wrap">

@@ -2,6 +2,69 @@
 
 All notable changes to Legal Scout.
 
+## [1.2.57] — 2026-08-26
+
+### Added
+
+- **View-only access to the registers.** Anyone signed in can now open
+  Overview and Registers — templates, companies, people, documents, emails,
+  skills — and read them. Creating, changing and deleting stays with
+  administrators, and Settings stays administrator-only.
+
+- **A "Sign in with …" button for the directory**, asked for directly because
+  the text-only hint left people looking for a button and concluding the
+  feature was missing. It is a second submit control for the same form, not a
+  separate journey — because there isn't one: directory sign-in uses the same
+  two fields and the server decides which credential store answers.
+
+### Fixed — an authorisation hole
+
+**Nineteen mutating routes had no role check at all.** Ten of them change
+shared firm records and could be called by any signed-in account, viewer
+included:
+
+    DELETE /api/knowledge/sources/{filename}   POST /api/dashboard/add/company
+    POST   /api/dashboard/upload/template      POST /api/dashboard/bulk/generate
+    POST   /api/company/upload-pdf             POST /api/company/extract-pdf-stream
+    POST   /api/documents/sync                 POST /api/knowledge/sync/templates
+    POST   /api/templates/categories           POST /api/training/save-logs
+
+All ten now go through `require_write`. The nine left open are each the
+signed-in person's own work — their chat title, their follow-ups, their message
+feedback, approving or discarding an email they were shown, and generating a
+document, which is the product rather than an edit to a register.
+
+- **`editor` was decorative.** The only mention of the role on the server was
+  the validation list on user creation. An editor was shown the register
+  management screens and got 403 on every write they attempted — a promise the
+  UI made and the API refused. The ranking now lives in one place
+  (`ROLE_RANK`), `require_write` is the single bar, and `U28f` fails if the
+  browser's ranking and the server's ever disagree.
+
+- **A gate that crashed instead of authorising.** `set_template_category`'s
+  body parameter was named `request`, the same name FastAPI uses for the HTTP
+  request — so the role check was handed the JSON dict and raised. It failed
+  closed, but it broke the route for administrators too. Caught only because
+  the verification ran the same writes as an admin as a control: the viewer's
+  403 looked fine on its own, and the admin's 500 is what exposed it.
+
+### Notes
+
+- The browser half is a rendering convenience, never the boundary.
+  `ConfirmButton` renders nothing for a viewer — every one of its eighteen uses
+  is destructive, so the rule lives in the component instead of at eighteen
+  call sites — and each register view shows a plain "view-only" notice so a
+  restricted page is not mistaken for a broken one. The server refuses the
+  request regardless of what was drawn.
+- `super_admin` does not exist in this product; the roles are `user`, `editor`
+  and `admin`, and `admin` is the top. Nothing was invented to match the name.
+
+### Verified with a real viewer account against the real endpoints
+
+Reads 200 (`/api/dashboard/data`, `/api/people`, `/api/dashboard/stats`,
+`/api/skills`). Ten writes attempted: **10/10 refused 403**, with the same ten
+as an administrator as a control to prove the endpoints were not simply broken.
+
 ## [1.2.55] — 2026-08-26
 
 Reported from the live deployment after configuring a real Active Directory:

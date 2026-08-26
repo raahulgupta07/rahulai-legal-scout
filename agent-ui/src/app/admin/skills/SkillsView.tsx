@@ -5,6 +5,8 @@ import { BookMarked, Plus } from "lucide-react"
 import { apiClient, authFetch } from "@/lib/api-client"
 import { useUserRole } from "../roleClient"
 import { toast } from "sonner"
+import ReadOnlyNotice from "@/components/ui/ReadOnlyNotice"
+import { useCanWrite } from "@/app/admin/roleClient"
 import {
   Badge,
   Button,
@@ -65,6 +67,8 @@ const SOURCE_LABEL: Record<string, string> = {
 const emptyForm = { name: "", description: "", version: "1.0", body: "" }
 
 export default function SkillsView() {
+  // Rendering only. The server refuses the write regardless (require_write).
+  const mayWrite = useCanWrite()
   const role = useUserRole()
   const isAdmin = role === "admin"
 
@@ -329,13 +333,13 @@ export default function SkillsView() {
         title="Skills"
         meta={<Badge tone="neutral">{skills.length}</Badge>}
         description="Legal playbooks the agent loads on demand."
-        actions={
+        actions={mayWrite ? (<>
           isAdmin ? (
             <Button variant="primary" onClick={openCreate} icon={<Plus className="w-4 h-4" />}>
               Add skill
             </Button>
           ) : undefined
-        }
+        </>) : undefined}
       />
 
       {skills.length > 0 && (
@@ -364,6 +368,7 @@ export default function SkillsView() {
       )}
 
       <PageBody className="space-y-4">
+        <ReadOnlyNotice what="the legal skills" />
         {loadError && (
           <Notice tone="danger" title="Could not load skills">
             {loadError}

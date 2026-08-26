@@ -20,6 +20,8 @@ import {
 } from "lucide-react"
 import apiClient, { authFetch } from "@/lib/api-client"
 import { toast } from "sonner"
+import ReadOnlyNotice from "@/components/ui/ReadOnlyNotice"
+import { useCanWrite } from "@/app/admin/roleClient"
 import DocViewer from "@/components/ui/DocViewer"
 import { cn } from "@/lib/utils"
 import {
@@ -629,6 +631,8 @@ function CreateCompanyChoice({ onFiles, onBrowse, onManual }: {
 type PageView = "list" | "choice" | "pdf" | "manual" | "edit" | "view"
 
 export default function CompaniesView() {
+  // Rendering only. The server refuses the write regardless (require_write).
+  const mayWrite = useCanWrite()
   const [companies, setCompanies] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState("")
@@ -1110,13 +1114,13 @@ export default function CompaniesView() {
             back={<IconButton aria-label="Back to companies" onClick={handleBack} icon={<ArrowLeft className="w-4 h-4" />} />}
             title={formData.company_name_english || (view === "view" ? "Company details" : "Edit company")}
             meta={view === "view" ? <Badge tone="neutral">Read only</Badge> : <Badge tone="accent">Editing</Badge>}
-            actions={
+            actions={mayWrite ? (<>
               view === "view" ? (
                 <Button variant="primary" onClick={() => setView("edit")} icon={<Pencil className="w-3.5 h-3.5" />}>
                   Edit
                 </Button>
               ) : undefined
-            }
+            </>) : undefined}
           />
           <CompanyForm
             data={formData} onChange={setFormData} onSave={handleSave} onCancel={handleBack}
@@ -1243,7 +1247,7 @@ export default function CompaniesView() {
             </>
           }
           description="Company records fill the placeholders in every generated document. Train the agent after changing them."
-          actions={
+          actions={mayWrite ? (<>
             <>
               <Button onClick={() => setShowTrainingLog(true)} icon={<Brain className="w-4 h-4" />}>
                 {isTraining ? "View progress" : "Training log"}
@@ -1260,7 +1264,7 @@ export default function CompaniesView() {
                 Create company
               </Button>
             </>
-          }
+          </>) : undefined}
         />
 
         {companies.length > 0 && (
@@ -1281,6 +1285,7 @@ export default function CompaniesView() {
         )}
 
         <PageBody className="space-y-4">
+        <ReadOnlyNotice what="the company register" />
           {loadError && <Notice tone="danger" title="Could not load companies">{loadError}</Notice>}
 
           {companies.length === 0 ? (

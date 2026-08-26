@@ -1,6 +1,7 @@
 'use client'
 
 import * as React from 'react'
+import { useCanWrite } from '@/app/admin/roleClient'
 import { Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -87,6 +88,15 @@ export const IconButton = React.forwardRef<HTMLButtonElement, ButtonProps>(funct
 /**
  * Two-step destructive action: arm, then confirm. Nothing irreversible is ever
  * one click away, and the armed state is visually loud so it cannot be missed.
+ *
+ * ★ Renders NOTHING for an account that may not change shared records. Every
+ * use of this component is destructive — delete a template, a company, a
+ * person, a skill, a document, a user — so the rule can live here once instead
+ * of being remembered at eighteen call sites, which is how one gets missed.
+ *
+ * This hides the control. It does not enforce anything: `require_write` on the
+ * server refuses the request whatever the browser drew. Never read an absent
+ * button as a permission boundary.
  */
 export function ConfirmButton({
   onConfirm,
@@ -104,6 +114,7 @@ export function ConfirmButton({
   children?: React.ReactNode
 }) {
   const [armed, setArmed] = React.useState(false)
+  const mayWrite = useCanWrite()
 
   React.useEffect(() => {
     if (!armed) return
@@ -111,6 +122,8 @@ export function ConfirmButton({
     const t = setTimeout(() => setArmed(false), 5000)
     return () => clearTimeout(t)
   }, [armed])
+
+  if (!mayWrite) return null
 
   if (!armed) {
     return compact ? (

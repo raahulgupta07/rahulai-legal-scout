@@ -1481,10 +1481,48 @@ def get_current_user(request: Request) -> dict:
         return None
 
 
+# Role precedence. `editor` sits between the two but, until this change, was
+# honoured by NOTHING on the server: the only mention of it in this file was
+# the validation list on user creation. An editor was shown the register
+# management screens and got 403 on every write they attempted — a promise the
+# UI made and the API refused. It is kept here so existing rows stay valid and
+# so the ranking is written down in one place.
+ROLE_RANK = {"user": 0, "editor": 1, "admin": 2}
+
+
 def require_admin(request: Request) -> dict:
     user = get_current_user(request)
     if not user or user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Admin access required")
+    return user
+
+
+def require_write(request: Request) -> dict:
+    """Gate anything that CREATES, CHANGES or DELETES shared data.
+
+    ★ The registers, templates, knowledge and people are shared firm records:
+    one person editing them changes what every other person's documents say. So
+    reading them is open to anyone signed in, and changing them is not.
+
+    This is the server-side half, and it is the half that matters. Hiding a
+    Delete button from a viewer stops them clicking it; it does not stop the
+    request, and the endpoint is what decides. Before this existed, nineteen
+    mutating routes had no role check at all — including
+    `DELETE /api/knowledge/sources/{filename}`, which any signed-in account
+    could call.
+
+    Deliberately the same bar as `require_admin` today. If `editor` should be a
+    real writer over the registers, this is the one place to widen — change the
+    minimum here rather than scattering role checks through the handlers.
+    """
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    if ROLE_RANK.get(user.get("role", "user"), 0) < ROLE_RANK["admin"]:
+        raise HTTPException(
+            status_code=403,
+            detail="Your account can view this, but only an administrator can change it.",
+        )
     return user
 
 
@@ -3609,10 +3647,18 @@ async def get_template_categories():
 
 
 @app.post("/api/templates/categories")
-async def set_template_category(request: dict):
-    """Set category for a template."""
-    template_name = request.get("template_name")
-    category = request.get("category")
+async def set_template_category(body: dict, request: Request):
+    """Set category for a template.
+
+    ★ The body parameter used to be called `request`, which is also the name
+    FastAPI uses for the HTTP request object — so a role check written the
+    obvious way (`require_write(request)`) was handed the JSON dict instead and
+    raised. It failed closed, but it broke the route for administrators too.
+    Renamed so the two cannot be confused again.
+    """
+    require_write(request)  # shared firm records: view is open, change is not
+    template_name = body.get("template_name")
+    category = body.get("category")
 
     cat_file = Path("/documents/legal/data/template_categories.json")
     data = {"categories": [], "template_categories": {}}
@@ -4326,6 +4372,7 @@ async def get_training_status():
 @app.post("/api/training/save-logs")
 async def save_training_logs(request: Request):
     """Save training logs to DB so they persist across page reloads."""
+    require_write(request)  # shared firm records: view is open, change is not
     try:
         import json
 
@@ -4353,8 +4400,9 @@ async def save_training_logs(request: Request):
 
 
 @app.post("/api/knowledge/sync/templates")
-async def sync_templates_to_knowledge():
+async def sync_templates_to_knowledge(request: Request):
     """Sync template placeholders to knowledge base."""
+    require_write(request)  # shared firm records: view is open, change is not
     try:
         from scout.tools.knowledge_base import store_cleaned_data
         from scout.tools.template_analyzer import analyze_template
@@ -4451,8 +4499,9 @@ async def delete_document(request: Request, doc_id: str):
 
 
 @app.post("/api/documents/sync")
-async def sync_existing_documents():
+async def sync_existing_documents(request: Request):
     """Sync all generated documents to database for tracking."""
+    require_write(request)  # shared firm records: view is open, change is not
     try:
         import re
         from datetime import datetime
@@ -6265,8 +6314,9 @@ def _generate_usage_instructions(template_name: str, category: str) -> str:
 
 
 @app.delete("/api/knowledge/sources/{filename}")
-async def delete_knowledge_source(filename: str):
+async def delete_knowledge_source(filename: str, request: Request):
     """Delete a knowledge source."""
+    require_write(request)  # shared firm records: view is open, change is not
     try:
         from scout.tools.knowledge_base import delete_knowledge_source as do_delete
 
@@ -7072,6 +7122,7 @@ async def get_document_history(doc_name: str, request: Request):
 @app.post("/api/dashboard/bulk/generate")
 async def bulk_generate_documents(request: Request):
     """Generate a document for ALL companies using a specific template."""
+    require_write(request)  # shared firm records: view is open, change is not
     user = get_current_user(request)
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -7180,6 +7231,7 @@ async def documents_fill_generate(request: Request):
 @app.post("/api/dashboard/add/company")
 async def add_dashboard_company(request: Request):
     """Add a single company manually."""
+    require_write(request)  # shared firm records: view is open, change is not
     try:
         from scout.tools.knowledge_base import add_company
 
@@ -7404,6 +7456,7 @@ async def update_dashboard_company(request: Request, company_name: str, body: di
 @app.post("/api/dashboard/upload/template")
 async def upload_dashboard_template(request: Request, file: UploadFile = File(...)):
     """Upload template Word file."""
+    require_write(request)  # shared firm records: view is open, change is not
     try:
         user = get_current_user(request)
         uploader_email = user.get("email", "unknown") if user else "unknown"
@@ -7737,8 +7790,9 @@ def _persist_company_source_pdf(body: dict) -> None:
 # PDF Upload (preview only, no AI extraction)
 # ---------------------------------------------------------------------------
 @app.post("/api/company/upload-pdf")
-async def upload_company_pdf(file: UploadFile = File(...)):
+async def upload_company_pdf(request: Request, file: UploadFile = File(...)):
     """Upload a PDF for preview. Returns the PDF URL only — no AI extraction."""
+    require_write(request)  # shared firm records: view is open, change is not
     try:
         content = await file.read()
         if len(content) > 50 * 1024 * 1024:
@@ -7761,8 +7815,9 @@ async def upload_company_pdf(file: UploadFile = File(...)):
 
 
 @app.post("/api/company/extract-pdf-stream")
-async def extract_company_from_pdf_stream(file: UploadFile = File(...)):
+async def extract_company_from_pdf_stream(request: Request, file: UploadFile = File(...)):
     """Streaming version of extract-pdf. Yields ND-JSON progress events."""
+    require_write(request)  # shared firm records: view is open, change is not
     import asyncio
     import os
     import tempfile

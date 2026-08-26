@@ -16,6 +16,8 @@ import {
 } from "lucide-react"
 import apiClient, { authFetch } from "@/lib/api-client"
 import { toast } from "sonner"
+import ReadOnlyNotice from "@/components/ui/ReadOnlyNotice"
+import { useCanWrite } from "@/app/admin/roleClient"
 import {
   Badge,
   Button,
@@ -165,6 +167,8 @@ const missingFields = (p: Person) =>
 type View = "list" | "detail"
 
 export default function PeopleView() {
+  // Rendering only. The server refuses the write regardless (require_write).
+  const mayWrite = useCanWrite()
   const [people, setPeople] = useState<Person[]>([])
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState("")
@@ -715,7 +719,7 @@ export default function PeopleView() {
               </Badge>
             )
           }
-          actions={
+          actions={mayWrite ? (<>
             <>
               <Button onClick={() => openEdit(p)} icon={<Pencil className="w-3.5 h-3.5" />}>
                 Edit
@@ -728,10 +732,11 @@ export default function PeopleView() {
                 Delete
               </ConfirmButton>
             </>
-          }
+          </>) : undefined}
         />
 
         <PageBody className="space-y-4">
+        <ReadOnlyNotice what="the people register" />
           {gaps.length > 0 && (
             <Notice tone="warn" title="Incomplete record">
               Missing {gaps.join(", ")}. Documents that reference this person will fall back to a placeholder.
@@ -786,7 +791,7 @@ export default function PeopleView() {
           <Card
             title="Company links"
             meta={<Badge tone="neutral">{links.length}</Badge>}
-            actions={
+            actions={mayWrite ? (<>
               <>
                 <Button
                   size="sm"
@@ -805,7 +810,7 @@ export default function PeopleView() {
                   Link company
                 </Button>
               </>
-            }
+            </>) : undefined}
             padded={false}
           >
             <div className="px-4 pt-3">
@@ -1132,7 +1137,7 @@ export default function PeopleView() {
         title="People"
         meta={<Badge tone="neutral">{people.length} on register</Badge>}
         description="Every individual who appears in a document — directors, individual shareholders and signatories. Record a person once, then link them to as many companies as you need."
-        actions={
+        actions={mayWrite ? (<>
           <>
             <Button
               variant="secondary"
@@ -1147,7 +1152,7 @@ export default function PeopleView() {
               Add person
             </Button>
           </>
-        }
+        </>) : undefined}
       />
 
       {people.length > 0 && (

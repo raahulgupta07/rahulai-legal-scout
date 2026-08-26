@@ -16,9 +16,9 @@ import PeopleView from "../people/PeopleView"
  * People minRole.
  */
 const TABS: { id: string; label: string; minRole: string }[] = [
-  { id: "templates", label: "Templates", minRole: "editor" },
-  { id: "companies", label: "Companies", minRole: "editor" },
-  { id: "people", label: "People", minRole: "editor" },
+  { id: "templates", label: "Templates", minRole: "user" },
+  { id: "companies", label: "Companies", minRole: "user" },
+  { id: "people", label: "People", minRole: "user" },
 ]
 
 function RegistersInner() {

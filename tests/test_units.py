@@ -2421,6 +2421,140 @@ def test_tool_result_shape():
     )
 
 
+# ===========================================================================
+# U28  View is open, change is not
+#     Reading the registers is open to anyone signed in; creating, changing or
+#     deleting shared firm records is not. The boundary is the ENDPOINT — a
+#     hidden button stops a click, never a request.
+# ===========================================================================
+def test_write_boundary():
+    import ast as _ast
+
+    import app.main as appmain
+
+    src = (REPO / "app" / "main.py").read_text(encoding="utf-8")
+    tree = _ast.parse(src)
+
+    # Every route handler, with the gate it calls.
+    routes = []
+    for n in _ast.walk(tree):
+        if not isinstance(n, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+            continue
+        for d in n.decorator_list:
+            if not (isinstance(d, _ast.Call) and isinstance(d.func, _ast.Attribute)):
+                continue
+            if not (isinstance(d.func.value, _ast.Name) and d.func.value.id == "app"):
+                continue
+            if d.func.attr not in ("get", "post", "put", "delete", "patch"):
+                continue
+            path = d.args[0].value if d.args and isinstance(d.args[0], _ast.Constant) else "?"
+            called = {
+                x.func.id for x in _ast.walk(n) if isinstance(x, _ast.Call) and isinstance(x.func, _ast.Name)
+            }
+            routes.append((d.func.attr.upper(), path, n.name, called))
+
+    mutating = [r for r in routes if r[0] in ("POST", "PUT", "DELETE", "PATCH")]
+    check("U28a", "the route table is readable", len(mutating) > 40, f"{len(mutating)} mutating routes")
+
+    # ★ The nine that may stay open are each the signed-in person's OWN work:
+    # their chat title, their follow-up suggestions, their message feedback,
+    # approving or discarding an email they were shown, generating a document
+    # (which is the product, not an edit to a register), and the two auth
+    # routes, which necessarily precede having a session at all.
+    OWN_WORK = {
+        "auth_login", "auth_logout", "sso_login", "sso_callback",
+        "set_session_title", "suggest_followups", "record_message_feedback",
+        "send_queued_email", "discard_queued_email", "send_document_email",
+        "documents_fill_generate",
+    }
+    ungated = [
+        (m, p, fn) for m, p, fn, called in mutating
+        if fn not in OWN_WORK and not ({"require_admin", "require_write"} & called)
+    ]
+    check(
+        "U28b",
+        "no route that changes shared records is left without a role check",
+        not ungated,
+        f"ungated: {[f'{m} {p}' for m, p, _ in ungated]}" if ungated else "",
+    )
+
+    # --- U28c: the ten that were found open are now closed -------------------
+    # Each of these could be called by ANY signed-in account before this change,
+    # including a plain viewer. `delete_knowledge_source` is the sharpest: it
+    # removes a knowledge source outright.
+    WERE_OPEN = {
+        "delete_knowledge_source", "extract_company_from_pdf_stream", "upload_company_pdf",
+        "add_dashboard_company", "bulk_generate_documents", "upload_dashboard_template",
+        "sync_existing_documents", "sync_templates_to_knowledge", "set_template_category",
+        "save_training_logs",
+    }
+    by_name = {fn: called for _m, _p, fn, called in routes}
+    still_open = sorted(f for f in WERE_OPEN if not ({"require_admin", "require_write"} & by_name.get(f, set())))
+    check("U28c", "every previously ungated shared-record route is gated", not still_open, f"{still_open}")
+
+    # --- U28d: the gate actually refuses a viewer ---------------------------
+    class _Req:
+        def __init__(self, role):
+            self.headers = {}
+            self._role = role
+
+        # get_current_user reads the Authorization header; stub the decode by
+        # patching the helper instead, below.
+
+    import app.main as m
+
+    real = m.get_current_user
+    try:
+        for role, allowed in (("user", False), ("editor", False), ("admin", True)):
+            m.get_current_user = lambda _r, _role=role: {"user_id": 1, "email": "x@y.z", "role": _role}
+            try:
+                m.require_write(_Req(role))
+                got = True
+            except Exception:
+                got = False
+            check(
+                f"U28d-{role}",
+                f"require_write {'admits' if allowed else 'refuses'} {role}",
+                got is allowed,
+                f"role={role} allowed={got}, expected {allowed}",
+            )
+    finally:
+        m.get_current_user = real
+
+    # --- U28e: an unauthenticated caller is refused too ---------------------
+    try:
+        m.get_current_user = lambda _r: None
+        try:
+            m.require_write(_Req("none"))
+            ok = False
+        except Exception:
+            ok = True
+        check("U28e", "require_write refuses an unauthenticated caller", ok)
+    finally:
+        m.get_current_user = real
+
+    # --- U28f: the ranking agrees between server and browser ----------------
+    # ROLE_RANK here and RANK in roleClient.ts decide the same thing in two
+    # places; if they disagree, the UI offers what the API refuses (or hides
+    # what it would allow), which is how a permission becomes decorative.
+    rc = (REPO / "agent-ui" / "src" / "app" / "admin" / "roleClient.ts")
+    if rc.exists():
+        txt = rc.read_text(encoding="utf-8")
+        found = dict(re.findall(r"(\w+):\s*(\d+)", txt.split("RANK", 1)[1].split("}")[0]))
+        check(
+            "U28f",
+            "the role ranking is the same on the server and in the browser",
+            {k: int(v) for k, v in found.items()} == appmain.ROLE_RANK,
+            f"browser={found} server={appmain.ROLE_RANK}",
+        )
+        check(
+            "U28g",
+            "the browser's write bar matches require_write (admin)",
+            "RANK.admin" in txt,
+            "canWrite must compare against the same role require_write demands",
+        )
+
+
 def main():
     for fn in (
         test_placeholders,
@@ -2440,6 +2574,7 @@ def main():
         test_sso,
         test_auth_settings,
         test_tool_result_shape,
+        test_write_boundary,
         test_structural_contracts,
     ):
         try:

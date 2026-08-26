@@ -4,6 +4,8 @@ import { useEffect, useState, useMemo } from "react"
 import { ArrowLeft, Download, Eye, FileText, Trash2 } from "lucide-react"
 import apiClient, { authFetch } from "@/lib/api-client"
 import { toast } from "sonner"
+import ReadOnlyNotice from "@/components/ui/ReadOnlyNotice"
+import { useCanWrite } from "@/app/admin/roleClient"
 import DocViewer from "@/components/ui/DocViewer"
 import {
   Badge,
@@ -456,6 +458,7 @@ export default function DocumentsView() {
       )}
 
       <PageBody className="space-y-4">
+        <ReadOnlyNotice what="generated documents" />
         {loadError && <Notice tone="danger" title="Could not load documents">{loadError}</Notice>}
 
         {documents.length === 0 ? (

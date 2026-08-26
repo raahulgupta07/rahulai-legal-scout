@@ -266,17 +266,45 @@ export default function LoginPage() {
               {loading ? "Signing in…" : ldapEnabled ? "Sign in  →" : "Continue with email  →"}
             </button>
 
-            {/* Directory sign-in gets no button, and should not have one: it
-                uses these same two fields, so a second button would be a
-                second way to submit the same form. What it does need is to be
-                VISIBLE — without this line the option is configured, working,
-                and completely unadvertised, which is indistinguishable from
-                not being there at all. */}
+            {/* ★ Directory sign-in submits THIS form — it is the same two
+                fields, and the server decides which credential store answers.
+                So this button is a second submit control for one form, not a
+                second route: it fills the username hint and submits, and it
+                exists because a line of explanatory text was not enough. Asked
+                for directly after the text-only version left people looking
+                for a button and concluding the feature was missing.
+
+                It is deliberately NOT a link to some other flow, because there
+                isn't one — presenting it as a separate journey would be a
+                prettier lie than the missing button was. */}
             {ldapEnabled && (
-              <p className="-mt-[6px] text-center text-[12px] text-[#6B7280]">
-                Staff can sign in with their <span className="font-medium text-[#334155]">{ldapLabel}</span> username
-                and password.
-              </p>
+              <>
+                <div className="mt-[6px] flex items-center gap-3">
+                  <span className="flex-1 border-t border-[#E2E8F0]" />
+                  <span className="text-[11px] font-medium tracking-[.14em] text-[#94A3B8]">OR</span>
+                  <span className="flex-1 border-t border-[#E2E8F0]" />
+                </div>
+                <button
+                  type="submit"
+                  disabled={loading}
+                  title={`Enter your ${ldapLabel} username and password above, then use this button`}
+                  className="flex h-12 w-full items-center justify-center gap-[9px] rounded-[11px] border border-[#E2E8F0] bg-[#F8FAFC] px-4 text-[14px] font-medium text-[#0F172A] transition-colors hover:bg-[#F1F5F9] disabled:opacity-60"
+                >
+                  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden>
+                    <path
+                      d="M4 7h16M4 12h16M4 17h16"
+                      stroke="#2563EB"
+                      strokeWidth="1.7"
+                      strokeLinecap="round"
+                    />
+                  </svg>
+                  Sign in with {ldapLabel}
+                </button>
+                <p className="-mt-[4px] text-center text-[12px] text-[#6B7280]">
+                  Use your network username and password — the same ones you use to log in to your
+                  computer.
+                </p>
+              </>
             )}
           </form>
 
