@@ -258,7 +258,36 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             try:
                 raw = await request.body()
 
+                # ★★★ The replay must END. It hands the body back ONCE and then
+                # reports a disconnect forever after.
+                #
+                # The previous version returned the same `http.request` message
+                # on every call, and that silently broke every resumed run. The
+                # response to /continue is an SSE stream, and Starlette's
+                # StreamingResponse runs `listen_for_disconnect`, which loops on
+                # receive() waiting for `http.disconnect`. Given an endless
+                # supply of `http.request` it raises
+                #
+                #     RuntimeError: Unexpected message received: http.request
+                #
+                # inside the streaming task group — AFTER the first event had
+                # been flushed. So the browser saw `RunContinued`, then the
+                # stream aborted: the card went to ANSWERED, no content ever
+                # arrived, and the run stayed PAUSED in the database with
+                # `answered=null`. The POST itself returned 200, and the
+                # traceback landed in the container log where nobody was
+                # looking. Reproduced 12 times out of 12 against the deployed
+                # build before this line changed.
+                #
+                # This is the "silent stop after answering a question" — it was
+                # never the model.
+                _replayed = False
+
                 async def _replay() -> dict:
+                    nonlocal _replayed
+                    if _replayed:
+                        return {"type": "http.disconnect"}
+                    _replayed = True
                     return {"type": "http.request", "body": raw, "more_body": False}
 
                 request._receive = _replay
