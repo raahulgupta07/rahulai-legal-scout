@@ -92,6 +92,87 @@ def _note_blank(placeholder: str) -> None:
         sink.add(str(placeholder))
 
 
+_drift_log = logging.getLogger("legalscout.drift")
+
+
+def _latest_request_text(session_id: str) -> str:
+    """The user's own words for this conversation's most recent request.
+
+    Read from the run record rather than passed in as an argument, and that is
+    deliberate: an argument would be filled in by the MODEL, and the model is
+    the thing whose choice is being checked. A paraphrase of the request cannot
+    contradict the template the paraphraser picked — it is the raw text or
+    nothing.
+
+    Returns "" for any failure, and every caller treats "" as "no opinion", so
+    a database hiccup can never block a document.
+    """
+    if not session_id:
+        return ""
+    try:
+        from db.connection import get_db_conn
+
+        conn = get_db_conn()
+        try:
+            cur = conn.cursor()
+            # The most recent run's input, newest last in the runs array.
+            cur.execute(
+                "SELECT r->'input'->>'input_content' "
+                "FROM ai.agno_sessions s, jsonb_array_elements(s.runs) WITH ORDINALITY AS t(r, i) "
+                "WHERE s.session_id = %s AND r->'input'->>'input_content' IS NOT NULL "
+                "ORDER BY i DESC LIMIT 1",
+                (session_id,),
+            )
+            row = cur.fetchone()
+            cur.close()
+            return (row[0] or "") if row else ""
+        finally:
+            conn.close()
+    except Exception as e:
+        _drift_log.warning(f"[DRIFT] could not read the request text for {session_id}: {e}")
+        return ""
+
+
+def _check_template_drift(session_id: str, template_name: str) -> dict | None:
+    """Block a template that contradicts the request. None means proceed.
+
+    Shaped like the tool's other refusals — `success: False` with a message and
+    a question — so the agent surfaces it as a clarification rather than an
+    error, and the user gets a choice instead of a wrong document.
+    """
+    try:
+        from scout.tools.template_guard import contradiction
+
+        request_text = _latest_request_text(session_id)
+        clash = contradiction(request_text, template_name)
+    except Exception as e:
+        # A guard that breaks must not break generation.
+        _drift_log.warning(f"[DRIFT] check skipped: {e}")
+        return None
+
+    if not clash:
+        return None
+
+    _drift_log.warning(
+        f"[DRIFT] refused {template_name!r}: request asked for "
+        f"{clash['requested']!r} but the template is {clash['template']!r} ({clash['axis']})"
+    )
+    return {
+        "success": False,
+        "error": "template_mismatch",
+        "clarification_needed": True,
+        "message": clash["message"],
+        "requested": clash["requested"],
+        "template_offered": template_name,
+        "agent_instruction": (
+            "STOP. Do not generate this document. The template you chose states the opposite of "
+            "what the user asked for, on a distinction where the two are different legal "
+            "instruments. Ask the user which they want — quote both options — and generate only "
+            "after they answer. Do not re-call generate_document with the same template."
+        ),
+    }
+
+
 def _session_of(run_context: Any) -> str:
     """The conversation a document tool was called in.
 
@@ -1006,6 +1087,24 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
             resolved = _resolve_company_arg(company_name, session_id)
             if not resolved:
                 return dict(_NO_COMPANY)
+
+            # ★★★ Refuse a template that CONTRADICTS what was asked for.
+            #
+            # The worst thing this tool has done is generate the wrong legal
+            # instrument — an Individual Shareholder Consent for a request that
+            # said "director consent form (non group member)". Roughly two runs
+            # in eleven on the client's tracker. It is filled correctly and
+            # looks right, which is exactly why nobody catches it.
+            #
+            # The check is one-sided on purpose: it does not choose a template,
+            # it only blocks one that states the opposite of the request on an
+            # axis where the two are different instruments. Silence on either
+            # side is never a contradiction, so an ambiguous request behaves
+            # exactly as before.
+            drift = _check_template_drift(session_id, template_name)
+            if drift:
+                return drift
+
             return _generate_document(template_name, resolved, custom_data)
 
     def _generate_document(template_name: str, company_name: str, custom_data: dict | None = None) -> dict[str, Any]:

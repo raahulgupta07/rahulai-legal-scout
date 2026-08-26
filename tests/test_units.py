@@ -2698,6 +2698,91 @@ def test_resume_receive():
     )
 
 
+# ===========================================================================
+# U30  Template drift — the wrong legal instrument
+#     The worst thing this product has done. Roughly two runs in eleven on the
+#     client's tracker, generate_document was called with a template that
+#     contradicted the request: an Individual Shareholder Consent for
+#     "director consent form (non group member)". Filled correctly, looking
+#     right, and wrong. Nothing tested it until now.
+# ===========================================================================
+def test_template_drift():
+    from scout.tools.template_guard import contradiction
+
+    # ---- the real drift cases, transcribed from the tracker ---------------
+    MUST_BLOCK = [
+        ("Prepare director consent form (non group member) for Win Win Tint",
+         "Individual Shareholder Consent Form.docx", "director asked, shareholder offered"),
+        ("Prepare director consent form (non group member) for Min Min",
+         "Director Consent Form - Group Member Appointment.docx", "non-group asked, group offered"),
+        ("Prepare a shareholder consent form for Soe Moe Thu",
+         "Director Consent Form - Non-Group Member Appointment.docx", "shareholder asked, director offered"),
+        ("Prepare resignation letter of Daw Win Win Tint from City Holdings",
+         "Shareholders Resolution In Writing - Director Appointment.docx", "resignation asked, appointment offered"),
+        ("Prepare a corporate shareholder consent for Pahtama Group",
+         "Individual Shareholder Consent Form.docx", "corporate asked, individual offered"),
+    ]
+    for req, tpl, why in MUST_BLOCK:
+        check(f"U30a-{why[:22]}", f"refuses: {why}", contradiction(req, tpl) is not None, f"{tpl} <- {req[:50]}")
+
+    # ---- and it must NOT get in the way -----------------------------------
+    # A guard that blocks correct work is worse than no guard: it trains people
+    # to click through it. Silence on either side is never a contradiction.
+    MUST_ALLOW = [
+        ("Prepare director consent form (non group member) for Min Min",
+         "Director Consent Form - Non-Group Member Appointment.docx", "the matching template"),
+        ("Prepare a shareholder consent form for Soe Moe Thu",
+         "Individual Shareholder Consent Form.docx", "shareholder asked, shareholder offered"),
+        ("Create AGM minutes for City Holdings", "Annual General Meeting Minutes.docx", "no axis mentioned"),
+        ("Prepare shareholders resolution for resignation and appointment of directors",
+         "Shareholders Resolution In Writing - Director Resignation and Appointment.docx",
+         "BOTH sides asked — a real template, must not be read as a clash"),
+        ("Prepare a document for City Holdings",
+         "Notice of Calling for Annual General Meeting.docx", "request says nothing"),
+        ("Prepare AGM minutes",
+         "Shareholders Resolution In Writing for Annual General Meeting.docx", "no discriminator either side"),
+        ("", "Director Consent Form - Group Member Appointment.docx", "no request text at all"),
+    ]
+    for req, tpl, why in MUST_ALLOW:
+        check(f"U30b-{why[:22]}", f"allows: {why}", contradiction(req, tpl) is None,
+              f"wrongly blocked {tpl} <- {req[:50]!r}")
+
+    # ---- the guard is wired into generation, not just defined -------------
+    import ast as _ast
+
+    src = (REPO / "scout" / "tools" / "smart_doc.py").read_text(encoding="utf-8")
+    tree = _ast.parse(src)
+    gen = next(
+        (n for n in _ast.walk(tree)
+         if isinstance(n, (_ast.FunctionDef, _ast.AsyncFunctionDef)) and n.name == "generate_document"),
+        None,
+    )
+    check("U30c", "generate_document is present", gen is not None)
+    if gen is not None:
+        called = {x.func.id for x in _ast.walk(gen) if isinstance(x, _ast.Call) and isinstance(x.func, _ast.Name)}
+        check(
+            "U30d",
+            "generation consults the drift guard before it writes anything",
+            "_check_template_drift" in called,
+            "a guard nothing calls is a guard that does not exist",
+        )
+
+    # ---- the request text must come from the RUN, not from an argument ----
+    # ★ An argument would be filled in by the model, and the model is the thing
+    # being checked — a paraphrase cannot contradict the template its author
+    # chose. It has to be the user's raw words or nothing.
+    fn = next(
+        (n for n in _ast.walk(tree)
+         if isinstance(n, _ast.FunctionDef) and n.name == "_latest_request_text"), None)
+    check("U30e", "the request text is read from the run record", fn is not None)
+    if fn is not None:
+        sql = " ".join(
+            n.value.lower() for n in _ast.walk(fn)
+            if isinstance(n, _ast.Constant) and isinstance(n.value, str)
+        )
+        check("U30f", "it reads the stored run input", "agno_sessions" in sql and "input_content" in sql, sql[:80])
+
+
 def main():
     for fn in (
         test_placeholders,
@@ -2719,6 +2804,7 @@ def main():
         test_tool_result_shape,
         test_write_boundary,
         test_resume_receive,
+        test_template_drift,
         test_structural_contracts,
     ):
         try:

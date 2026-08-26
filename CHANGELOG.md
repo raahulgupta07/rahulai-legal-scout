@@ -2,6 +2,60 @@
 
 All notable changes to Legal Scout.
 
+## [1.2.62] — 2026-08-26
+
+### Added — a guard against the wrong legal instrument
+
+The worst defect this product has produced is not a missing field. Roughly two
+runs in eleven on the client's tracker, `generate_document` was called with a
+template that contradicted the request:
+
+    request:  "director consent form (non group member) for Win Win Tint"
+    call:     generate_document(template_name="Individual Shareholder Consent Form.docx")
+
+A Shareholder Consent is not a Director Consent — different thing consented to,
+different signatory, different filing. It comes out filled correctly and looking
+right, which is exactly why nobody catches it. Nothing tested it.
+
+`scout/tools/template_guard.py` refuses a template that states the OPPOSITE of
+the request on an axis where the two are different instruments: director vs
+shareholder, group vs non-group, resignation vs appointment, individual vs
+corporate.
+
+It is deliberately one-sided. It does not choose a template — it blocks a
+clearly wrong one, which is a far smaller and more reliable job than picking the
+right one. Silence on either side is never a contradiction, so an ambiguous
+request behaves exactly as before, and asserting BOTH sides is not a clash
+either ("resignation and appointment" is a real template the firm uses).
+
+**The request text is read from the stored run record, never taken as an
+argument.** An argument would be filled in by the model, and the model is the
+thing being checked — a paraphrase cannot contradict the template its own author
+picked. It is the user's raw words or nothing, and "nothing" means proceed.
+
+A guard that breaks must not break generation: every failure path returns "no
+opinion" and the document is produced as before.
+
+### Verified
+
+`U30a`–`U30f`, 16 checks. All five real drift cases from the tracker are
+refused; seven legitimate requests — including the matching template, an
+unrelated request, and the both-sides "resignation and appointment" case — pass
+through untouched. Driven end to end through the real tool against a real
+session row: the wrong template is refused with a message naming both options,
+the right one proceeds to the ordinary signatory picker.
+
+Full sweep unchanged: units 284, `tracker_layer1` 25/25, `tracker_layer2` 30,
+`tracker_layer3` 16, `tracker_fill` 52.
+
+### Note on A2b
+
+`tracker_layer1` A2b — *Notice of AGM to Shareholders offers people to pick* —
+fails on the AWS box and **passes locally, 25/25**. The deployed copy of that
+template has been hand-edited on the server (30,807 bytes against 26,510 in
+git). So it is a data problem with that one file, not a code defect; it needs
+the committed copy restored once the firm confirms which version is theirs.
+
 ## [1.2.61] — 2026-08-26
 
 ### Fixed — answering a question card now continues the run
