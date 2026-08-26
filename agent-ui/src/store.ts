@@ -138,9 +138,32 @@ export const useStore = create<Store>()(
     {
       name: 'endpoint-storage',
       storage: createJSONStorage(() => localStorage),
-      partialize: (state) => ({
-        selectedEndpoint: state.selectedEndpoint
-      }),
+
+      // ★★★ `selectedEndpoint` is NOT persisted, and must not be.
+      //
+      // It is DEFINED as `window.location.origin` (see the default above), so
+      // storing it can only ever record where the app happened to be opened
+      // FIRST in a given browser — and then force every later visit to talk to
+      // that origin instead of the one it is being served from.
+      //
+      // Measured on the AWS deployment: the app had been opened once at
+      // http://<ec2-ip>:3001, which pinned that value; afterwards, on
+      // https://legalscoutagent.citygpt.xyz, every call built from this field
+      // (/agents, /sessions, the status probe) went to the old origin and was
+      // blocked as mixed content, while calls built relatively (/api/*) kept
+      // working. The result was a page that polled happily, never loaded the
+      // agent list, and left the composer permanently disabled with no error —
+      // and the server logged nothing, because it was never asked. Confirmed
+      // from the server side: zero /agents requests during the whole session.
+      //
+      // `version: 1` matters as much as the partialize change. Without the
+      // bump, browsers that already hold the bad value keep rehydrating it and
+      // stay broken; bumping it makes zustand discard the old persisted state
+      // outright, so an affected browser repairs itself on the next load with
+      // nobody having to clear anything by hand.
+      version: 1,
+      partialize: () => ({}),
+
       onRehydrateStorage: () => (state) => {
         state?.setHydrated?.()
       }

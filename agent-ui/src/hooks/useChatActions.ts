@@ -23,13 +23,34 @@ const useChatActions = () => {
   const [teamId, setTeamId] = useQueryState('team')
   const [, setDbId] = useQueryState('db_id')
 
+  /**
+   * Reachability of the backend, retried before giving up.
+   *
+   * ★ This used to swallow the failure and return 503 once, and everything
+   * downstream is gated on `status === 200`: no agent is fetched, none is
+   * selected, and the composer disables itself with the placeholder "Select an
+   * agent to start". No toast, no console entry, no retry — so a single blip
+   * at page load left a user staring at a dead input on a page that otherwise
+   * looked signed in, with the only cure being a reload nobody knew to do.
+   *
+   * Two changes: retry a couple of times with a short backoff, so a restart or
+   * a momentary network stall recovers on its own; and when it really is
+   * unreachable, SAY so instead of failing silently.
+   */
   const getStatus = useCallback(async () => {
-    try {
-      const status = await getStatusAPI(selectedEndpoint, authToken)
-      return status
-    } catch {
-      return 503
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        return await getStatusAPI(selectedEndpoint, authToken)
+      } catch (error) {
+        if (attempt === 2) {
+          console.error('Could not reach Legal Scout:', error)
+          toast.error('Could not reach Legal Scout — reload to try again')
+          return 503
+        }
+        await new Promise((r) => setTimeout(r, 400 * (attempt + 1)))
+      }
     }
+    return 503
   }, [selectedEndpoint, authToken])
 
   const getAgents = useCallback(async () => {

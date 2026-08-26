@@ -2,6 +2,50 @@
 
 All notable changes to Legal Scout.
 
+## [1.2.53] — 2026-08-26
+
+### Fixed
+
+- **A pinned API endpoint left the composer permanently dead, and the server
+  never heard about it.** `store.ts` persisted `selectedEndpoint` to
+  localStorage, but that field is *defined* as `window.location.origin` — so
+  persisting it only ever recorded where the app happened to be opened FIRST in
+  a given browser, and then forced every later visit to talk to that origin
+  instead of the one serving it.
+
+  Measured on the AWS deployment. The app had been opened once at
+  `http://<ec2-ip>:3001`, pinning that value; afterwards, on
+  `https://legalscoutagent.citygpt.xyz`:
+
+  | call | URL built from | result |
+  |---|---|---|
+  | `/api/knowledge/train-job`, `/api/email/queued` | `NEXT_PUBLIC_API_URL \|\| ""` → relative | **200** |
+  | `/agents`, `/sessions`, the status probe | `selectedEndpoint` → absolute | blocked as mixed content |
+
+  So the page polled happily while the agent list never loaded, and the
+  composer disabled itself with "Select an agent to start". The server side
+  confirms it: **zero `/agents` requests** in the whole window around the
+  report, while `/api/*` calls from the same tab were logging 200s. It was
+  never refused — it was never asked.
+
+  `selectedEndpoint` is no longer persisted. `version: 1` on the store is as
+  load-bearing as that: without the bump, browsers already holding the bad
+  value keep rehydrating it and stay broken, so the bump makes zustand discard
+  the old state and an affected browser repairs itself on the next load with
+  nobody clearing anything by hand.
+
+  Verified both ways in a real browser against a deliberately poisoned value:
+  pre-fix build → composer disabled, placeholder "Select an agent to start",
+  bad value retained; fixed build → storage rewritten to `{"state":{}}`, agent
+  selected, composer enabled.
+
+- **A momentary blip at page load stranded the user with no explanation.**
+  `getStatus()` caught its own failure, returned 503 once, and everything
+  downstream gates on `status === 200` — no toast, no console entry, no retry.
+  Now retried three times with a short backoff, and if it truly cannot reach
+  the backend it says so instead of leaving a dead input on a page that looks
+  signed in.
+
 ## [1.2.52] — 2026-08-26
 
 Phase 4, the last of the sign-in work: **Settings → Authentication**. Every
