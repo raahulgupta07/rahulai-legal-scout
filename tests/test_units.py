@@ -613,6 +613,107 @@ def test_one_resolver_three_views():
 
 
 # ===========================================================================
+# U33 The card must not suggest what the system cannot know
+#     Measured 2026-08-27. The register holds a name, an NRC/passport, a
+#     nationality and a date of birth — and nothing else, for all 9 people on
+#     file. Country of residence, home address, phone and email are empty for
+#     every one of them, which is exactly why they are asked.
+#
+#     The model, composing the question, offered "Myanmar" as a one-click chip
+#     for COUNTRY OF RESIDENCE, inferred from the nationality it could see. The
+#     drafting skill forbids that in as many words: "If it is missing for a
+#     signatory, ask; do not infer it from nationality." A Myanmar national
+#     resident in Singapore has a different answer, and the consent form states
+#     where the director RESIDES.
+#
+#     The card is the only place these answers are given, so it is the only
+#     place the suggestion can be prevented. The rule is tested by RUNNING the
+#     card's own regex, not by checking that a line exists.
+# ===========================================================================
+def test_card_suggests_nothing_unknowable():
+    card = Path(__file__).resolve().parent.parent / "agent-ui/src/components/chat/AskUserCard.tsx"
+    if not card.exists():
+        skip("U33", "card rule", f"{card} not present in this tree")
+        return
+    body = card.read_text()
+
+    m = re.search(r"const UNKNOWABLE_FACT_RE\s*=\s*\n?\s*/(.+?)/i", body, re.DOTALL)
+    check("U33a", "the card declares the unknowable-fact rule", bool(m), "UNKNOWABLE_FACT_RE not found")
+    if not m:
+        return
+
+    # The TS source doubles its backslashes; read it as the regex the browser
+    # actually compiles.
+    pattern = re.compile(m.group(1).replace("\\\\", "\\"), re.IGNORECASE)
+
+    for cid, text in [
+        ("U33b", "Country of residence?"),
+        ("U33c", "COUNTRY OF RESIDENCE?"),
+        ("U33d", "What is the director's residential address?"),
+        ("U33e", "Contact phone number?"),
+        ("U33f", "Email address?"),
+        ("U33g", "DIRECTOR'S RESIDENTIAL ADDRESS?"),
+    ]:
+        check(cid, f"chips are dropped for {text!r}", bool(pattern.search(text)),
+              "the card would still offer a guessed answer")
+
+    # It must NOT swallow questions that legitimately carry options — blocking
+    # those would break the verified template-choice and approval flows.
+    for cid, text in [
+        ("U33h", "Which template did you mean?"),
+        ("U33i", "Generate the Director Consent Form now?"),
+        ("U33j", "Where is the meeting held?"),
+        ("U33k", "Execution date of the consent form?"),
+        ("U33l", "What is the director's nationality?"),
+    ]:
+        check(cid, f"options survive for {text!r}", not pattern.search(text),
+              "a legitimate chip question would lose its options")
+
+    # --- the rule is applied, not merely declared -------------------------
+    check(
+        "U33m",
+        "the card strips options before rendering",
+        "isUnknowableFact(q)" in body and "options: undefined" in body,
+        "UNKNOWABLE_FACT_RE is declared but never applied to the questions",
+    )
+
+    # --- every date box opens on today, and stays editable ----------------
+    # Scoped to the SEED block on purpose. Checking the whole file for
+    # `looksLikeDateQuestion(...)` survived its own mutation — the same call
+    # also appears in `isDateQuestion` further down, so narrowing the seed back
+    # to `input_type === 'date'` left the string in place and the case green.
+    seed_block = body.split("const [freeText")[1].split("const [manualEntry")[0] if "const [freeText" in body else ""
+    check(
+        "U33n",
+        "EVERY date question is seeded with today, not just declared ones",
+        "looksLikeDateQuestion(question.text, question.id)" in seed_block
+        and "seed[question.id] = todayISO()" in seed_block,
+        "date questions are no longer pre-filled with the current date",
+    )
+    check(
+        "U33o",
+        "the seeded date remains editable",
+        "manualEntry" in body,
+        "the card no longer offers a way to type a date by hand",
+    )
+
+    # --- the model is told the same thing at the tool boundary ------------
+    import scout.tools.ask_questions as aqm
+
+    fn = aqm.ask_questions
+    # `@tool` wraps the function, and the WRAPPER carries a docstring of its
+    # own — so `fn.__doc__` is truthy and reading it first silently tests the
+    # wrong text. The model is shown `entrypoint.__doc__`.
+    doc = getattr(getattr(fn, "entrypoint", None), "__doc__", "") or fn.__doc__ or ""
+    check(
+        "U33p",
+        "the tool tells the model not to offer these options",
+        "country of residence" in doc.lower() and "free text" in doc.lower(),
+        "ask_questions no longer instructs the model against inferred options",
+    )
+
+
+# ===========================================================================
 # U6  Party coercion — whatever a picker or the model hands back
 # ===========================================================================
 def test_party_coercion():
@@ -3189,6 +3290,7 @@ def main():
         test_template_drift,
         test_bare_person_attributes,
         test_one_resolver_three_views,
+        test_card_suggests_nothing_unknowable,
         test_structural_contracts,
     ):
         try:

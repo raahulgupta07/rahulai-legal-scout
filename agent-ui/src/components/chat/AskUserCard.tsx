@@ -15,6 +15,33 @@ import type {
 /** Sentinel for the "Other…" choice; the real answer is the typed text. */
 const OTHER = '__other__'
 
+/**
+ * Facts about a person that this system cannot know, and must not suggest.
+ *
+ * The People register holds a name, an NRC/passport, a nationality and a date
+ * of birth — nothing else. Country of residence, home address, personal phone
+ * and personal email are not in a DICA extract and are empty for every person
+ * on file, which is why they are asked at all.
+ *
+ * The model, composing the question, offered "Myanmar" as a one-click chip for
+ * COUNTRY OF RESIDENCE — inferred from the nationality it could see. The legal
+ * skill says the opposite in as many words: "If it is missing for a signatory,
+ * ask; do not infer it from nationality." A Myanmar national resident in
+ * Singapore has a different answer, and only one of the two is right on a filed
+ * consent form.
+ *
+ * A chip the user clicks without reading has the same effect as inferring the
+ * value outright, so the chips are dropped here and the question falls back to
+ * a plain box. The card is the only place these answers are given, which makes
+ * it the only place the suggestion can actually be prevented.
+ */
+const UNKNOWABLE_FACT_RE =
+  /countr(?:y|ies)\s+of\s+residence|residential\s+address|home\s+address|\bresides?\s+in\b|personal\s+(?:phone|email)|contact\s+(?:phone|number|email)|phone\s+number|email\s+address/i
+
+const isUnknowableFact = (question: AskUserQuestion): boolean =>
+  UNKNOWABLE_FACT_RE.test(question.text || '') ||
+  UNKNOWABLE_FACT_RE.test((question.id || '').replace(/_/g, ' '))
+
 interface AskUserCardProps {
   request: AskUserRequest
   /** Only called while the card is live. */
@@ -27,8 +54,21 @@ interface AskUserCardProps {
 }
 
 const AskUserCard = ({ request, onSubmit, disabled }: AskUserCardProps) => {
-  const { questions, status } = request
+  const { questions: authoredQuestions, status } = request
   const readOnly = disabled === true || status !== 'pending'
+
+  // Drop suggested answers for facts the system cannot know. The question
+  // survives; only the chips go, so the user types what is true instead of
+  // clicking what was guessed.
+  const questions = useMemo(
+    () =>
+      authoredQuestions.map((q) =>
+        q.options?.length && isUnknowableFact(q)
+          ? { ...q, options: undefined, allow_other: undefined }
+          : q
+      ),
+    [authoredQuestions]
+  )
 
   // Single-select: question id -> chosen option (or OTHER).
   const [singlePick, setSinglePick] = useState<Record<string, string>>({})
@@ -41,7 +81,23 @@ const AskUserCard = ({ request, onSubmit, disabled }: AskUserCardProps) => {
     const seed: Record<string, string> = {}
     questions.forEach((question) => {
       if (question.options?.length) return
-      if (question.default_value === 'today') seed[question.id] = todayISO()
+      // Every date box opens on today, not just the ones the model marked
+      // `default: "today"`. Asked for directly: the calendar should start at
+      // the current date and stay editable.
+      //
+      // This RELAXES a deliberate rule — the tool's own guidance reads "Never
+      // on an effective or resignation date: a pre-filled box that the user
+      // accepts without looking would put today's date into a signed legal
+      // instrument." The seeded value is visible in the box and the user still
+      // has to submit, so it is a shown default rather than a silent one, but
+      // the exposure is real and is recorded here on purpose.
+      if (
+        question.default_value === 'today' ||
+        question.input_type === 'date' ||
+        looksLikeDateQuestion(question.text, question.id)
+      ) {
+        seed[question.id] = todayISO()
+      }
     })
     return seed
   })

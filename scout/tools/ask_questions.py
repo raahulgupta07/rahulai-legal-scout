@@ -385,6 +385,15 @@ def ask_questions(questions_json: str, answers: str = "") -> str:
     pre-filled box that the user accepts without looking would put today's
     date into a signed legal instrument.
 
+    NEVER offer "options" for a fact about a person that the register does not
+    hold — country of residence, residential address, personal phone, personal
+    email. The register holds a name, an NRC/passport, a nationality and a date
+    of birth, and nothing else; those four are asked precisely because they are
+    empty. Offering "Myanmar" as a chip for country of residence infers it from
+    nationality, which the drafting rules forbid in as many words — a Myanmar
+    national resident abroad has a different answer, and the consent form states
+    where the director RESIDES. Ask these as free text.
+
     Args:
         questions_json: JSON array of 1-4 question objects (schema above).
         answers: Filled in by the user from the chat card. Never set this yourself.

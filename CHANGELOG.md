@@ -2,6 +2,63 @@
 
 All notable changes to Legal Scout.
 
+## [1.2.66] — 2026-08-27
+
+### Fixed — the card stopped suggesting what the system cannot know
+
+The People register holds four things per person: name, NRC/passport,
+nationality, date of birth. Measured on the live box, all 9 people have all
+four — and `residential_address`, `country_of_residence`, `phone`, `email`,
+`father_name` and `business_occupation` are empty for every one of them. They
+are empty because a DICA extract does not carry them; the director object it
+publishes has eight keys and none of those are among them.
+
+That is why those fields are asked. But the model, composing the question,
+offered **"Myanmar" as a one-click chip for COUNTRY OF RESIDENCE** — inferred
+from the nationality it could see. The drafting skill forbids exactly this, in
+as many words: "If it is missing for a signatory, ask; do not infer it from
+nationality." A Myanmar national resident in Singapore has a different answer,
+and the consent form states where the director RESIDES.
+
+- **Chips are dropped for facts the register cannot hold** — country of
+  residence, residential address, personal phone, personal email. The question
+  survives; only the suggestion goes, so the user types what is true instead of
+  clicking what was guessed. Enforced in the card, because the card is the only
+  place these answers are given. The tool now tells the model the same thing, so
+  it stops writing them in the first place.
+
+- **Every date box opens on today** and stays editable, rather than only the
+  ones the model marked `default: "today"`.
+
+  ⚠ This RELAXES a deliberate rule. The tool's own guidance reads: "Never on an
+  effective or resignation date: a pre-filled box that the user accepts without
+  looking would put today's date into a signed legal instrument." Asked for
+  directly, and implemented as a SHOWN default — the value is visible in the box
+  and the user still has to submit — but the exposure is real: an execution date
+  accepted without reading is now today's date rather than an empty box that
+  would have stopped the run.
+
+### Notes
+
+Admin editing of those six fields already worked and was verified end to end
+rather than assumed: writing an address, country, phone and email onto a
+director through `PUT /api/people/{id}` took that document from **6/11 to
+10/11**, leaving only `date` outstanding — which is a choice, not a stored fact.
+The demo values were reverted afterwards. That is the loop worth knowing about:
+fill the register once per director and every future consent form for that
+person stops asking.
+
+`U33` runs the card's OWN regex against real question text rather than checking
+that a line exists, and asserts that legitimate chip questions — template
+choice, approval, meeting location, nationality — keep their options.
+
+Two cases failed their first mutation test and were rewritten. `U33n` asserted a
+call that also appears elsewhere in the file, so narrowing the date seeding back
+left it green; it is now scoped to the seed block. `U33p` read `__doc__` off the
+`@tool` WRAPPER, which carries a docstring of its own, so it was testing the
+wrong text entirely — it now reads `entrypoint.__doc__`, which is what the model
+is actually shown.
+
 ## [1.2.65] — 2026-08-27
 
 ### Fixed — the panel was computing a different, wrong answer
