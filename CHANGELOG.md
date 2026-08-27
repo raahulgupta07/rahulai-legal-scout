@@ -2,6 +2,72 @@
 
 All notable changes to Legal Scout.
 
+## [1.2.71] — 2026-08-27
+
+### Fixed — a placeholder hidden inside a tracked change is never filled
+
+A finished notice to shareholders went out reading
+
+    Name: [director_name]
+
+on its signature line. Found by sweeping all 43 chat sessions from today and
+unzipping every `.docx` they produced: 2 of 16 carried an unfilled placeholder.
+
+`paragraph.runs` and `paragraph.text` return only the runs that are DIRECT
+children of `<w:p>`. Text inserted with Track Changes on lives in
+`<w:ins><w:r>…`, one level deeper, so neither sees it — while Word renders it
+perfectly normally. The installed `Notice of Annual General Meeting to
+Shareholders.docx` (30,807 bytes, hand-edited) carries **8 `<w:ins>` and 2
+`<w:del>` blocks**, and four placeholders live inside the insertions.
+
+Three separate things were blind to them, all for the same reason:
+
+- **the fill** — could not replace what it could not see, so the placeholder
+  printed raw;
+- **the unfilled-placeholder audit** — reported the document clean;
+- **training** — the trained mapping holds 8 fields where the document has 11,
+  which is why `shareholder_1/2/3_name` were never even asked for.
+
+All three now read `paragraph_text()`, which walks every run Word renders.
+`<w:del>` stays excluded on purpose: Word does not render deleted text, so
+filling it writes into something nobody sees and counting it asks the user for
+a field that does not exist.
+
+Measured on that template after the fix: **raw placeholders 4 → 0**, and
+`[shareholder_1_name]`, `[shareholder_2_name]`, `[shareholder_3_name]` now fill
+with the chosen people.
+
+### Added — a template carrying unaccepted revisions says so
+
+The same template is broken in a way no fill can rescue. A reviewer re-typed
+`[director_name]` with Track Changes on and never deleted the original:
+
+    <w:r>Name: [director_name]</w:r>
+    <w:ins author="CH Legal" date="2025-12-29">[ director_name]</w:ins>
+
+Word renders both. Fill both and the line reads "Name: MIN MINMIN MIN"; fill
+neither and it reads "Name: [director_name]". There is no reading of that file
+that produces a correct document.
+
+So generation now warns — in the result the user sees, not only the log —
+naming the revision counts and their author, with the fix: open the template in
+Word, accept or reject the changes, re-upload. The document is still produced;
+refusing outright would strand the firm on a template only they can repair.
+
+Auto-accepting is deliberately NOT done: it rewrites the firm's template and
+discards a lawyer's pending edit. That is their decision, not this system's.
+
+### Notes
+
+Two of this release's own guards failed their first mutation test and were
+rewritten. `U39i` scanned the fill for `paragraph.text` and matched the COMMENT
+above the fix explaining what `paragraph.text` cannot see — the fourth source
+check today to read its own documentation. `U39d` built its deleted run with
+`<w:delText>`, which python-docx ignores anyway, so the case passed with the
+exclusion removed and proved nothing; it now uses a plain `<w:t>` inside the
+deletion, which makes the exclusion the only thing standing between the fill
+and text Word does not render.
+
 ## [1.2.70] — 2026-08-27
 
 ### Fixed — one form, one card

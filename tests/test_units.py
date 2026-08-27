@@ -1217,6 +1217,108 @@ def test_one_card_holds_the_whole_form():
 
 
 # ===========================================================================
+# U39 Placeholders hidden inside tracked changes
+#     A finished notice to shareholders went out reading
+#
+#         Name: [director_name]
+#
+#     on its signature line. Measured 2026-08-27 on the installed
+#     `Notice of Annual General Meeting to Shareholders.docx` (30,807 bytes):
+#     the file carries 8 <w:ins> and 2 <w:del> blocks — unaccepted tracked
+#     changes — and FOUR placeholders live inside the insertions.
+#
+#     `paragraph.runs` and `paragraph.text` return only runs that are DIRECT
+#     children of <w:p>. A run inside <w:ins> is one level deeper, so neither
+#     saw them; Word renders them perfectly normally. The fill could not
+#     replace what it could not see, the unfilled-placeholder audit could not
+#     flag it, and TRAINING missed them too — the trained mapping holds 8
+#     fields where the document has 11.
+#
+#     <w:del> is the opposite case and must stay excluded: Word does not render
+#     deleted text, so filling it writes into something nobody sees and
+#     counting it asks the user for a field that does not exist.
+# ===========================================================================
+def test_tracked_changes_are_visible_to_the_fill():
+    from docx import Document
+    from docx.oxml.ns import qn
+
+    import scout.tools.placeholders as ph
+
+    for name in ("visible_runs", "paragraph_text", "tracked_changes"):
+        check(f"U39_{name}", f"placeholders exposes {name}", callable(getattr(ph, name, None)),
+              f"{name} is missing")
+    if not all(callable(getattr(ph, n, None)) for n in ("visible_runs", "paragraph_text", "tracked_changes")):
+        return
+
+    # --- build a paragraph with the exact shape found in the live template ---
+    doc = Document()
+    p = doc.add_paragraph()
+    p.add_run("Name: ")
+    ins = p._p.makeelement(qn("w:ins"), {})
+    ins.set(qn("w:author"), "CH Legal")
+    run_el = p._p.makeelement(qn("w:r"), {})
+    t = p._p.makeelement(qn("w:t"), {})
+    t.text = "[director_name]"
+    run_el.append(t)
+    ins.append(run_el)
+    p._p.append(ins)
+
+    eq("U39a", "paragraph.text cannot see a tracked insertion", p.text, "Name: ")
+    eq("U39b", "paragraph_text can", ph.paragraph_text(p), "Name: [director_name]")
+    check("U39c", "and the run is offered for filling",
+          any("[director_name]" in (x.text or "") for x in ph.visible_runs(p)),
+          "visible_runs does not return the inserted run, so the fill cannot replace it")
+
+    # --- a DELETION must stay invisible ----------------------------------
+    p2 = doc.add_paragraph()
+    p2.add_run("Kept ")
+    dele = p2._p.makeelement(qn("w:del"), {})
+    dr = p2._p.makeelement(qn("w:r"), {})
+    # A plain <w:t> inside the deletion, NOT <w:delText>. The first version of
+    # this case used delText and survived its own mutation: python-docx's
+    # Run.text reads only <w:t>, so the text was empty whatever the exclusion
+    # did, and the case proved nothing. This shape makes the exclusion the only
+    # thing standing between the fill and text Word does not render.
+    dt = p2._p.makeelement(qn("w:t"), {})
+    dt.text = "[gone_field]"
+    dr.append(dt)
+    dele.append(dr)
+    p2._p.append(dele)
+    check("U39d", "deleted text is not offered for filling",
+          "[gone_field]" not in ph.paragraph_text(p2),
+          "paragraph_text includes tracked DELETIONS, which Word does not render")
+
+    # --- the integrity check names the problem ----------------------------
+    rev = ph.tracked_changes(doc)
+    check("U39e", "unaccepted revisions are reported", bool(rev), "tracked_changes found nothing in a document that has some")
+    check("U39f", "and the author is named", "CH Legal" in (rev.get("authors") or []),
+          f"authors not reported: {rev}")
+    eq("U39g", "a clean document reports nothing", ph.tracked_changes(Document()), {})
+
+    # --- the fill and the audit actually use it --------------------------
+    import inspect
+
+    import scout.tools.smart_doc as sd
+
+    fill_src = inspect.getsource(sd._fill_paragraph_highlighted)
+    check("U39h", "the fill walks visible runs", "visible_runs(paragraph)" in fill_src,
+          "the fill still reads paragraph.runs, so an inserted placeholder is never replaced")
+    # Comments STRIPPED — this case failed against correct code because the
+    # comment ABOVE the fix explains what `paragraph.text` cannot see, and the
+    # scan matched that explanation. Fourth source check today to read its own
+    # documentation; strip first, always.
+    fill_code = "\n".join(
+        line.split("#", 1)[0] for line in fill_src.splitlines() if not line.strip().startswith("#")
+    )
+    check("U39i", "and never re-reads paragraph.text for its match", "paragraph.text" not in fill_code,
+          "the fill still matches against paragraph.text")
+
+    mod = inspect.getsource(sd)
+    check("U39j", "generation warns about unaccepted revisions", "tracked_changes(filled_doc)" in mod,
+          "nothing tells the firm their template carries tracked changes")
+
+
+# ===========================================================================
 # U6  Party coercion — whatever a picker or the model hands back
 # ===========================================================================
 def test_party_coercion():
@@ -3808,6 +3910,7 @@ def main():
         test_stall_guard_sees_unpaid_debt,
         test_pick_refreshes_the_panel,
         test_one_card_holds_the_whole_form,
+        test_tracked_changes_are_visible_to_the_fill,
         test_structural_contracts,
     ):
         try:

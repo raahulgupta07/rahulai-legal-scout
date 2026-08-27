@@ -38,7 +38,10 @@ from scout.tools.placeholders import (
     PLACEHOLDER_PATTERN,
     is_empty_placeholder,
     new_empty_counter,
+    paragraph_text,
     placeholder_name,
+    tracked_changes,
+    visible_runs,
 )
 from scout.tools.repeat_regions import _is_corporate
 from scout.tools.slot_resolver import (
@@ -266,7 +269,12 @@ def extract_placeholders_from_template(template_path: Path) -> dict[str, Any]:
     empty_counter = new_empty_counter()
 
     for idx, paragraph in enumerate(doc.paragraphs):
-        text = paragraph.text
+        # Tracked insertions count: Word renders them, so a placeholder inside
+        # one is a real field. Reading `paragraph.text` here is why the trained
+        # mapping for the installed Notice of AGM held 8 fields where the
+        # document has 11 — the three it missed were the ones that later
+        # printed raw.
+        text = paragraph_text(paragraph)
         matches = PLACEHOLDER_PATTERN.findall(text)
         for match in matches:
             placeholder = placeholder_name(match, empty_counter)
@@ -1078,7 +1086,11 @@ def validate_filled_document(document_path: Path, all_placeholders: list | None 
     unfilled_locations = []
 
     for paragraph in doc.paragraphs:
-        text = paragraph.text
+        # Same reason as the extraction above: an unfilled placeholder hiding in
+        # a tracked insertion is exactly the one this audit exists to catch, and
+        # reading `.text` made it invisible — the validation reported a clean
+        # document while `[director_name]` sat on the signature line.
+        text = paragraph_text(paragraph)
         matches = PLACEHOLDER_PATTERN.findall(text)
         for match in matches:
             placeholder = placeholder_name(match)
@@ -1646,6 +1658,33 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
             template_path, data, template_name=template_name, company_name=company_name
         )
 
+        # A template carrying unaccepted tracked changes cannot produce a
+        # trustworthy document, and nothing about the output says so.
+        #
+        # Measured on the installed Notice of AGM: a reviewer re-typed
+        # `[director_name]` with Track Changes on and never deleted the original,
+        # so the paragraph holds it twice and Word renders both. Fill both and
+        # the signature line reads "Name: MIN MINMIN MIN"; fill neither — which
+        # is what happened before the visible-runs fix — and it reads
+        # "Name: [director_name]". No fill strategy rescues that file.
+        #
+        # So the document is still produced (refusing outright would strand the
+        # firm on a template only they can repair), and the warning names the
+        # revisions and their author so the fix is obvious: open it in Word and
+        # accept or reject the changes. Auto-accepting is NOT done here — that
+        # rewrites the firm's template and discards a lawyer's pending edit.
+        _revisions = {}
+        try:
+            _revisions = tracked_changes(filled_doc) or {}
+        except Exception as e:
+            logging.getLogger("legalscout").warning(f"tracked-change check skipped: {e}")
+        if _revisions:
+            logging.getLogger("legalscout").warning(
+                f"template '{template_name}' carries UNACCEPTED tracked changes "
+                f"{_revisions.get('revisions')} by {_revisions.get('authors')} — "
+                "text may be duplicated or missing in the generated document"
+            )
+
         # A blank nobody asked for does not get written to disk.
         #
         # `fill_template_with_validation` records every placeholder it replaced
@@ -1845,7 +1884,23 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
                 file_name=output_filename,
                 download_url=doc_url,
             ),
-            "warnings": validation.get("unfilled_placeholders", []) if not validation.get("is_valid") else [],
+            # The tracked-change warning rides here as well as in the log,
+            # because a log line is read by nobody and this is the firm's to
+            # fix: open the template in Word and accept or reject the revisions.
+            "warnings": (
+                (validation.get("unfilled_placeholders", []) if not validation.get("is_valid") else [])
+                + (
+                    [
+                        f"Template '{template_name}' contains UNACCEPTED tracked changes "
+                        f"({', '.join(f'{k}×{v}' for k, v in (_revisions.get('revisions') or {}).items())}"
+                        + (f" by {', '.join(_revisions.get('authors') or [])}" if _revisions.get("authors") else "")
+                        + "). Text may be duplicated or missing in this document. "
+                        "Open the template in Word, accept or reject the changes, and re-upload it."
+                    ]
+                    if _revisions
+                    else []
+                )
+            ),
             # Validation summary for user
             "validation_summary": {
                 "total_placeholders": validation.get("total_placeholders", 0),
@@ -2144,16 +2199,21 @@ def _fill_paragraph_highlighted(
     from docx.oxml.ns import qn
     from lxml import etree
 
-    text = paragraph.text
+    # Tracked INSERTIONS are rendered by Word but are not direct children of
+    # `<w:p>`, so `paragraph.text` and `paragraph.runs` do not see them. On the
+    # installed Notice of AGM that hid four placeholders, and the signature line
+    # went out reading "Name: [director_name]". See placeholders.visible_runs.
+    para_runs = visible_runs(paragraph)
+    text = "".join(r.text or "" for r in para_runs)
     matches = list((placeholder_pattern or PLACEHOLDER_PATTERN).finditer(text))
     if not matches:
         return
 
     # Get the formatting from the first run (to preserve font, size, etc.)
-    base_run = paragraph.runs[0] if paragraph.runs else None
+    base_run = para_runs[0] if para_runs else None
 
     # Clear existing runs
-    for run in paragraph.runs:
+    for run in para_runs:
         run.text = ""
 
     # Build segments: [("text", highlight_color), ...]
