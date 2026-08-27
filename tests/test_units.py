@@ -1128,6 +1128,95 @@ def test_pick_refreshes_the_panel():
 
 
 # ===========================================================================
+# U38 One form, one card
+#     Measured on the live box 2026-08-27, Director Consent Form (Non-Group)
+#     for CITY MART HOLDING: the panel listed FIVE outstanding fields — date,
+#     address, country of residence, phone, email — and the card asked four.
+#     `email` was never put to the user, the answers came back one short,
+#     generate_document refused it as an undeclared blank, and the run needed a
+#     second card to ask one question.
+#
+#     It worked only because the stall guard absorbs the extra round. The form
+#     is one form; the person filling it should see all of it.
+#
+#     The number lives in THREE places — the validator, the tool docstring and
+#     the system prompt — and the last two are prose that cannot interpolate a
+#     constant. So this case pins them to it. Two of them are what the MODEL
+#     reads: a prompt that still said 1-4 would cap the card at four however
+#     high the validator allowed.
+# ===========================================================================
+def test_one_card_holds_the_whole_form():
+    import inspect
+
+    import scout.agent as agent_mod
+    import scout.tools.ask_questions as aqm
+
+    cap = getattr(aqm, "MAX_QUESTIONS", None)
+    check("U38a", "the cap is a named constant", isinstance(cap, int), f"MAX_QUESTIONS is {cap!r}")
+    if not isinstance(cap, int):
+        return
+
+    # Six is the largest free-text load measured across the 15 templates.
+    check("U38b", "the cap clears the worst real template", cap >= 6,
+          f"cap is {cap}; a template needing 6 free-text answers still splits across two cards")
+    # A cap still has to exist — an unbounded call could put thirty boxes on
+    # screen, and "no limit" is not the fix for "the limit was wrong".
+    check("U38c", "but a cap still exists", cap <= 12, f"cap is {cap}, which is effectively unbounded")
+
+    # --- the validator enforces exactly that number ----------------------
+    src = inspect.getsource(aqm._validate_questions)
+    check("U38d", "the validator reads the constant, not a literal",
+          "MAX_QUESTIONS" in src and "<= 4" not in src,
+          "the validator hardcodes its own limit, so the constant is decoration")
+    eq("U38e", f"{cap} questions are accepted",
+       aqm._validate_questions([{"id": f"q{i}", "text": f"Q{i}?"} for i in range(cap)]), [])
+    check("U38f", "one more is refused",
+          bool(aqm._validate_questions([{"id": f"q{i}", "text": f"Q{i}?"} for i in range(cap + 1)])),
+          "the validator accepts more than the cap")
+
+    # --- both places the MODEL reads agree with it -----------------------
+    fn = aqm.ask_questions
+    doc = getattr(getattr(fn, "entrypoint", None), "__doc__", "") or fn.__doc__ or ""
+    check("U38g", "the tool docstring quotes the same cap", f"1-{cap}" in doc,
+          f"the docstring does not say 1-{cap}; the model will cap itself at whatever it says")
+
+    prompt = ""
+    for name in ("SYSTEM_PROMPT", "INSTRUCTIONS", "_PROMPT"):
+        v = getattr(agent_mod, name, None)
+        if isinstance(v, str) and "ask_questions" in v:
+            prompt = v
+            break
+    if not prompt:
+        prompt = Path(agent_mod.__file__).read_text()
+    check("U38h", "the system prompt quotes the same cap",
+          f"1-{cap} questions per" in prompt,
+          f"the prompt does not say 1-{cap} questions per call, so the model still splits the form")
+    check("U38i", "and tells the model to ask the whole form at once",
+          "EVERY outstanding field in ONE card" in prompt,
+          "nothing instructs the model to put the whole form on one card")
+
+    # --- raising the cap alone did NOT fix it ----------------------------
+    # Verified in the browser on 1.2.70: with room for eight the model asked
+    # four and MERGED phone and email into one box under the invented id
+    # `contact_info`. That id matches no placeholder, so the answer reaches
+    # neither field, both stay blank, and the second round happens anyway.
+    # The cap was necessary and not sufficient — the id has to BE the field.
+    check("U38j", "the schema ties a question id to the field it answers",
+          "EXACT field name" in doc or "EXACT field name" in inspect.getsource(aqm),
+          "the schema still calls `id` a free-form key, so the model invents ids like contact_info")
+    check("U38k", "and forbids merging two fields into one question",
+          "never merge two" in doc.lower() or "never merge two" in inspect.getsource(aqm).lower(),
+          "nothing stops the model asking phone and email in a single box")
+
+    import scout.tools.smart_doc as _sd
+
+    gen = inspect.getsource(_sd)
+    check("U38l", "the needs-input instruction names the id rule too",
+          "as that question's `id` VERBATIM" in gen,
+          "generate_document asks for one question per field but never says the id must be the field name")
+
+
+# ===========================================================================
 # U6  Party coercion — whatever a picker or the model hands back
 # ===========================================================================
 def test_party_coercion():
@@ -3718,6 +3807,7 @@ def main():
         test_multi_stakeholder_attributes,
         test_stall_guard_sees_unpaid_debt,
         test_pick_refreshes_the_panel,
+        test_one_card_holds_the_whole_form,
         test_structural_contracts,
     ):
         try:

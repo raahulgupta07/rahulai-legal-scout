@@ -988,7 +988,9 @@ tool. Its options render as clickable chips on an interactive card; the run
 pauses and the user answers there.
 
 **Rules:**
-- One question per decision; 1-4 questions per `ask_questions` call.
+- One question per decision; 1-8 questions per `ask_questions` call. Ask for
+  EVERY outstanding field in ONE card — a form split across two cards makes the
+  user answer, wait for a refusal, and answer again.
 - Give `options` when the choices are enumerable; add `"allow_other": true` to
   let the user type something else. Omit `options` for a free-text answer.
 - Person choices are the ONE exception, and it is ENFORCED, not advisory. Pick

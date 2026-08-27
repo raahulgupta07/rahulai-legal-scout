@@ -28,7 +28,10 @@ from agno.tools import tool
 EXPECTED_SCHEMA = {
     "questions": [
         {
-            "id": "string — stable key you will read the answer back by",
+            "id": "string — the EXACT field name this answers, e.g. \"phone\". "
+                  "One field per question: never merge two fields into one box "
+                  "under an invented id like \"contact_info\" — the answer then "
+                  "matches no placeholder and both fields stay blank",
             "text": "string — the question shown to the user",
             "options": ["optional list of choices rendered as chips"],
             "multi_select": "optional bool — allow picking more than one option",
@@ -40,13 +43,30 @@ EXPECTED_SCHEMA = {
 }
 
 
+# How many questions one card may carry.
+#
+# It was 4, and the documents need more than that. Measured on the live box
+# 2026-08-27, Director Consent Form (Non-Group) for CITY MART HOLDING: the panel
+# listed FIVE outstanding fields — date, address, country of residence, phone,
+# email — and the card asked four. `email` was never put to the user, so the
+# answers came back one short, `generate_document` refused it as an undeclared
+# blank, and the run needed a second card to ask a single question.
+#
+# It works, because the stall guard absorbs the extra round. It should not have
+# to: the form is one form, and the person filling it should see all of it.
+#
+# 8 rather than "no limit". A cap still exists to stop a runaway call dumping
+# thirty boxes on someone, and the worst real template needs six.
+MAX_QUESTIONS = 8
+
+
 def _validate_questions(questions: Any) -> list[str]:
     """Return a list of human-readable problems; empty list means valid."""
     problems: list[str] = []
     if not isinstance(questions, list):
         return ["questions_json must be a JSON array of question objects"]
-    if not (1 <= len(questions) <= 4):
-        problems.append("provide between 1 and 4 questions")
+    if not (1 <= len(questions) <= MAX_QUESTIONS):
+        problems.append(f"provide between 1 and {MAX_QUESTIONS} questions")
     for i, q in enumerate(questions):
         if not isinstance(q, dict):
             problems.append(f"question {i} must be an object")
@@ -324,7 +344,13 @@ def _blocked_instruction(blocked: list[dict[str, Any]]) -> str:
 
 @tool(requires_user_input=True, user_input_fields=["answers"])
 def ask_questions(questions_json: str, answers: str = "") -> str:
-    """Ask the user one to four structured questions in an interactive chat card.
+    """Ask the user up to eight structured questions in an interactive chat card.
+
+    Ask for EVERY outstanding field in ONE card, and give each question the
+    EXACT field name as its `id`. One field per question: never merge two into
+    one box under an invented id — an answer returned as `contact_info` matches
+    no placeholder, so `phone` and `email` both stay blank and you are asked for
+    them a second time.
 
     Use this for EVERY non-person decision: template choices, yes/no approvals,
     and missing fields. NEVER write lettered a)/b)/c) options in prose — options
@@ -343,7 +369,7 @@ def ask_questions(questions_json: str, answers: str = "") -> str:
     to use, and the name of a NEW entity not yet in any register (for example
     the proposed name of a company being incorporated).
 
-    `questions_json` is a JSON array (1-4 items) of question objects:
+    `questions_json` is a JSON array (1-8 items) of question objects:
         {
           "id":           stable key you read the answer back by (required),
           "text":         the question shown to the user (required),
@@ -395,7 +421,7 @@ def ask_questions(questions_json: str, answers: str = "") -> str:
     where the director RESIDES. Ask these as free text.
 
     Args:
-        questions_json: JSON array of 1-4 question objects (schema above).
+        questions_json: JSON array of 1-8 question objects (schema above).
         answers: Filled in by the user from the chat card. Never set this yourself.
 
     Returns:

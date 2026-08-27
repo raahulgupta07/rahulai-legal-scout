@@ -2,6 +2,64 @@
 
 All notable changes to Legal Scout.
 
+## [1.2.70] — 2026-08-27
+
+### Fixed — one form, one card
+
+`ask_questions` was capped at 4 questions. The documents need more.
+
+Measured in a real browser on the live box, Director Consent Form (Non-Group)
+for CITY MART HOLDING: the panel listed FIVE outstanding fields — date, address,
+country of residence, phone, email — and the card asked four. **`email` was
+never put to the user.** The answers came back one short, `generate_document`
+refused it as an undeclared blank, and the run needed a second card to ask a
+single question.
+
+It worked, because the stall guard shipped earlier the same day absorbs the
+extra round. It should not have to: the form is one form, and the person filling
+it should see all of it.
+
+- `MAX_QUESTIONS = 8`. Eight rather than "no limit" — a cap still has to exist
+  so a runaway call cannot put thirty boxes on screen, and the largest free-text
+  load measured across the 15 templates is six.
+
+- The number lived in THREE places: the validator, the tool docstring and the
+  system prompt. The last two are prose the model reads, and they cannot
+  interpolate a constant — a prompt still reading "1-4" would cap the card at
+  four however high the validator allowed. `U38` pins all three to the constant,
+  and the prompt now also says to ask for every outstanding field in one card.
+
+- **Raising the cap alone did not fix it.** Verified in the browser: with room
+  for eight the model asked four and MERGED phone and email into one box under
+  the invented id `contact_info`. That id matches no placeholder, so the answer
+  reached neither field, both stayed blank, and the second round happened
+  anyway. The schema had only ever called `id` a "stable key you will read the
+  answer back by" — nothing tied it to the field it answers.
+
+  The `id` must now BE the field name, one field per question, said in all three
+  places the model reads: the schema, the tool docstring, and the
+  needs-input instruction that names the missing fields. Re-verified in the
+  browser afterwards — five separate questions with ids `date`, `address`,
+  `country_of_residence`, `phone`, `email`, every one of them a real placeholder
+  in that template.
+
+The frontend needed no change: it renders whatever it is given and already
+counts "Question N of M".
+
+### Notes
+
+`U38h` is the case worth keeping. Mutation-tested by raising the validator while
+leaving the prompt at 1-4 — the suite goes red naming exactly that, which is the
+failure that would otherwise look like the fix working while nothing changed on
+screen.
+
+Also corrected today, from an earlier claim in this session: an untrained
+template stringifying a party dict into a document is real but NARROWER than
+reported. It needs a mapping-less template AND a dict in the data; dicts only
+arrive through the picker path, which requires a mapping. Verified all three
+combinations. Left unfixed deliberately — it is not reachable through the
+product, and a guard would be code for a case that cannot happen yet.
+
 ## [1.2.69] — 2026-08-27
 
 ### Fixed — a pick changes the answer, so the panel now moves with it

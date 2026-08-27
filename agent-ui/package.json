@@ -1,6 +1,6 @@
 {
   "name": "legalscout-ui",
-  "version": "1.2.69",
+  "version": "1.2.70",
   "private": true,
   "scripts": {
     "dev": "next dev -p 3001",
