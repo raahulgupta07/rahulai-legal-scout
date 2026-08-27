@@ -46,9 +46,11 @@ from scout.tools.slot_resolver import (
     collect_slot_requests,
     companion_attribute,
     current_session_scope,
+    is_identifier_placeholder,
     normalise_mapping,
     resolve_slot,
     session_scope,
+    slot_identifier,
     slot_of,
 )
 
@@ -2494,6 +2496,23 @@ def find_replacement(
                 default = config.get("default", "TBD")
 
                 if source == "slot" and slot_of(config):
+                    # An IDENTIFIER placeholder never renders a name, whatever
+                    # training labelled it. Step 5.5 mapped
+                    # `appointed_director_1_nrc` to a person slot, so this
+                    # branch handed it to resolve_slot and the N.R.C. line came
+                    # out reading "KYAW THU SOE" (measured live 2026-08-27).
+                    # slot_identifier answers from the SAME entry — the party it
+                    # selects — and returns None when nothing is on file, so the
+                    # field is asked instead of confidently wrong.
+                    if is_identifier_placeholder(placeholder):
+                        return slot_identifier(
+                            placeholder,
+                            config,
+                            data,
+                            company_name=company_name,
+                            document_id=document_id,
+                        )
+
                     resolved = resolve_slot(
                         placeholder,
                         config,

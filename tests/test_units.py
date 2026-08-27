@@ -793,6 +793,263 @@ def test_panel_watches_real_tool_names():
 
 
 # ===========================================================================
+# U35 Multiple stakeholders, and the fields that belong to each of them
+#     Measured 2026-08-27 on the live register (9 people, all with NRC /
+#     nationality / date of birth, none with address / country / phone / email).
+#
+#     Three defects, all found by scanning every template rather than the one
+#     in front of us:
+#
+#     P2 — `appointed_director_1_nrc` is TRAINED as a person NAME slot
+#          (source=slot, kind=new_director), so the slot branch rendered the
+#          NAME into an NRC field. Verified before the fix: all three NRC
+#          fields on the Corporate Shareholder Consent read "KYAW THU SOE",
+#          "MIN MIN", "WIN WIN TINT". A consent form stating
+#          "N.R.C./Passport: KYAW THU SOE" is filled, confident and wrong —
+#          strictly worse than a blank, which a reader would catch.
+#
+#     P3 — the Individual Shareholder Consent Form has ONE person, but its
+#          slot is typed `shareholder_list`, so the sole-person rule excluded
+#          it and all four of its attributes were asked from a register that
+#          held three of them.
+#
+#     P4 — `company_address` was read as a PERSON's residential address.
+#          Harmless while it fell through to a question, one slot name away
+#          from writing a director's home address into a company field.
+# ===========================================================================
+def test_multi_stakeholder_attributes():
+    # --- P4: a company is not a person -----------------------------------
+    for cid, ph in [
+        ("U35a", "company_address"),
+        ("U35b", "registered_office_address"),
+        ("U35c", "company_name"),
+    ]:
+        eq(cid, f"{ph!r} is not a person attribute", sr._attr_tail(ph), None)
+
+    # `corporate_shareholder_address` is deliberately NOT in that list. A
+    # corporate shareholder is a party, so the role reads as person-shaped and
+    # `_attr_tail` classifies it — but the party is a COMPANY, and what matters
+    # is that nothing from a person's register row can reach it. Asserted as
+    # behaviour rather than classification: the earlier version of this case
+    # demanded the stricter classification and would have forced a change that
+    # buys nothing, while breaking the corporate-party identifier path.
+    corporate_party = {
+        "name": "PAHTAMA GROUP COMPANY LIMITED",
+        "identifier": "165855078",
+        "party_type": "corporate",
+    }
+    corp_map = {
+        "corporate shareholder_1_name": {
+            "source": "slot",
+            "slot": {"kind": "attendee", "multi": False, "of": "document_company"},
+        },
+        "corporate_shareholder_1_address": {"source": "user_input", "slot": None},
+    }
+    eq(
+        "U35d",
+        "a corporate party's address never comes from the People register",
+        sr.companion_attribute(
+            "corporate_shareholder_1_address", corp_map,
+            {"corporate shareholder_1_name": corporate_party},
+        ),
+        None,
+    )
+
+    # ...but a bare one still is, or the whole fix stops working.
+    eq("U35e", "a bare address is still a person's", sr._attr_tail("address"), ("", "residential_address"))
+    eq(
+        "U35f",
+        "a role-prefixed person address still is",
+        sr._attr_tail("new_director_residential_address"),
+        ("new_director", "residential_address"),
+    )
+
+    # --- P3: one person, however the slot is typed ------------------------
+    single_list = {
+        "shareholder_name": {
+            "source": "slot",
+            "slot": {"kind": "shareholder_list", "multi": False, "of": "document_company"},
+        },
+        "nationality": {"source": "user_input", "slot": None},
+    }
+    check(
+        "U35g",
+        "a list-typed slot holding ONE person still names the bare role",
+        bool(sr.sole_person_role(single_list)),
+        "sole_person_role is empty, so a single-signatory consent form asks for what the register holds",
+    )
+
+    truly_multi = {
+        "shareholder_names": {
+            "source": "slot",
+            "slot": {"kind": "shareholder_list", "multi": True, "of": "document_company"},
+        },
+        "nationality": {"source": "user_input", "slot": None},
+    }
+    eq("U35h", "a genuinely multi slot owns no bare attribute", sr.sole_person_role(truly_multi), "")
+
+    two_people = {
+        "resigning_director_name": {
+            "source": "slot",
+            "slot": {"kind": "resigning_director", "multi": False, "of": "people_register"},
+        },
+        "new_director_name": {
+            "source": "slot",
+            "slot": {"kind": "new_director", "multi": False, "of": "people_register"},
+        },
+        "nationality": {"source": "user_input", "slot": None},
+    }
+    eq("U35i", "two people make a bare attribute ambiguous", sr.sole_person_role(two_people), "")
+
+    # --- the runtime net: one slot, but the pick resolved to SEVERAL ------
+    # `sole_person_role` reads the TEMPLATE; this reads the SELECTION. A
+    # shareholder_list slot can be typed multi=False and still have two people
+    # chosen through the card, and printing the first one's nationality beside
+    # a joined list of names is the failure this prevents.
+    a = {"name": "KYAW THU SOE", "identifier": "12/LAMANA(N)142591", "party_type": "individual"}
+    b = {"name": "MIN MIN", "identifier": "12/LATHANA(N)016603", "party_type": "individual"}
+    eq(
+        "U35j",
+        "ONE selected party answers a bare attribute",
+        sr.companion_attribute("nric", single_list, {"shareholder_name": a}),
+        "12/LAMANA(N)142591",
+    )
+    eq(
+        "U35k",
+        "TWO selected parties do not — it asks",
+        sr.companion_attribute("nric", single_list, {"shareholder_name": [a, b]}),
+        None,
+    )
+    eq(
+        "U35l",
+        "and a bare attribute is never taken from one of two person slots",
+        sr.companion_attribute("nationality", two_people, {"new_director_name": a}),
+        None,
+    )
+
+    # --- P2: an identifier placeholder may never render a name -----------
+    # Against the REAL template, because the defect lives in the TRAINED
+    # mapping: `appointed_director_1_nrc` carries source=slot with a
+    # person-NAME slot, so the slot branch rendered the name. A hand-built
+    # mapping cannot reproduce that — find_replacement reads the trained one.
+    import scout.tools.smart_doc as sd
+
+    TPL = (
+        "Corporate Shareholder Consent - Directors Resolution "
+        "for New Company Setup and Director Appointment.docx"
+    )
+    mapping = sd._get_field_mapping(TPL) or {}
+    if not mapping.get("appointed_director_1_nrc"):
+        skip("U35m", "an identifier placeholder never renders a name", f"{TPL} is not trained here")
+    else:
+        got = sd.find_replacement(
+            "appointed_director_1_nrc",
+            {"appointed_director_1_nrc": a, "director_1_name": a},
+            template_name=TPL,
+            company_name="CITY MART HOLDING COMPANY LIMITED",
+        )
+        text = "" if got is None else str(got)
+        check(
+            "U35m",
+            "an identifier placeholder never renders a person's name",
+            text != a["name"],
+            f"the NRC field resolved to {text!r} — that is the director's NAME",
+        )
+        check(
+            "U35m2",
+            "and it resolves to the identifier the picker carried",
+            text == a["identifier"] or text == "",
+            f"expected {a['identifier']!r} or blank, got {text!r}",
+        )
+
+    import inspect
+
+    body = inspect.getsource(sd.find_replacement)
+    check(
+        "U35n",
+        "the slot branch screens identifier placeholders",
+        "_attr_tail(" in body,
+        "find_replacement's slot branch no longer checks whether the placeholder wants an identifier",
+    )
+
+
+# ===========================================================================
+# U36 A turn that ends OWING a tool call is a stall, however well it reads
+#     Session 75400f45-49c5-4fb1-aa1b-d97a555ee6cd, read from ai.agno_sessions:
+#     one request took THREE runs because the model twice ended a turn without
+#     making the call its own tool result demanded, and the user typed
+#     "continue" by hand each time.
+#
+#       run 1  COMPLETED  lookup_director_candidates -> never called choose_director
+#       run 2  COMPLETED  generate_document (blank fields) -> never called ask_questions
+#       run 3  PAUSED     ask_questions   <- finally asked
+#
+#     The existing guard only fired on `chunk.content.trim() === ''`. Both
+#     stalls ended with a confident "Preview Summary" paragraph, so it never
+#     ran. Ending with polished prose is WORSE than ending silently: it looks
+#     finished, so nobody can tell the turn stalled.
+# ===========================================================================
+def test_stall_guard_sees_unpaid_debt():
+    ui = Path(__file__).resolve().parent.parent / "agent-ui/src"
+    helper = ui / "components/chat/toolDebt.ts"
+    hook = ui / "hooks/useAIStreamHandler.tsx"
+    if not helper.exists() or not hook.exists():
+        skip("U36", "stall guard", "agent-ui sources not present in this tree")
+        return
+
+    h = helper.read_text()
+    k = hook.read_text()
+
+    check("U36a", "the debt is a pure, testable helper", "export const findUnpaidToolDebt" in h,
+          "findUnpaidToolDebt is not exported, so it cannot be tested apart from the stream")
+
+    # Read STRUCTURALLY, never out of the English instruction strings — those
+    # get reworded every time the prompts are tuned, and a guard keyed to
+    # prose would go quiet the next time someone improves the wording.
+    # Comments STRIPPED first. The first version of this case failed against
+    # correct code: toolDebt.ts explains in its header comment that it must not
+    # key off `agent_instruction`, and the scan matched that explanation. A
+    # source check that reads its own documentation is measuring nothing.
+    h_code = re.sub(r"/\*.*?\*/", "", h, flags=re.DOTALL)
+    h_code = re.sub(r"^\s*//.*$", "", h_code, flags=re.MULTILINE)
+    check("U36b", "debt is read from the result shape, not the prose",
+          "agent_instruction" not in h_code,
+          "toolDebt.ts keys off agent_instruction text, which is reworded whenever prompts change")
+
+    for cid, token, why in [
+        ("U36c", "picker", "a lookup result names the picker it owes"),
+        ("U36d", "blank_fields", "an undeclared-blanks failure owes a question"),
+        ("U36e", "user_input_fields", "a needs-input failure owes a question"),
+    ]:
+        check(cid, why, token in h, f"toolDebt.ts does not look at {token}")
+
+    # A pause means the card IS on screen. Nudging there would talk over a
+    # human mid-answer and send "continue" into a run blocked on them.
+    check("U36f", "a paused run owes nothing", "paused" in h and "if (options.paused) return null" in h,
+          "the helper does not discharge the debt on a paused run")
+
+    # --- wired, not merely declared --------------------------------------
+    check("U36g", "the hook imports it", "findUnpaidToolDebt" in k,
+          "the stream handler does not import the helper")
+    check("U36h", "the debt is one of the nudge triggers", "|| !!toolDebt" in k,
+          "toolDebt is computed but never reaches shouldNudge")
+
+    # The budget is the whole safety story. Each nudge starts a NEW run with a
+    # NEW id, so a guard that reset its counter on any real text would be
+    # unbounded — and the measured stall ENDS with real text. An unbounded
+    # nudge is how the same document once got generated three times.
+    check("U36i", "text written while still owing a call does not refill the budget",
+          "isRealContent(chunk.content) && !toolDebt" in k,
+          "the nudge counter resets on prose, so the debt guard is unbounded")
+    check("U36j", "the debt guard shares the existing cap",
+          "MAX_CONSECUTIVE_NUDGES" in k and "autoContinuedRunsRef" in k,
+          "the debt guard does not reuse the per-run guard and the nudge cap")
+    check("U36k", "nothing is nudged while the user is being asked",
+          "!waitingOnUser && didToolWork" in k,
+          "the debt is computed without the waiting-on-user and tool-work gates")
+
+
+# ===========================================================================
 # U6  Party coercion — whatever a picker or the model hands back
 # ===========================================================================
 def test_party_coercion():
@@ -1313,7 +1570,16 @@ def test_structural_contracts():
         # The nudge and the out-of-retries branch must BOTH stand down when a
         # closing sentence exists, or the user gets the tool's sentence AND a
         # duplicate run.
+        # Counting `!closeFromTool &&` occurrences was the original mechanism,
+        # and it went stale the moment both branches were refactored to share a
+        # single `shouldNudge` const that carries the guard once. The INTENT —
+        # neither the nudge nor the out-of-retries branch may fire when a
+        # closing sentence exists — is unchanged, so accept either shape.
         guards = len(re.findall(r"!closeFromTool\s*&&", src))
+        if guards < 2:
+            shared = re.search(r"const\s+shouldNudge\s*=\s*\n?\s*!closeFromTool\s*&&", src)
+            if shared and len(re.findall(r"shouldNudge\s*&&", src)) >= 2:
+                guards = 2
         renders = (
             re.search(r"if\s*\(closeFromTool\)\s*\{\s*//[^\n]*\n\s*updatedContent\s*=\s*closeFromTool", src) is not None
         )
@@ -3371,6 +3637,8 @@ def main():
         test_one_resolver_three_views,
         test_card_suggests_nothing_unknowable,
         test_panel_watches_real_tool_names,
+        test_multi_stakeholder_attributes,
+        test_stall_guard_sees_unpaid_debt,
         test_structural_contracts,
     ):
         try:

@@ -827,35 +827,109 @@ PERSON_ATTR_COLUMNS: tuple[tuple[str, str], ...] = (
 )
 
 
+# Role prefixes that name a NON-PERSON entity. A placeholder whose role is one
+# of these describes the COMPANY, so it must never be answered from a person's
+# register row.
+#
+# Measured 2026-08-27: `_attr_tail("company_address")` returned
+# ("company", "residential_address") — it read the company's address as
+# somebody's HOME address. Today that only means the field falls through and is
+# asked, which is harmless; it is one slot name away from writing a director's
+# residential address into a company field, which is not.
+#
+# Matched on the WHOLE role and on its trailing word, so both `company_address`
+# and `new_company_address` are caught by the single word `company`, and
+# `registered_office_address` by `office`. Trailing POSITION digits are stripped
+# first (`company_2_address`), because a position is not the role.
+#
+# Deliberately a word list, not a substring test: `corporate_shareholder_1_nrc`
+# names a corporate MEMBER's identifier and still resolves through the person
+# path, which is where the picker's answer for that position lives. Only a role
+# that IS the entity — not one that qualifies a party — is excluded.
+_NON_PERSON_ROLE_WORDS = frozenset(
+    {
+        "company",
+        "companies",
+        "corporate",
+        "registered_office",
+        "office",
+        "new_company",
+        "holding_company",
+        "subsidiary",
+        "firm",
+        "entity",
+    }
+)
+
+
+def _role_is_non_person(role: str) -> bool:
+    """True when the role prefix names a company rather than a person."""
+    if not role:
+        return False
+    # Placeholders in this codebase are spelled with underscores AND spaces (and
+    # U+00A0, folded upstream by placeholders.placeholder_name), so normalise to
+    # one separator before splitting into words.
+    norm = re.sub(r"[\s_]+", "_", str(role).replace("\xa0", " ").strip().lower()).strip("_")
+    if not norm:
+        return False
+    if norm in _NON_PERSON_ROLE_WORDS:
+        return True
+    words = [w for w in norm.split("_") if w]
+    while words and words[-1].isdigit():
+        words.pop()
+    if not words:
+        return False
+    if "_".join(words) in _NON_PERSON_ROLE_WORDS:
+        return True
+    return words[-1] in _NON_PERSON_ROLE_WORDS
+
+
 def _attr_tail(placeholder: str) -> tuple[str, str] | None:
     """Split a placeholder into (role prefix, register column).
 
     The role is whatever precedes the attribute tail, and is "" for a BARE
     placeholder like `nationality`. A bare tail is not an error — see
     `sole_person_role` for who it belongs to.
+
+    Returns None when the role names a company (`_role_is_non_person`): a
+    company field is not a person attribute, and answering it from the register
+    would put a person's details into it.
     """
     norm = str(placeholder or "").replace("\xa0", " ").strip().lower().replace(" ", "_")
     for tail, column in PERSON_ATTR_COLUMNS:
         if norm == tail:
             return ("", column)
         if norm.endswith("_" + tail):
-            return (norm[: -(len(tail) + 1)].strip(" _"), column)
+            role = norm[: -(len(tail) + 1)].strip(" _")
+            if _role_is_non_person(role):
+                return None
+            return (role, column)
     return None
 
 
 def _name_slot_keys(mapping: dict) -> list[str]:
     """Keys in the mapping that are person slots — the ones a picker answers.
 
-    `shareholder_list` and `attendee` are excluded: they resolve to a LIST of
-    people, so there is no single person whose nationality a bare placeholder
-    could mean.
+    A slot is excluded only when it genuinely denotes MORE THAN ONE person,
+    i.e. `multi` is true. The KIND does not decide that.
+
+    It used to exclude every `shareholder_list` / `attendee` slot regardless of
+    `multi`, on the reasoning that a list has no single person a bare
+    `nationality` could mean. That is true of a list, and false of these slots:
+    `Individual Shareholder Consent Form.docx` maps its only person placeholder
+    `shareholder_name` to kind=shareholder_list with **multi=False** — one
+    consenting shareholder, named once. The kind test made that template hold
+    ZERO single-person slots, so `sole_person_role` returned "" and its four
+    bare attributes (`address`, `nationality`, `nrc_no`, `date_of_birth`) were
+    all asked as free text while the register held three of them for every
+    person on it. Measured 2026-08-27.
     """
     keys = []
     for key, entry in (mapping or {}).items():
         slot = slot_of(entry, key)
         if not slot:
             continue
-        if slot.get("multi") is True or slot.get("kind") in ("shareholder_list", "attendee"):
+        if slot.get("multi") is True:
             continue
         keys.append(key)
     return keys
@@ -963,7 +1037,13 @@ def companion_attribute(
         return None
     role, column = target
 
-    if not role:
+    # A BARE placeholder (`nationality`, no role prefix) names nobody. It is
+    # only answerable because the template has exactly one single-person slot —
+    # see `sole_person_role`, which is the only thing standing between this
+    # lookup and a guess.
+    bare = not role
+
+    if bare:
         role = sole_person_role(mapping)
         if not role:
             return None
@@ -973,6 +1053,16 @@ def companion_attribute(
         return None
 
     parties = selected_parties(key, mapping[key], data, document_id=document_id, company_name=company_name)
+
+    # The runtime half of the same rule. `sole_person_role` reads the TEMPLATE,
+    # which is static; how many people that one slot actually resolved to is
+    # only known here. A slot whose kind is a list kind may hold two selections
+    # even with multi=False, and a bare `nationality` beside two chosen people
+    # has no answer: printing the first one's details under the other's name is
+    # exactly the confident-and-wrong outcome a blank avoids. Two people means
+    # two answers — ask.
+    if bare and len(parties) > 1:
+        return None
     for party in parties:
         # The identifier travels WITH the selection, so it answers without a
         # second read — and it is right even for someone the register does not
@@ -1040,6 +1130,84 @@ def companion_identifier(
         # the normal user_input path asks.
         return None
 
+    return None
+
+
+def is_identifier_placeholder(placeholder: str) -> bool:
+    """True when the placeholder asks for a person's NRC/passport, not their name.
+
+    Reads the same table `_attr_tail` does, so `..._nrc`, `..._nrc_no`,
+    `..._passport_number` and `..._identification_number` are all one rule, and
+    a company-scoped role (`company_...`) is excluded by `_attr_tail` itself.
+    """
+    target = _attr_tail(placeholder)
+    return bool(target) and target[1] == "nrc_passport_no"
+
+
+def slot_identifier(
+    placeholder: str,
+    entry: dict,
+    data: dict,
+    company_name: str | None = None,
+    document_id: Any = None,
+) -> str | None:
+    """The NRC/passport of the party THIS slot entry resolves to, or None.
+
+    An identifier placeholder that was TRAINED AS A NAME SLOT renders a name.
+    `Corporate Shareholder Consent - Directors Resolution for New Company Setup
+    and Director Appointment.docx` maps `appointed_director_1_nrc`,
+    `_2_nrc` and `_3_nrc` to `{"source":"slot","slot":{"kind":"new_director"}}`
+    — a person slot — so `find_replacement` took the slot branch and
+    `resolve_slot` did what a slot does: it rendered the person's NAME.
+    Measured live 2026-08-27: `appointed_director_1_nrc` resolved to
+    "KYAW THU SOE". A consent form reading "N.R.C./Passport: KYAW THU SOE" is
+    filled, confident and wrong — strictly worse than blank, because a blank is
+    visible to whoever proof-reads it.
+
+    So an identifier placeholder is answered from the identity of the party its
+    OWN entry selects, never from that party's name. The role prefixes do not
+    line up across the two halves of that template — the NRC placeholders say
+    `appointed_director_N` while the name slots say `director_N` — and no
+    attempt is made to marry them: this entry already selects a person, and
+    guessing which name slot it pairs with would reintroduce the same class of
+    error one level up.
+
+    Returns None when there is nothing on file, so the field is ASKED.
+    """
+    slot = slot_of(entry)
+    if not slot:
+        return None
+
+    parties = selected_parties(placeholder, entry, data, document_id=document_id, company_name=company_name)
+    if not parties:
+        return None
+
+    # A multi slot laid out as one placeholder per position (`shareholder_2_nrc`)
+    # answers from the party at that position — the same rule `render_parties`
+    # applies to names, so the identifier column cannot drift out of step with
+    # the name column beside it. A single-person slot answers from its one party.
+    party = parties[0]
+    if slot.get("multi"):
+        match = _INDEX_IN_NAME.search(_norm(placeholder))
+        if match:
+            index = int(match.group(1))
+            if index < 1 or index > len(parties):
+                return None
+            party = parties[index - 1]
+
+    identifier = str(party.get("identifier") or "").strip()
+    if identifier:
+        return identifier
+
+    # The selection carries no identifier (a register pick made before the
+    # column was populated, or a name typed by hand). Ask the register under the
+    # chosen person's name — the same second read `companion_attribute` does.
+    # Still no fabrication: an unknown person yields {} and the field is asked.
+    name = str(party.get("name") or "").strip()
+    if name:
+        value = person_register_row(name).get("nrc_passport_no")
+        if value:
+            return str(value)
     return None
 
 

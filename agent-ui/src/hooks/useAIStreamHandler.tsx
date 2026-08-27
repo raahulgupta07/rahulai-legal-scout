@@ -35,6 +35,10 @@ import {
   isAskUserTool,
   summariseAnswers
 } from '@/components/chat/askUserPayload'
+import {
+  findUnpaidToolDebt,
+  type RunToolRecord
+} from '@/components/chat/toolDebt'
 
 const getLocalUserId = (): string | null => {
   if (typeof window === 'undefined') return null
@@ -401,6 +405,24 @@ const useAIChatStreamHandler = () => {
   // answer. Counting the ToolCallStarted events, the way tests/tracker_layer3.py
   // does, is what makes the guard see the tool work at all.
   const toolsThisRunRef = useRef(0)
+  // Tool names AND results for THIS run, the evidence the tool-debt guard reads.
+  //
+  // toolsThisRunRef above only counts, which is all the empty-turn guard needed.
+  // The debt guard has to know WHICH tools ran and WHAT they returned, and for
+  // the same reason it cannot read `chunk.tools` on RunCompleted (that key does
+  // not exist there), it has to be collected as the stream arrives. Names land
+  // on ToolCallStarted; results land later on ToolCallCompleted, so the two
+  // events are stitched together by tool_call_id rather than pushed twice.
+  //
+  // Reset with toolsThisRunRef at each stream start: debt belongs to ONE run.
+  // Carrying a lookup from a previous run forward would make the guard re-nudge
+  // for a picker the user has already answered.
+  const runToolRecordsRef = useRef<Array<RunToolRecord & { id?: string }>>([])
+  // Whether THIS run paused. A pause means a picker or question card is on
+  // screen waiting for the user, which discharges every debt — see
+  // findUnpaidToolDebt. Agno emits RunPaused as its own event, so the flag has
+  // to survive until RunCompleted rather than being derived from it.
+  const runPausedRef = useRef(false)
   // Tool calls seen so far in this conversation turn, kept for the session
   // title. RunCompleted carries no `tools` key (see toolsThisRunRef), so the
   // evidence has to be collected as it arrives or it is gone by the end.
@@ -599,6 +621,10 @@ const useAIChatStreamHandler = () => {
           })
         }
       } else if (chunk.event === RunEvent.RunPaused) {
+        // Latched before handleRunPaused so it is set even if no renderable
+        // card came out of the pause: the run is still blocked on the user, and
+        // a run blocked on the user must never be nudged.
+        runPausedRef.current = true
         handleRunPaused(chunk)
       } else if (chunk.event === RunEvent.RunContinued) {
         // Resume acknowledged; content for the resumed run streams in next.
@@ -618,6 +644,14 @@ const useAIChatStreamHandler = () => {
               tool_name: chunk.tool.tool_name,
               tool_args: chunk.tool.tool_args ?? null
             })
+            // Record the call for the debt guard the moment it STARTS, not when
+            // it completes: a tool that started is a tool that was called, and
+            // the discharge test ("was choose_director called in this run")
+            // must hold even if its completion event never arrives.
+            runToolRecordsRef.current.push({
+              tool_name: chunk.tool.tool_name,
+              id: chunk.tool.tool_call_id ?? undefined
+            })
           }
         } else {
           // Completed: the result is here, so the closing sentence can be
@@ -630,6 +664,34 @@ const useAIChatStreamHandler = () => {
               finished.result
             )
             if (closing?.content) closingFromToolRef.current = closing
+
+            // Attach the result to the record opened on ToolCallStarted. Match
+            // on tool_call_id first; fall back to the newest record of the same
+            // name that has no result yet, because a run legitimately calls the
+            // same tool twice (generate_document is retried after answers come
+            // back) and the second result must not overwrite the first.
+            const records = runToolRecordsRef.current
+            const id = finished.tool_call_id
+            let slot = -1
+            for (let i = records.length - 1; i >= 0; i--) {
+              const r = records[i]
+              const matches = id
+                ? r.id === id
+                : r.tool_name === finished.tool_name && r.result === undefined
+              if (matches) {
+                slot = i
+                break
+              }
+            }
+            if (slot >= 0) {
+              records[slot] = { ...records[slot], result: finished.result }
+            } else {
+              records.push({
+                tool_name: finished.tool_name,
+                id: id ?? undefined,
+                result: finished.result
+              })
+            }
           }
         }
         setMessages((prevMessages) => {
@@ -875,9 +937,45 @@ const useAIChatStreamHandler = () => {
         // toolsThisRunRef: RunCompleted does not carry a `tools` key.
         const didToolWork =
           toolsThisRunRef.current > 0 || (chunk.tools?.length ?? 0) > 0
-        const waitingOnUser = (chunk.tools ?? []).some(
-          (t) => t.requires_user_input === true
-        )
+        const waitingOnUser =
+          runPausedRef.current ||
+          (chunk.tools ?? []).some((t) => t.requires_user_input === true)
+
+        // Stall guard #2: the turn ended OWING A TOOL CALL.
+        //
+        // Measured on session 75400f45-49c5-4fb1-aa1b-d97a555ee6cd: one user
+        // request took THREE runs because twice the model ended a turn without
+        // making the call its own tool result had just demanded, and the user
+        // had to type "continue" by hand each time. Run 1 got a
+        // lookup_director_candidates payload naming picker "choose_director"
+        // and wrote a prose "Preview Summary" instead of calling it, so no
+        // picker card was drawn. Run 2 got generate_document success=false /
+        // "Undeclared blank fields" listing address, country_of_residence,
+        // date, email, phone — nothing written, no file — and wrote another
+        // paragraph instead of calling ask_questions.
+        //
+        // `finishedEmpty` cannot catch either one: both turns ended with
+        // confident prose, so content.trim() was non-empty. That is the worse
+        // failure of the two — a blank bubble at least looks broken, while a
+        // polished paragraph looks finished, so the user cannot tell the turn
+        // stalled and simply waits.
+        //
+        // The debt is read structurally out of the tool results (see
+        // findUnpaidToolDebt), never out of the English agent_instruction
+        // strings, which get reworded every time the prompts are tuned.
+        //
+        // It feeds the SAME recovery as the empty-turn guard below — same
+        // per-run autoContinuedRunsRef, same MAX_CONSECUTIVE_NUDGES budget —
+        // and not a second, parallel one. Each nudge starts a NEW run with a
+        // NEW id, so a guard with its own budget would be unbounded in
+        // practice, and an unbounded nudge is exactly how the same document
+        // once got generated three times.
+        const toolDebt =
+          !waitingOnUser && didToolWork
+            ? findUnpaidToolDebt(runToolRecordsRef.current, {
+                paused: runPausedRef.current
+              })
+            : null
         // What the user must be TOLD about this turn, if anything. Set by the
         // two dead-end branches below; rendered as the message content and as
         // the streaming-error text.
@@ -885,7 +983,15 @@ const useAIChatStreamHandler = () => {
         // Real output means the agent is talking again — forget the run of
         // stalls. A `]}` tail is not the agent talking: it must leave the
         // counter alone so the retry budget survives.
-        if (isRealContent(chunk.content)) {
+        //
+        // `&& !toolDebt` is what BOUNDS the debt guard, and it is the whole
+        // reason the budget survives at all on this path. The measured stall
+        // ends with real prose ("Preview Summary"), so without this clause the
+        // counter would reset on every single stalled turn, the budget would
+        // never deplete, and the nudge would be unbounded — each one starting a
+        // new run that re-runs the document tools. Text the agent wrote while
+        // still owing a tool call is not the agent being finished.
+        if (isRealContent(chunk.content) && !toolDebt) {
           consecutiveNudgesRef.current = 0
         }
 
@@ -901,11 +1007,16 @@ const useAIChatStreamHandler = () => {
           consecutiveNudgesRef.current = 0
         }
 
-        if (
+        // The two triggers for one recovery: the turn ended EMPTY (original
+        // guard), or it ended OWING A TOOL CALL (the prose stall above).
+        // `toolDebt` is already gated on didToolWork and !waitingOnUser, so
+        // repeating those here would be redundant, not safer.
+        const shouldNudge =
           !closeFromTool &&
-          finishedEmpty &&
-          didToolWork &&
-          !waitingOnUser &&
+          ((finishedEmpty && didToolWork && !waitingOnUser) || !!toolDebt)
+
+        if (
+          shouldNudge &&
           chunk.run_id &&
           !autoContinuedRunsRef.current.has(chunk.run_id) &&
           consecutiveNudgesRef.current < MAX_CONSECUTIVE_NUDGES
@@ -916,14 +1027,17 @@ const useAIChatStreamHandler = () => {
             useStore.getState().setPendingMessage('continue')
           }, 400)
         } else if (
-          !closeFromTool &&
-          finishedEmpty &&
-          didToolWork &&
-          !waitingOnUser &&
+          shouldNudge &&
           consecutiveNudgesRef.current >= MAX_CONSECUTIVE_NUDGES
         ) {
           // Out of retries. Say so, rather than leaving a blank bubble that is
           // indistinguishable from a finished answer.
+          //
+          // On the debt path the turn is NOT blank — it holds the prose the
+          // model wrote while still owing a call. Overwriting that with the
+          // notice is deliberate: the paragraph describes a picker card or a
+          // document that does not exist, so leaving it up is leaving a
+          // confident false statement as the last word of the turn.
           consecutiveNudgesRef.current = 0
           failureNotice = STALLED_TURN_NOTICE
         }
@@ -1131,6 +1245,8 @@ const useAIChatStreamHandler = () => {
       lastContentRef.current = ''
       streamTargetRef.current = ''
       toolsThisRunRef.current = 0
+      runToolRecordsRef.current = []
+      runPausedRef.current = false
       sawReasoningRef.current = false
       closingFromToolRef.current = null
       cancelReveal()
@@ -1276,6 +1392,8 @@ const useAIChatStreamHandler = () => {
       lastContentRef.current = ''
       streamTargetRef.current = ''
       toolsThisRunRef.current = 0
+      runToolRecordsRef.current = []
+      runPausedRef.current = false
       sawReasoningRef.current = false
       closingFromToolRef.current = null
       cancelReveal()

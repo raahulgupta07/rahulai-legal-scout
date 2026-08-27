@@ -2,6 +2,93 @@
 
 All notable changes to Legal Scout.
 
+## [1.2.68] — 2026-08-27
+
+### Fixed — three defects found by scanning every template, not the one in front of us
+
+**An NRC field printed the director's name.** On *Corporate Shareholder Consent —
+Directors Resolution*, `appointed_director_1_nrc` / `_2` / `_3` are TRAINED as
+person-NAME slots (`source=slot`, `kind=new_director`), so the slot branch
+rendered the name into an identifier field. Measured before the fix, all three:
+
+    appointed_director_1_nrc  ->  KYAW THU SOE
+    appointed_director_2_nrc  ->  MIN MIN
+    appointed_director_3_nrc  ->  WIN WIN TINT
+
+A consent form stating "N.R.C./Passport: KYAW THU SOE" is filled, confident and
+wrong — strictly worse than a blank, which a reader would catch. An identifier
+placeholder now resolves to the party's identifier, or asks. After: the three
+fields return `12/LAMANA(N)142591`, `12/LATHANA(N)016603`, `12/LATHANA(N)001520`.
+
+**A single-signatory form asked for what the register held.** The *Individual
+Shareholder Consent Form* has one person, but its slot is typed
+`shareholder_list`, and the sole-person rule excluded every list-kind slot
+regardless of `multi`. All four of its attributes were asked. Now a list slot
+holding ONE person names the bare role, so nationality, NRC and date of birth
+resolve and only `address` is asked — the register genuinely has no address for
+anyone.
+
+**A company's address was read as somebody's home address.** `company_address`
+classified as `("company", "residential_address")`. Harmless while it fell
+through to a question; one slot name away from writing a director's home address
+into a company field. Roles that name an entity are now excluded by word, not by
+substring — `corporate_shareholder_1_nrc` still resolves through the person path,
+because that is where the picker's answer for that position lives.
+
+Coverage across all 15 templates: **23 of 31 person-attribute placeholders
+resolved, now 30 of 30** (the 31st was `company_address`, correctly no longer
+counted as one).
+
+### Fixed — a turn that ends OWING a tool call is a stall, however well it reads
+
+Session `75400f45-49c5-4fb1-aa1b-d97a555ee6cd`: one request took THREE runs,
+because the model twice ended a turn without making the call its own tool result
+demanded, and the user typed "continue" by hand each time.
+
+    run 1  COMPLETED  lookup_director_candidates  ->  never called choose_director
+    run 2  COMPLETED  generate_document (blank fields)  ->  never called ask_questions
+    run 3  PAUSED     ask_questions   <- finally asked
+
+The existing guard fired only on `chunk.content.trim() === ''`. Both stalls ended
+with a confident "Preview Summary" paragraph, so it never ran. Ending with
+polished prose is worse than ending silently: it looks finished, so nobody can
+tell the turn stalled.
+
+`findUnpaidToolDebt` reads the debt STRUCTURALLY out of the tool results — a
+lookup result names the picker it owes, a failed generate names its blank or
+required fields — never out of the English `agent_instruction` strings, which are
+reworded whenever the prompts are tuned. A paused run owes nothing: the card is
+already on screen.
+
+It feeds the SAME recovery as the empty-turn guard, sharing the per-run guard and
+`MAX_CONSECUTIVE_NUDGES`. The bound is load-bearing in a way worth naming: the
+measured stall ends with real prose, so without `&& !toolDebt` on the counter
+reset the budget would refill on every stalled turn and the nudge would be
+unbounded — which is how the same document once got generated three times.
+
+### Notes
+
+Two person slots still ASK for a bare attribute, deliberately: guessing would
+print one person's details beside the other's name. A runtime net covers the
+case the template shape cannot — one list slot with TWO people actually chosen
+also asks. Mutation-tested: removing it turns `U35k` red with the first party's
+NRC standing in for both.
+
+Three of this release's own guards failed their first run and were rewritten
+rather than the product bent to fit them:
+
+- `U35d` demanded that `corporate_shareholder_address` be classified non-person.
+  A corporate shareholder is a party, so the role reads person-shaped; what
+  matters is that nothing from a person's row can reach it, and nothing does.
+  Re-asserted as behaviour instead of classification.
+- `U36b` scanned `toolDebt.ts` for `agent_instruction` — and matched the header
+  comment explaining why that string must never be used. Comments are stripped
+  before the scan now. A source check that reads its own documentation measures
+  nothing.
+- `U11l` counted `!closeFromTool &&` occurrences and went stale when both
+  branches were refactored to share one `shouldNudge` const carrying the guard
+  once. The intent is unchanged; the case now accepts either shape.
+
 ## [1.2.67] — 2026-08-27
 
 ### Fixed — the panel was watching tool names that never stream
