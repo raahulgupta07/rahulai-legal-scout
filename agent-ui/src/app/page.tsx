@@ -16,7 +16,7 @@ function Workspace() {
     const last = s.messages[s.messages.length - 1]
     if (!last || last.role !== 'agent') return false
     return (last.tool_calls ?? []).some((tc) =>
-      /^(prepare_document|generate_document|preview_document|create_document)/.test(
+      /^(prepare_document|generate_document|preview_doc|create_document)/.test(
         tc.tool_name ?? ''
       )
     )

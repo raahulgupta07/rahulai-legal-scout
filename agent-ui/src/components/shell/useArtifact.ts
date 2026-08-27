@@ -22,7 +22,8 @@
  *
  *   prepare_document  → template_analysis.required_fields + normalized_data
  *                       + validation.available_fields / missing_fields
- *   preview_document  → matched_fields / missing_fields / data
+ *   preview_doc       → matched_fields / missing_fields / data
+ *                       (exported as "preview_document"; registered as preview_doc)
  *   generate_document → success: file_name, download_url, validation_summary
  *                       failure: user_input_fields / db_fields_filled
  *   create_document   → passthrough to generate_document
@@ -75,8 +76,23 @@ export interface Artifact {
   outstanding: number
 }
 
+/**
+ * The names the STREAM actually carries, which are the function names — not the
+ * keys `create_smart_document_tool` exports them under.
+ *
+ * `_as_json` wraps with @wraps, so agno registers `preview_doc` even though the
+ * export key reads `preview_document`. agent.py:213 says exactly this and the
+ * PROMPT was corrected for it; this set was not. The result: every `preview_doc`
+ * result was filtered out here, so a run that had previewed a document but not
+ * yet generated it left the panel reading "No document yet" beside a chat full
+ * of that document's fields.
+ *
+ * Both spellings are listed so a stored session cannot lose its panel either.
+ */
 const DOC_TOOLS = new Set([
   'prepare_document',
+  'prepare_document_data',
+  'preview_doc',
   'preview_document',
   'generate_document',
   'create_document'

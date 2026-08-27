@@ -2,6 +2,48 @@
 
 All notable changes to Legal Scout.
 
+## [1.2.67] — 2026-08-27
+
+### Fixed — the panel was watching tool names that never stream
+
+The document panel read "No document yet" beside a chat holding that document's
+template, company, director and NRC. Nothing had failed: the run called
+`preview_doc`, which returns a full `document_state`, and the panel's
+`DOC_TOOLS` set listed **`preview_document`**.
+
+`_as_json` wraps with `functools.wraps`, so agno registers a tool under the
+FUNCTION name, not the key `create_smart_document_tool` exports it under. The
+export map says `preview_document`; the stream says `preview_doc`. agent.py:213
+documents this exactly — and the PROMPT was corrected for it when it was found.
+Three frontend files were not, and stayed wrong:
+
+- `useArtifact.ts` filtered every `preview_doc` result out of the fold, so the
+  panel never saw the state the tool had already declared.
+- `ArtifactPanel.tsx` and `page.tsx` failed to open the panel for the same
+  reason. Their tests match by PREFIX, so `preview_doc` covers `preview_document`
+  as well — the reverse is false, which is the whole bug.
+
+The blank panel only showed when a run had previewed a document but not yet
+generated one. Once `generate_document` ran, its result carried
+`document_state` under a name the set did list and the panel filled in — which
+is why this survived: it looked like a slow panel rather than a broken one.
+
+### Notes
+
+`U34` derives the names it expects from the registry instead of restating them:
+`_as_json` is applied to exactly the tools whose results the panel reads, and
+`functools.wraps` leaves `__wrapped__` behind, so that attribute is the signal.
+A future rename moves the test with the tool. `analyze_template` is exported
+unwrapped and returns no `document_state`, so it is correctly out of scope —
+the first version of this case did not make that distinction and failed on it.
+
+Mutation-tested: restoring `preview_document` in the set and in `page.tsx` turns
+`U34b` and `U34d` red, naming `preview_doc` as the missing tool.
+
+Verified on the same run that produced the report: `preview_doc` now reaches the
+panel, which shows 3/11 at that point in the flow — before a director is picked,
+so nationality, NRC and date of birth are correctly still outstanding.
+
 ## [1.2.66] — 2026-08-27
 
 ### Fixed — the card stopped suggesting what the system cannot know

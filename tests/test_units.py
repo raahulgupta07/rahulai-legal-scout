@@ -714,6 +714,85 @@ def test_card_suggests_nothing_unknowable():
 
 
 # ===========================================================================
+# U34 The panel must watch the tool names that actually stream
+#     The document panel read "No document yet" beside a chat holding that
+#     document's template, company, director and NRC. Nothing had failed: the
+#     run had called `preview_doc`, which carries a full `document_state`, and
+#     the panel's DOC_TOOLS set listed `preview_document`.
+#
+#     `_as_json` wraps with @wraps, so agno registers a tool under the FUNCTION
+#     name, not under the key `create_smart_document_tool` exports it as. The
+#     export map says "preview_document"; the stream says `preview_doc`.
+#     agent.py:213 documents this exactly, and the PROMPT was corrected for it
+#     at the time — three frontend files were not, and stayed wrong.
+#
+#     So the guard derives the expected names from the registry rather than
+#     restating them: a rename that moves the tool moves this test with it.
+# ===========================================================================
+def test_panel_watches_real_tool_names():
+    ui = Path(__file__).resolve().parent.parent / "agent-ui/src"
+    artifact = ui / "components/shell/useArtifact.ts"
+    if not artifact.exists():
+        skip("U34", "panel tool names", f"{artifact} not present in this tree")
+        return
+
+    from scout.tools.smart_doc import create_smart_document_tool
+
+    exported = create_smart_document_tool(documents_dir="/documents", host="")
+    # What agno registers is the wrapped function's __name__ — the same thing
+    # the stream puts in tool_name — NOT the export key.
+    # `_as_json` is applied to exactly the tools whose results the panel reads —
+    # the export map says so — and functools.wraps leaves `__wrapped__` behind.
+    # That is the signal, rather than a hand-listed set that would drift the
+    # same way DOC_TOOLS did. `analyze_template` is exported unwrapped and
+    # returns no document_state, so it is correctly out of scope.
+    registered = {
+        key: getattr(fn, "__name__", key)
+        for key, fn in exported.items()
+        if hasattr(fn, "__wrapped__")
+    }
+    check(
+        "U34z",
+        "the wrapped set is not empty",
+        bool(registered),
+        "no _as_json-wrapped tools found — this case would pass vacuously",
+    )
+
+    mismatched = {k: v for k, v in registered.items() if k != v}
+    check(
+        "U34a",
+        "the export key and the registered name still differ (the trap is real)",
+        bool(mismatched),
+        "no mismatch found — this case may no longer be measuring anything",
+    )
+
+    body = artifact.read_text()
+    # `create_document` is deliberately not bound in agent.py, so it never
+    # streams; everything else the map exports can.
+    expected = {name for key, name in registered.items() if key != "create_document"}
+    missing = sorted(n for n in expected if f"'{n}'" not in body)
+    eq("U34b", "DOC_TOOLS lists every name that can stream", missing, [])
+
+    # The two panel-opening regexes match by PREFIX, so `preview_doc` covers
+    # `preview_document` too — but the reverse is false, which is the bug.
+    for cid, rel in [
+        ("U34c", "components/shell/ArtifactPanel.tsx"),
+        ("U34d", "app/page.tsx"),
+    ]:
+        f = ui / rel
+        if not f.exists():
+            skip(cid, f"{rel} opens the panel", "file not present")
+            continue
+        text = f.read_text()
+        m = re.search(r"/\^\(([a-z_|]+)\)/", text)
+        alts = set(m.group(1).split("|")) if m else set()
+        unmatched = sorted(
+            n for n in expected if not any(n.startswith(a) for a in alts)
+        )
+        eq(cid, f"{rel} opens the panel for every document tool", unmatched, [])
+
+
+# ===========================================================================
 # U6  Party coercion — whatever a picker or the model hands back
 # ===========================================================================
 def test_party_coercion():
@@ -3291,6 +3370,7 @@ def main():
         test_bare_person_attributes,
         test_one_resolver_three_views,
         test_card_suggests_nothing_unknowable,
+        test_panel_watches_real_tool_names,
         test_structural_contracts,
     ):
         try:
