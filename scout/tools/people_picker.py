@@ -909,24 +909,62 @@ def _selection_result(
     except Exception:
         _pending = ""
 
-    return json.dumps(
-        {
-            "picker": picker,
-            "selected": chosen,
-            "count": len(chosen),
-            "status": "confirmed",
-            "chosen_names": names,
-            "instruction": (
-                f"The user has ALREADY chosen: {', '.join(_describe(c) for c in chosen)}. "
-                "This selection is final and confirmed. Do NOT ask who to use, do NOT list "
-                "the candidates again, and do NOT offer a), b), c) options. Use exactly "
-                "these names and continue the task NOW, IN THIS SAME TURN — if a document "
-                "was requested, generate it immediately, passing these names through "
-                "custom_data. Never end your turn empty: always write the user a line "
-                "saying who was chosen and what you did next." + _pending
-            ),
-        }
-    )
+    # The document panel went STALE the moment a person was chosen.
+    #
+    # Measured 2026-08-27 in a real browser, session 9c586813: after picking
+    # KYAW THU SOE the panel still read 3/11 with NATIONALITY, NRIC and DATE OF
+    # BIRTH pending — while the question card beside it correctly did not ask
+    # for any of the three, because the resolver had them from the register.
+    # The run was `choose_director` then `ask_questions`: no document tool ran
+    # after the pick, so no fresh `document_state` was ever emitted and the
+    # panel kept showing what `preview_doc` computed BEFORE anyone was chosen.
+    #
+    # Honest about what it last knew, and wrong about what is true — which is
+    # the same thing a lawyer reads as "these fields are still missing".
+    #
+    # A pick is exactly the event that changes the answer, so the picker
+    # declares the new state itself rather than waiting for the next document
+    # tool. `recall_task` already holds the template and company for this
+    # conversation, which is what makes this a lookup and not a guess.
+    #
+    # Wrapped whole: a panel refresh must never be able to fail a selection.
+    # Losing the pick to make the panel prettier would be a bad trade.
+    _state = None
+    try:
+        from scout.tools.task_memory import recall_task
+
+        _task = recall_task(session_id) or {}
+        _tpl = str(_task.get("template_name") or "").strip()
+        _co = str(_task.get("company_name") or company_name or "").strip()
+        if _tpl and _co:
+            from scout.tools.smart_doc import prepare_document_data
+
+            _state = (prepare_document_data(_tpl, _co) or {}).get("document_state")
+    except Exception as e:
+        logging.getLogger("legalscout").warning(f"picker could not refresh the document panel: {e}")
+        _state = None
+
+    payload = {
+        "picker": picker,
+        "selected": chosen,
+        "count": len(chosen),
+        "status": "confirmed",
+        "chosen_names": names,
+        "instruction": (
+            f"The user has ALREADY chosen: {', '.join(_describe(c) for c in chosen)}. "
+            "This selection is final and confirmed. Do NOT ask who to use, do NOT list "
+            "the candidates again, and do NOT offer a), b), c) options. Use exactly "
+            "these names and continue the task NOW, IN THIS SAME TURN — if a document "
+            "was requested, generate it immediately, passing these names through "
+            "custom_data. Never end your turn empty: always write the user a line "
+            "saying who was chosen and what you did next." + _pending
+        ),
+    }
+    # Only when it was actually computed — an absent key leaves the panel on
+    # its previous state, which is better than blanking it.
+    if _state:
+        payload["document_state"] = _state
+    return json.dumps(payload)
 
 
 @tool(requires_user_input=True, user_input_fields=["selected"])

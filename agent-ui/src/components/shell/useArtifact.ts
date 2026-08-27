@@ -542,11 +542,34 @@ function fromDeclared(
   }
 }
 
+/**
+ * Any tool result that DECLARES a document_state, whatever the tool is called.
+ *
+ * The name filter alone left the panel stale at the one moment it most needed
+ * to move. Measured in a real browser 2026-08-27, session 9c586813: after
+ * picking KYAW THU SOE the panel still read 3/11 with NATIONALITY, NRIC and
+ * DATE OF BIRTH pending, while the question card beside it correctly did not
+ * ask for any of the three. The run was `choose_director` then
+ * `ask_questions` — no document tool ran after the pick, so the panel kept
+ * showing what `preview_doc` had computed BEFORE anyone was chosen.
+ *
+ * The picker now declares the new state itself. Admitting it by NAME would
+ * mean listing every picker here and re-listing them whenever one is added;
+ * admitting it by EVIDENCE — the result carries a state — cannot drift. A
+ * result without one is still ignored, so the inference fallback below never
+ * sees a picker payload it would misread.
+ */
+const declaresState = (c: ToolCall): boolean => {
+  const res = parseResult(c.result ?? c.content)
+  if (!res) return false
+  return Object.keys(asRecord(res.document_state)).length > 0
+}
+
 export function deriveArtifact(messages: ChatMessage[]): Artifact | null {
   const calls: ToolCall[] = []
   for (const m of messages) {
     for (const c of m.tool_calls ?? []) {
-      if (DOC_TOOLS.has(c.tool_name)) calls.push(c)
+      if (DOC_TOOLS.has(c.tool_name) || declaresState(c)) calls.push(c)
     }
   }
   if (!calls.length) return null

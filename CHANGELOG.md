@@ -2,6 +2,57 @@
 
 All notable changes to Legal Scout.
 
+## [1.2.69] — 2026-08-27
+
+### Fixed — a pick changes the answer, so the panel now moves with it
+
+Found by testing 1.2.68 in a real browser rather than through the API. Session
+`9c586813`: after choosing KYAW THU SOE the panel still read **3/11** with
+NATIONALITY, NRIC and DATE OF BIRTH pending — while the question card beside it
+correctly did **not** ask for any of the three, because the resolver had all
+three from the register.
+
+The run was `choose_director` then `ask_questions`. No document tool ran after
+the pick, so no fresh `document_state` was ever emitted and the panel kept
+showing what `preview_doc` had computed BEFORE anyone was chosen. Honest about
+what it last knew, and wrong about what is true — and what a lawyer reads there
+is "these fields are still missing".
+
+- **The picker declares the new state itself.** A pick is exactly the event that
+  changes the answer, so it no longer waits for the next document tool.
+  `recall_task` already holds the template and company for the conversation,
+  which is what makes this a lookup rather than a guess. Wrapped whole: a panel
+  refresh must never be able to fail a selection, and an uncomputed state is
+  omitted rather than sent empty — leaving the previous numbers beats blanking
+  them.
+
+- **The panel folds any result that DECLARES a state**, whatever the tool is
+  called. Admitting pickers by NAME would mean listing every one and re-listing
+  them whenever another is added — the exact drift that left `preview_doc` out
+  of `DOC_TOOLS` for weeks. Admission by evidence cannot drift, and a result
+  without a state is still ignored, so the inference fallback never sees a
+  picker payload it would misread.
+
+Verified in the browser on the same flow: the pick takes the panel from
+**3/11 to 6/11**, Outstanding 8 → 5, with `Myanmar`, `12/LAMANA(N)142591` and
+`1987-09-21` moving into Resolved. Panel and question card now agree.
+
+### Notes
+
+The API tests that "verified" 1.2.68 were blind to the fix they were checking.
+The stall is a MODEL behaviour and the recovery is in the browser, so an API
+client always sees the stall and never sees the guard. The real browser run is
+what proved it: same request that previously took three runs and two typed
+"continue"s completed with nothing typed but the request. Worth remembering
+before trusting an API-level pass on anything client-side.
+
+`U37f` failed against correct code on its first run — the header comment above
+`declaresState` names `choose_director` while explaining why picker names must
+NOT be listed, and the scan matched that explanation. That is the THIRD source
+check today to read its own documentation (`U36b` and this one after `U32e`).
+Comments are stripped before the scan now, and that should be the default shape
+for any of these.
+
 ## [1.2.68] — 2026-08-27
 
 ### Fixed — three defects found by scanning every template, not the one in front of us

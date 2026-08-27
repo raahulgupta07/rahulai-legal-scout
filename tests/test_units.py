@@ -1050,6 +1050,84 @@ def test_stall_guard_sees_unpaid_debt():
 
 
 # ===========================================================================
+# U37 A pick changes the answer, so the panel must move with it
+#     Measured in a real browser 2026-08-27, session 9c586813 on 1.2.68: after
+#     choosing KYAW THU SOE the panel still read 3/11 with NATIONALITY, NRIC
+#     and DATE OF BIRTH pending — while the question card beside it correctly
+#     did NOT ask for any of the three, because the resolver had all three from
+#     the register.
+#
+#     The run was `choose_director` then `ask_questions`. No document tool ran
+#     after the pick, so no fresh document_state was ever emitted and the panel
+#     kept showing what `preview_doc` computed BEFORE anyone was chosen. Honest
+#     about what it last knew; wrong about what is true — and what a lawyer
+#     reads there is "these fields are still missing".
+# ===========================================================================
+def test_pick_refreshes_the_panel():
+    import inspect
+
+    body = inspect.getsource(pp._selection_result)
+
+    check(
+        "U37a",
+        "the picker looks up the task it is answering",
+        "recall_task" in body,
+        "the picker cannot know the template, so it cannot refresh the panel",
+    )
+    check(
+        "U37b",
+        "and declares the state that pick produces",
+        "document_state" in body,
+        "the picker no longer returns a document_state",
+    )
+    # An absent key must leave the panel alone. Blanking it on a pick would
+    # trade a stale number for no number, which is worse.
+    check(
+        "U37c",
+        "an uncomputed state is omitted, never sent empty",
+        "if _state:" in body,
+        "the picker may attach an empty document_state and blank the panel",
+    )
+    # A panel refresh must never be able to lose the selection itself.
+    check(
+        "U37d",
+        "the refresh cannot fail the pick",
+        "except Exception" in body,
+        "the refresh is unguarded, so a panel error would drop the user's choice",
+    )
+
+    # --- the browser has to actually fold it ------------------------------
+    art = Path(__file__).resolve().parent.parent / "agent-ui/src/components/shell/useArtifact.ts"
+    if not art.exists():
+        skip("U37e", "the panel folds a picker's declared state", "useArtifact.ts not in this tree")
+        return
+    a = art.read_text()
+
+    check(
+        "U37e",
+        "the panel admits any result that declares a state",
+        "declaresState(c)" in a and "DOC_TOOLS.has(c.tool_name) || declaresState(c)" in a,
+        "the fold still filters by tool NAME only, so a picker's state never reaches the panel",
+    )
+    # By EVIDENCE, not by a second name list that would drift the way DOC_TOOLS
+    # already did once (preview_doc vs preview_document).
+    # Comments STRIPPED. This case failed against correct code on its first
+    # run — the header comment above `declaresState` names `choose_director`
+    # while explaining why picker names must NOT be listed, and the scan
+    # matched that explanation. Third time today a source check has read its
+    # own documentation; the lesson is that any of these must strip comments
+    # before they measure anything.
+    a_code = re.sub(r"/\*.*?\*/", "", a, flags=re.DOTALL)
+    a_code = re.sub(r"^\s*//.*$", "", a_code, flags=re.MULTILINE)
+    check(
+        "U37f",
+        "admission is by evidence, not by a list of picker names",
+        "choose_director" not in a_code,
+        "useArtifact hardcodes picker names, which is the drift that made DOC_TOOLS stale",
+    )
+
+
+# ===========================================================================
 # U6  Party coercion — whatever a picker or the model hands back
 # ===========================================================================
 def test_party_coercion():
@@ -3639,6 +3717,7 @@ def main():
         test_panel_watches_real_tool_names,
         test_multi_stakeholder_attributes,
         test_stall_guard_sees_unpaid_debt,
+        test_pick_refreshes_the_panel,
         test_structural_contracts,
     ):
         try:
