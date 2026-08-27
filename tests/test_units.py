@@ -513,6 +513,106 @@ def test_bare_person_attributes():
 
 
 # ===========================================================================
+# U32 One resolver, three views
+#     The register fix shipped and the product still looked unfixed. The
+#     question card correctly stopped asking for nationality and date of birth;
+#     the Fields panel beside it went on showing both as PENDING, and displayed
+#     the COMPANY's registered office under the DIRECTOR's `address`.
+#
+#     Nothing was stale. Three pieces of code each decided independently whether
+#     a field was filled — generation and the Fill-in view through
+#     `find_replacement`, and the Fields panel through `_resolve_from_data`
+#     alone, which cannot see the People register.
+#
+#     This case pins the invariant that was missing: all three answer from ONE
+#     resolver. A source check, because the alternative needs a live database
+#     and a picked person, and a guard that only runs with fixtures present is a
+#     guard that stops running.
+# ===========================================================================
+def test_one_resolver_three_views():
+    import inspect
+
+    import scout.tools.smart_doc as sd
+
+    # --- the resolver exists and reports both halves ----------------------
+    check(
+        "U32a",
+        "a single resolver answers what is filled and what is blank",
+        callable(getattr(sd, "_resolved_values", None)),
+        "_resolved_values is missing",
+    )
+    sig = list(inspect.signature(sd._resolved_values).parameters)
+    eq("U32b", "it takes the fields, the data and the template", sig[:4],
+       ["required_fields", "data", "template_name", "company_name"])
+
+    # --- it goes through find_replacement, not the flat data lookup -------
+    body = inspect.getsource(sd._resolved_values)
+    check(
+        "U32c",
+        "the resolver calls find_replacement",
+        "find_replacement(" in body,
+        "_resolved_values does not use find_replacement",
+    )
+    check(
+        "U32d",
+        "the resolver does not fall back to the flat data lookup",
+        "_resolve_from_data(" not in body,
+        "_resolved_values still reads data directly, which cannot see the register",
+    )
+
+    # --- every panel state is built from it -------------------------------
+    # `_document_state` renders whatever it is handed, so the defect lives in
+    # the CALLERS. Each one must hand it resolved values, never a raw company
+    # record — that record publishes a bare `address` alias holding the
+    # company's own office.
+    tool_src = inspect.getsource(sd)
+    calls = tool_src.split("_document_state(")[1:]
+    raw_values = []
+    for i, seg in enumerate(calls):
+        head = seg[: seg.find(")\n") if ")\n" in seg else 900]
+        for bad in ("values=normalized_company_data", "values=normalized_data", "values=slot_data",
+                    "values=data,", "values=preview_data,"):
+            if bad in head:
+                raw_values.append((i, bad))
+    eq("U32e", "no panel state is built from a raw company record", raw_values, [])
+
+    check(
+        "U32f",
+        "every _document_state call site passes resolved values",
+        tool_src.count("_resolved_values(") >= 5,
+        f"only {tool_src.count('_resolved_values(')} resolver call(s) for "
+        f"{tool_src.count('_document_state(') - 1} panel state(s)",
+    )
+
+    # --- what is outstanding is decided by the resolver too ---------------
+    prep = inspect.getsource(sd.prepare_document_data)
+    # NOT `"_resolved_blank" in prep` — that survived its own mutation, because
+    # a mutant that reassigned the same NAME from `validation["missing_fields"]`
+    # still contained the string. The call is what has to be there.
+    check(
+        "U32g",
+        "prepare decides outstanding from the resolver, not from name matching",
+        "_resolved_values(" in prep and "outstanding = [f for f in _resolved_blank" in prep,
+        "prepare_document_data no longer derives outstanding from the resolver",
+    )
+    check(
+        "U32h",
+        "ready and outstanding cannot contradict each other",
+        "ready = not outstanding" in prep,
+        "ready is computed independently of outstanding and can disagree with it",
+    )
+
+    # --- `address` no longer claims a default it does not have ------------
+    validate = inspect.getsource(sd.validate_data_vs_template)
+    check(
+        "U32i",
+        "address is not counted available without a value",
+        'DEFAULT_FIELDS = {"meeting_location"}' in validate,
+        "address is still exempted from the value check, so it is never asked",
+    )
+
+
+# ===========================================================================
 # U6  Party coercion — whatever a picker or the model hands back
 # ===========================================================================
 def test_party_coercion():
@@ -3088,6 +3188,7 @@ def main():
         test_resume_receive,
         test_template_drift,
         test_bare_person_attributes,
+        test_one_resolver_three_views,
         test_structural_contracts,
     ):
         try:

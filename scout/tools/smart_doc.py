@@ -353,7 +353,12 @@ def validate_data_vs_template(required_fields: list, company_data: dict) -> dict
     # `new_company_name` case, hidden behind a list that asserted the opposite.
     # `tracker_fill` now pins the claim: every member must resolve to a real
     # value, so the two cannot drift apart again.
-    DEFAULT_FIELDS = {"meeting_location", "address"}
+    # `address` left this set on 2026-08-27. It was here because a bare
+    # `address` placeholder always resolved — from the company record's own
+    # `address` alias. That alias is now refused for a person's field, which is
+    # the point of the fix, so `address` no longer has a default and claiming it
+    # does is what kept it out of the missing list and therefore never asked.
+    DEFAULT_FIELDS = {"meeting_location"}
 
     # Alias mapping for matching
     FIELD_ALIASES = {
@@ -433,6 +438,54 @@ _TBD_VALUE_RE = re.compile(r"^\s*(tbd|\[tbd[^\]]*\]|n/?a|-{1,2})\s*$", re.IGNORE
 
 def _norm_key(key: Any) -> str:
     return str(key).strip().lower().replace(" ", "_").replace("-", "_")
+
+
+def _resolved_values(
+    required_fields: list | None,
+    data: dict[str, Any],
+    template_name: str | None,
+    company_name: str | None,
+    document_id: Any = None,
+) -> tuple[dict[str, str], list[str]]:
+    """Resolve every field the template renders, ONCE, the way generation does.
+
+    Three pieces of code used to decide independently whether a field was
+    filled: generation (via `find_replacement`), the Fill-in view (also
+    `find_replacement`), and the Fields panel — which asked `_resolve_from_data`
+    alone and so could not see the People register at all.
+
+    The result on 2026-08-27, on a build where the register fix was already
+    live: the question card correctly stopped asking for nationality and date of
+    birth, while the panel beside it still showed both as PENDING and displayed
+    the COMPANY's registered office under the director's `address`. Nothing was
+    stale — the panel was computing a different, wrong answer.
+
+    One resolver now answers for all three. Returns the resolved values and the
+    fields that genuinely came back blank.
+    """
+    resolved: dict[str, str] = {}
+    blank: list[str] = []
+    for raw in required_fields or []:
+        field = str(raw).strip()
+        if not field:
+            continue
+        try:
+            value = find_replacement(
+                field,
+                data,
+                template_name=template_name,
+                company_name=company_name,
+                document_id=document_id,
+            )
+        except Exception as e:
+            logging.getLogger("legalscout").warning(f"_resolved_values: {field!r} failed: {e}")
+            value = None
+        text = "" if value is None else str(value).strip()
+        if not text or text == LEFT_BLANK or _TBD_VALUE_RE.match(text):
+            blank.append(field)
+        else:
+            resolved[field] = text
+    return resolved, blank
 
 
 def _document_state(
@@ -946,8 +999,19 @@ def prepare_document_data(template_name: str, company_name: str, documents_dir: 
         company_name=company_name,
     )
 
-    outstanding = list(validation.get("missing_fields", [])) + [r["placeholder"] for r in slot_requests]
-    ready = validation["is_complete"] and not slot_requests
+    # What the panel calls outstanding is decided by the SAME resolver that
+    # generation uses, not by `validate_template_data` — which compares field
+    # names against company columns and so cannot see the People register at
+    # all. Left as it was, the panel reported a director's nationality, NRC and
+    # date of birth as pending while generation filled all three from the
+    # register, and the question card had already stopped asking for them.
+    _resolved_map, _resolved_blank = _resolved_values(
+        required_fields, normalized_company_data, template_name, company_name
+    )
+    _slot_placeholders = [r["placeholder"] for r in slot_requests]
+    _slot_canon = {canonical_field(p) for p in _slot_placeholders}
+    outstanding = [f for f in _resolved_blank if canonical_field(f) not in _slot_canon] + _slot_placeholders
+    ready = not outstanding
 
     return {
         "success": True,
@@ -958,7 +1022,11 @@ def prepare_document_data(template_name: str, company_name: str, documents_dir: 
             template=template_name,
             company=company_name,
             required_fields=required_fields,
-            values=normalized_company_data,
+            # The RESOLVED values, not the raw company record. That record
+            # publishes a bare `address` alias holding the company's registered
+            # office, which the panel then showed against the DIRECTOR's home
+            # address — the one reading the resolver had just refused.
+            values=_resolved_map,
             # A slot the user has not picked, or a field the template needs and
             # the record does not carry, is input we are waiting on — not an
             # error and not "ready".
@@ -1233,7 +1301,12 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
                     template=template_name,
                     company=company_name,
                     required_fields=result.get("template_analysis", {}).get("required_fields", []),
-                    values=slot_data,
+                    values=_resolved_values(
+                        result.get("template_analysis", {}).get("required_fields", []),
+                        slot_data,
+                        template_name,
+                        company_name,
+                    )[0],
                     status="awaiting-input",
                     outstanding=[r["placeholder"] for r in slot_requests],
                 ),
@@ -1320,11 +1393,29 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
             merged_data = dict(normalized_data)
             if custom_data:
                 merged_data.update(custom_data)
+            # Resolve the whole template ONCE, through the same resolver
+            # generation uses. `_resolve_from_data` alone used to answer this
+            # question, and it cannot see the People register — so a director's
+            # nationality, NRC and date of birth were reported missing while
+            # generation filled all three, and the panel showed the COMPANY's
+            # office under the director's `address` because the raw company
+            # record publishes a bare `address` alias.
+            required_all = list(result.get("template_analysis", {}).get("required_fields", []))
+            # No document row exists yet at this point in the flow — the
+            # selections are read back by company and session scope instead.
+            resolved_map, resolved_blank = _resolved_values(
+                required_all,
+                merged_data,
+                template_name,
+                company_name,
+            )
+            blank_canon = {canonical_field(f) for f in resolved_blank}
+
             missing_user_fields = []
             for uf in user_input_fields:
                 if template_fields and canonical_field(uf) not in template_fields:
                     continue
-                if _resolve_from_data(uf, merged_data):
+                if canonical_field(uf) not in blank_canon:
                     continue
                 if _explicitly_supplied(uf, custom_data):
                     continue
@@ -1382,7 +1473,15 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
                         # The smart defaults are candidates, not answers: they
                         # show as "tbd" because every one of these keys is also
                         # listed as outstanding.
-                        values={**normalized_data, **field_defaults},
+                        #
+                        # `resolved_map`, NOT `normalized_data`. The raw company
+                        # record publishes a bare `address` alias holding the
+                        # COMPANY's registered office, so passing it here put
+                        # that office against the director's home address in the
+                        # panel — the one field the resolver had just refused to
+                        # answer that way. What the panel shows is now exactly
+                        # what generation will write.
+                        values={**resolved_map, **field_defaults},
                         status="awaiting-input",
                         outstanding=missing_user_fields,
                     ),
@@ -1572,7 +1671,12 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
                     template=template_name,
                     company=company_name,
                     required_fields=result.get("template_analysis", {}).get("required_fields", []),
-                    values=data,
+                    values=_resolved_values(
+                        result.get("template_analysis", {}).get("required_fields", []),
+                        data,
+                        template_name,
+                        company_name,
+                    )[0],
                     status="awaiting-input",
                     outstanding=_undeclared,
                 ),
@@ -1728,7 +1832,7 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
                 template=template_name,
                 company=company_name,
                 required_fields=all_template_placeholders,
-                values=data,
+                values=_resolved_values(all_template_placeholders, data, template_name, company_name)[0],
                 status="generated",
                 outstanding=validation.get("unfilled_names", []),
                 file_name=output_filename,
@@ -1941,11 +2045,25 @@ def create_smart_document_tool(documents_dir: str = "/documents", host: str = ""
                 template=template_name,
                 company=company_name,
                 required_fields=result.get("template_analysis", {}).get("required_fields", []),
-                values=preview_data,
+                values=_resolved_values(
+                    result.get("template_analysis", {}).get("required_fields", []),
+                    preview_data,
+                    template_name,
+                    company_name,
+                )[0],
                 # A preview that still has missing fields or unpicked parties is
                 # waiting on the user; otherwise it is ready to generate.
                 status="ready" if result.get("ready_to_generate") else "awaiting-input",
-                outstanding=list(validation.get("missing_fields", [])) + list(result.get("unresolved_slots", [])),
+                # Same resolver as everywhere else. `validation.missing_fields`
+                # is name-matching against company columns and reports a
+                # register-held attribute as missing.
+                outstanding=_resolved_values(
+                    result.get("template_analysis", {}).get("required_fields", []),
+                    preview_data,
+                    template_name,
+                    company_name,
+                )[1]
+                + list(result.get("unresolved_slots", []) or []),
             ),
             "needs_approval": True,
             # Told to the model, not shown to the user: how to ask for approval.

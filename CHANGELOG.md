@@ -2,6 +2,51 @@
 
 All notable changes to Legal Scout.
 
+## [1.2.65] — 2026-08-27
+
+### Fixed — the panel was computing a different, wrong answer
+
+1.2.64 taught the resolver to read the People register, and the product still
+looked unfixed. The question card correctly stopped asking for a director's
+nationality and date of birth; the Fields panel beside it went on showing both
+as PENDING, showed NRIC as PENDING, and displayed the COMPANY's registered
+office — phone number and legal@ mailbox included — under the DIRECTOR's
+`address`.
+
+Nothing was stale. Three pieces of code each decided independently whether a
+field was filled: generation and the Fill-in view through `find_replacement`,
+and the Fields panel through `_resolve_from_data` alone — which cannot see the
+People register at all, and which answers `address` from the bare alias the
+company record publishes.
+
+- **One resolver, three views.** `_resolved_values` runs `find_replacement`
+  across the template's fields once and returns both the resolved values and the
+  genuinely blank ones. Every `_document_state` call site now builds its panel
+  from that, and `prepare_document_data` decides what is outstanding from it
+  rather than from name-matching against company columns.
+
+- **`ready` can no longer contradict `outstanding`.** They were computed
+  separately, so the panel could show fields pending on a document it also
+  called ready.
+
+- **`address` stopped claiming a default it does not have.** It was exempt from
+  the value check because a bare `address` always resolved — from the company's
+  own alias. That reading is refused now, which is the point, so the exemption
+  only kept the field out of the missing list and therefore never asked.
+
+Measured on the same template and company: the panel went from 3/11 with a wrong
+address to **6/11**, and its outstanding list is now identical to the Fill-in
+view's — `address, country_of_residence, date, email, phone`, every one of them
+genuinely absent from the register.
+
+### Notes
+
+`U32` pins the invariant that was missing, and both halves were mutation-tested:
+putting one call site back to the raw company record turns `U32e` red, and
+deriving `outstanding` from name-matching again turns `U32g` red. `U32g` failed
+that test on its first attempt — it asserted a variable NAME that a mutant still
+contained — and now asserts the call.
+
 ## [1.2.64] — 2026-08-27
 
 ### Fixed — the register already knew, and the form asked anyway
