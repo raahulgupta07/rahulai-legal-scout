@@ -1317,6 +1317,24 @@ def test_tracked_changes_are_visible_to_the_fill():
     check("U39j", "generation warns about unaccepted revisions", "tracked_changes(filled_doc)" in mod,
           "nothing tells the firm their template carries tracked changes")
 
+    # EVERY reader of a template must see the same text, or one of them reports
+    # a field the others cannot. 1.2.71 taught the fill, the audit and training;
+    # it missed the Fill-in view, and tracker_layer1 A2b stayed red for exactly
+    # that reason — the panel could not offer a person to pick because it could
+    # not see the person placeholder.
+    import scout.tools.fill_view as fv_mod
+
+    fv_src = inspect.getsource(fv_mod)
+    fv_code = "\n".join(
+        line.split("#", 1)[0] for line in fv_src.splitlines() if not line.strip().startswith("#")
+    )
+    check(
+        "U39k",
+        "the Fill-in view reads the same visible text as the fill",
+        "paragraph_text(para)" in fv_code and "para.text," not in fv_code,
+        "fill_view still emits para.text, so a placeholder inside a tracked insertion never reaches the panel",
+    )
+
 
 # ===========================================================================
 # U6  Party coercion — whatever a picker or the model hands back

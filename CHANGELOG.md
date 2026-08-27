@@ -2,6 +2,21 @@
 
 All notable changes to Legal Scout.
 
+## [1.2.72] — 2026-08-27
+
+### Fixed — the Fill-in view was the fourth reader, and 1.2.71 missed it
+
+`tracker_layer1` A2b stayed red after 1.2.71 with "no blank of kind 'person'",
+and the reason was my own incomplete fix. 1.2.71 taught the fill, the
+unfilled-placeholder audit and training to read text inside tracked insertions.
+`fill_view.py` still passed `para.text`, so the Fill-in panel remained blind to
+`[director_name]` and the three shareholder slots in the installed Notice of AGM
+— which is exactly what A2b measures: whether the panel offers a person to pick.
+
+Four readers of the same template, and they must all see the same text or one of
+them reports a field the others cannot. `U39k` now pins that, and goes red when
+`fill_view` is reverted to `para.text`.
+
 ## [1.2.71] — 2026-08-27
 
 ### Fixed — a placeholder hidden inside a tracked change is never filled

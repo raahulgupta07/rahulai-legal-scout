@@ -197,6 +197,7 @@ def _resolve_value(placeholder: str, normalized_data: dict, template_name: str, 
 # copies had already drifted: this one never listed `nric` — the exact spelling
 # the director consent form uses — so the panel could not answer a placeholder
 # the resolver beside it could.
+from scout.tools.placeholders import paragraph_text
 from scout.tools.slot_resolver import _attr_tail
 
 _ID_TYPE_RE = re.compile(r"identification[_ ]?type|id[_ ]?type", re.IGNORECASE)
@@ -494,7 +495,13 @@ def build_fill_view(template_name: str, company_name: str, documents_dir: str = 
         style = _paragraph_style(para)
         blocks.append({"type": "para_start", **style})
         _emit_paragraph_text(
-            para.text,
+            # Tracked insertions again. The fill, the audit and training were
+            # taught to read these in 1.2.71 and this view was not, so the
+            # Fill-in panel still could not see `[director_name]` or the three
+            # shareholder slots in the installed Notice of AGM — which is
+            # precisely what tracker_layer1 A2b measures ("offers people to
+            # pick"), and why it stayed red after that release.
+            paragraph_text(para),
             blocks,
             blanks,
             normalized_data,
@@ -518,7 +525,7 @@ def build_fill_view(template_name: str, company_name: str, documents_dir: str = 
                     style = _paragraph_style(cpara)
                     blocks.append({"type": "para_start", **style})
                     _emit_paragraph_text(
-                        cpara.text,
+                        paragraph_text(cpara),
                         blocks,
                         blanks,
                         normalized_data,
