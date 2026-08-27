@@ -2,6 +2,67 @@
 
 All notable changes to Legal Scout.
 
+## [1.2.64] — 2026-08-27
+
+### Fixed — the register already knew, and the form asked anyway
+
+A director was picked from the card. The People register held
+`nationality = Myanmar` and `date_of_birth = 1987-09-21` for him, and the
+consent form asked for both as free text — while showing "Myanmar" in the very
+picker row the user had just clicked.
+
+Two bridges exist between a picked person and their own attributes, and both
+were keyed on a ROLE PREFIX: `director_nationality` resolves, bare
+`nationality` does not. `Director Consent Form - Non-Group Member
+Appointment.docx` writes every one of them bare, so neither bridge could see
+them and the register was never consulted.
+
+- **A bare attribute now belongs to the only person in the document.** The rule
+  is deliberately narrow: exactly ONE single-person slot in the template. With
+  two — a resigning director and a new one — a bare `nationality` genuinely is
+  ambiguous, and guessing would print one person's details beside the other's
+  name. Ambiguous still asks.
+
+- **`nric` could never resolve as an identifier.** The identifier pattern listed
+  `nrc`, `nrc_no`, `passport`, `identification_number` — not `nric`, the exact
+  spelling this template uses. It appeared filled in testing only because the
+  model happened to pass it through `custom_data`; the same document generated
+  again could leave it blank. It is now answered by code.
+
+- **The company's registered office was being filled in as the director's home
+  address.** `prepare_document_data` republishes the company record under
+  several aliases, one of which is a bare `address`, so it won the exact-match
+  tier long before any person lookup ran. The form's own trained description
+  reads "Residential address of the appointed director"; what it got was
+  "BARGAYAR ROAD ... LEGAL@CITYHOLDINGS.COM.MM". A blank gets proof-read. A
+  confident wrong address does not — this was the worst of the three.
+
+  The register has no home address on file for him, so the field is now blank
+  and asked. That is the correct outcome, and it is a field fewer than before.
+
+- **One attribute table, not two.** `fill_view` carried its own copy and the two
+  had already drifted — its copy never listed `nric`. It now reads the table in
+  `slot_resolver`.
+
+### Notes
+
+The first diagnosis of the address defect was wrong: a loose token-subset match
+was blamed, and `address` turns out to be a GENERIC token that tier refuses
+outright. `U31w` is the negative control that caught it, and it now pins the
+real path instead. Strict mode was kept anyway, as a guard rather than the fix —
+`nationality` IS a token subset of `nationality_of_ultimate_holding_company`,
+and that tier would have answered it (`U31xa` / `U31xb`).
+
+`tracker_layer1` gained `date of birth` to its register-owned date list, on the
+same principle as `financial year` and `auditor`: a birth date is a fact the
+register owns, not an event the user picks. The four cases that changed still
+assert that the SIGNING date on those forms stays blank.
+
+Verified end to end on the real template and company: `nationality`,
+`date_of_birth` and `nric` resolve from the register; `address`, `email`,
+`phone` and `country_of_residence` are blank and asked, because the register
+genuinely holds nothing for them.
+
 ## [1.2.63] — 2026-08-26
 
 ### Added — `super_admin`, and an honest label for `editor`

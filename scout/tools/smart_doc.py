@@ -42,8 +42,9 @@ from scout.tools.placeholders import (
 )
 from scout.tools.repeat_regions import _is_corporate
 from scout.tools.slot_resolver import (
+    _attr_tail,
     collect_slot_requests,
-    companion_identifier,
+    companion_attribute,
     current_session_scope,
     normalise_mapping,
     resolve_slot,
@@ -2126,6 +2127,36 @@ def fill_template_with_validation(
     return doc
 
 
+def _company_own_addresses(company_name: str | None) -> set[str]:
+    """The company's OWN addresses, normalised for comparison.
+
+    `prepare_document_data` publishes the company record under several aliases,
+    and one of them is a bare `address`. A template that writes `[address]`
+    meaning the DIRECTOR's home therefore resolved it on the exact-match tier —
+    the first line of `_resolve_from_data`, before any companion lookup — and a
+    consent form went out stating that the director resides at the company's
+    registered office, phone number and legal@ mailbox included.
+
+    Matching on the VALUE is what makes this safe: it removes the company's own
+    address from consideration for a person's field without guessing which key
+    it arrived under, and leaves an address the user actually typed alone.
+    """
+    if not company_name:
+        return set()
+    try:
+        row = _get_company_from_db(company_name)
+    except Exception:
+        return set()
+    if not row or row.get("ambiguous"):
+        return set()
+    out = set()
+    for column in ("registered_office_address", "principal_place_of_business", "address", "company_address"):
+        value = row.get(column)
+        if value and str(value).strip():
+            out.add(re.sub(r"\s+", " ", str(value)).strip().lower())
+    return out
+
+
 def _get_company_field(company_row: dict, column_path: str) -> str | None:
     """Resolve a DB column path from company data.
     Handles: 'company_name_english', 'members[0].name', 'directors[1].position'"""
@@ -2243,8 +2274,18 @@ def _get_company_from_db(company_name: str) -> dict | None:
     return None
 
 
-def _resolve_from_data(placeholder: str, data: dict[str, Any]) -> str | None:
-    """Resolve a placeholder against supplied data: exact, alias, then token set."""
+def _resolve_from_data(placeholder: str, data: dict[str, Any], strict: bool = False) -> str | None:
+    """Resolve a placeholder against supplied data: exact, alias, then token set.
+
+    `strict` drops the last tier — the token-SUBSET match. That tier answers a
+    placeholder from any key whose tokens contain it, which is right for
+    abbreviations and wrong across entities: `{address}` is a subset of
+    `{registered, office, address}`, so a bare `address` meaning the DIRECTOR's
+    home was silently filled with the COMPANY's registered office, on a form
+    whose own trained description reads "Residential address of the appointed
+    director". A blank is visible to whoever proof-reads; a confident wrong
+    address is not.
+    """
     placeholder_norm = normalize_field(placeholder)
     placeholder_canonical = canonical_field(placeholder)
 
@@ -2266,9 +2307,10 @@ def _resolve_from_data(placeholder: str, data: dict[str, Any]) -> str | None:
         if key_canonical == placeholder_canonical:
             return value
 
-    for key_norm, _key_canonical, value in normalized_items:
-        if tokens_match(placeholder_norm, key_norm):
-            return value
+    if not strict:
+        for key_norm, _key_canonical, value in normalized_items:
+            if tokens_match(placeholder_norm, key_norm):
+                return value
 
     # Last tier: a bare `date` placeholder answered under a qualified key.
     # Only fires when EXACTLY ONE qualified date was supplied — two of them
@@ -2367,18 +2409,45 @@ def find_replacement(
                             return val
 
                 elif source == "user_input":
-                    # Check if user provided this value in data, under this name or an alias
-                    resolved = _resolve_from_data(placeholder, data)
+                    # A person's own attributes — NRC, nationality, date of
+                    # birth, home address — belong to the person a sibling slot
+                    # already resolved to, not to the document. Training
+                    # classifies every one of them `user_input` because none is
+                    # a column on `companies`, which decoupled them from the
+                    # name slot beside them: the picker chose the person, the
+                    # attribute was asked as free text, and the two could
+                    # disagree or come out blank while the register held the
+                    # answer all along.
+                    #
+                    # ORDER: a value the caller SUPPLIED still wins — the user's
+                    # own answer outranks the register. But it must win by
+                    # naming the field, not by a loose token-subset match
+                    # against a company column, so a person attribute reads the
+                    # supplied data in `strict` mode. Left loose, `address`
+                    # matched `registered_office_address` and the company's
+                    # office was filled in as the director's home BEFORE this
+                    # companion lookup was ever reached.
+                    attr_target = _attr_tail(placeholder)
+                    person_attr = attr_target is not None
+
+                    resolved = _resolve_from_data(placeholder, data, strict=person_attr)
+                    # The company's OWN address is not the director's home. It
+                    # arrives in `data` under a bare `address` alias and so wins
+                    # the exact-match tier above; discarding it here is what
+                    # sends the placeholder on to the register, and then to the
+                    # user, instead of quietly filling in the wrong building.
+                    if (
+                        resolved
+                        and attr_target
+                        and attr_target[1] == "residential_address"
+                        and re.sub(r"\s+", " ", str(resolved)).strip().lower()
+                        in _company_own_addresses(company_name)
+                    ):
+                        resolved = None
                     if resolved:
                         return resolved
 
-                    # An NRC/passport belongs to a person, not to the document.
-                    # Training classifies it `user_input` because it is not a
-                    # column on companies, which decoupled it from the name slot
-                    # beside it — the picker chose the person, the NRC was asked
-                    # as free text, and the two could disagree or come out blank
-                    # while the register held the number all along.
-                    companion = companion_identifier(
+                    companion = companion_attribute(
                         placeholder,
                         mapping,
                         data,
@@ -2387,6 +2456,16 @@ def find_replacement(
                     )
                     if companion:
                         return companion
+
+                    # Not a person attribute after all, or the register has
+                    # nothing on file: fall back to the loose match the strict
+                    # pass skipped, so nothing that used to resolve stops.
+                    # A person attribute deliberately does NOT come back here —
+                    # for those, blank-and-ask is the correct outcome.
+                    if not person_attr:
+                        resolved = _resolve_from_data(placeholder, data)
+                        if resolved:
+                            return resolved
 
                     if default and default != "today" and str(default).strip():
                         return str(default)

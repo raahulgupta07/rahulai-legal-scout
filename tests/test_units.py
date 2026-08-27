@@ -290,6 +290,229 @@ def test_companion_identifier():
 
 
 # ===========================================================================
+# U31 Bare person attributes — the register already holds them
+#     Measured on the live box 2026-08-27. The user picked KYAW THU SOE from the
+#     card; the register held nationality=Myanmar and date_of_birth=1987-09-21
+#     for him, and the consent form asked for both as free text anyway.
+#
+#     `Director Consent Form - Non-Group Member Appointment.docx` writes its
+#     placeholders BARE — `nationality`, not `director_nationality` — and both
+#     bridges from a picked person to their attributes were keyed on a role
+#     prefix, so neither could see them.
+#
+#     The third finding is the expensive one: `{address}` is a token subset of
+#     `{registered, office, address}`, so a bare `address` meaning the
+#     DIRECTOR's home resolved silently to the COMPANY's registered office. A
+#     blank gets proof-read; a confident wrong address does not.
+# ===========================================================================
+def test_bare_person_attributes():
+    import scout.tools.smart_doc as sd
+
+    # --- the tail table itself -------------------------------------------
+    for cid, ph, want in [
+        ("U31a", "nationality", ("", "nationality")),
+        ("U31b", "date_of_birth", ("", "date_of_birth")),
+        ("U31c", "address", ("", "residential_address")),
+        ("U31d", "nric", ("", "nrc_passport_no")),
+        ("U31e", "country_of_residence", ("", "country_of_residence")),
+        ("U31f", "director_nationality", ("director", "nationality")),
+        ("U31g", "new_director_residential_address", ("new_director", "residential_address")),
+        ("U31h", "resigning_director_date_of_birth", ("resigning_director", "date_of_birth")),
+    ]:
+        eq(cid, f"attr tail of {ph!r}", sr._attr_tail(ph), want)
+
+    # Longest tail wins, or the short one strips the wrong prefix off the role.
+    eq(
+        "U31i",
+        "residential_address is not read as role 'residential'",
+        sr._attr_tail("director_residential_address"),
+        ("director", "residential_address"),
+    )
+
+    # Company fields are not person attributes.
+    for cid, ph in [
+        ("U31j", "company_registration_number"),
+        ("U31k", "meeting_date"),
+        ("U31l", "company_name"),
+        ("U31m", "registered_office"),
+    ]:
+        eq(cid, f"{ph!r} is not a person attribute", sr._attr_tail(ph), None)
+
+    # `nric` is the spelling the live template uses and was missing from the
+    # identifier pattern entirely — it could never resolve as an identifier.
+    eq("U31n", "nric is an identifier tail", sr._role_prefix("director_nric", sr._IDENTIFIER_ATTR_RE), "director")
+
+    # --- who a bare attribute belongs to ---------------------------------
+    one_person = {
+        "director_name": {
+            "source": "slot",
+            "slot": {"of": "people_register", "kind": "new_director", "multi": False},
+        },
+        "nationality": {"source": "user_input", "slot": None},
+        "address": {"source": "user_input", "slot": None},
+        "company": {"source": "db", "db_column": "company_name_english", "slot": None},
+    }
+    eq("U31o", "one person slot names the bare role", sr.sole_person_role(one_person), "director")
+
+    two_people = {
+        "resigning_director_name": {
+            "source": "slot",
+            "slot": {"of": "people_register", "kind": "resigning_director", "multi": False},
+        },
+        "new_director_name": {
+            "source": "slot",
+            "slot": {"of": "people_register", "kind": "new_director", "multi": False},
+        },
+    }
+    eq(
+        "U31p",
+        "TWO people make a bare attribute ambiguous — ask, never guess",
+        sr.sole_person_role(two_people),
+        "",
+    )
+    eq("U31q", "no person slot at all", sr.sole_person_role({"company": {"source": "db"}}), "")
+
+    # A LIST of people is not a single person either.
+    multi = {
+        "shareholder_names": {
+            "source": "slot",
+            "slot": {"of": "document_company", "kind": "shareholder_list", "multi": True},
+        }
+    }
+    eq("U31r", "a multi slot does not own a bare attribute", sr.sole_person_role(multi), "")
+
+    # --- the identifier still resolves without a second read -------------
+    person = {"name": "KYAW THU SOE", "identifier": "12/LAMANA(N)142591", "party_type": "individual"}
+    eq(
+        "U31s",
+        "a bare nric is answered by the picked person's identifier",
+        sr.companion_attribute("nric", one_person, {"director_name": person}),
+        "12/LAMANA(N)142591",
+    )
+    eq(
+        "U31t",
+        "with nobody picked the field is still asked",
+        sr.companion_attribute("nationality", one_person, {}),
+        None,
+    )
+    eq(
+        "U31u",
+        "a bare attribute in a two-person template is never guessed",
+        sr.companion_attribute("nationality", two_people, {"new_director_name": person}),
+        None,
+    )
+    eq(
+        "U31v",
+        "a company field is not answered from a person",
+        sr.companion_attribute("company_registration_number", one_person, {"director_name": person}),
+        None,
+    )
+
+    # --- the address defect ----------------------------------------------
+    # The first diagnosis of this was WRONG and this case is what caught it.
+    # The theory was a loose token-subset match — `{address}` inside
+    # `{registered, office, address}`. It is not: `address` is a GENERIC token,
+    # so that tier refuses it outright.
+    #
+    # The real path is blunter. `prepare_document_data` republishes the company
+    # record under aliases, one of which is a BARE `address`, so the company's
+    # own office wins on the very first line of `_resolve_from_data` — exact
+    # match — long before any companion lookup runs. Verified on the live box:
+    # keys containing "addr" were ['registered_office_address',
+    # 'company_address', 'address'].
+    company_office = "BARGAYAR ROAD, NO. 1-11, PADONMAR STADIUM (EAST WING), YANGON"
+    company_data = {
+        "company_name_english": "CITY MART HOLDING COMPANY LIMITED",
+        "registered_office_address": company_office,
+    }
+    eq(
+        "U31w",
+        "a generic token never claims a longer company key",
+        sd._resolve_from_data("address", company_data),
+        None,
+    )
+    eq(
+        "U31x",
+        "the bare company alias is what answered a person's field",
+        sd._resolve_from_data("address", {**company_data, "address": company_office}),
+        company_office,
+    )
+    # Strict mode is kept as a GUARD, not as the fix: a placeholder like
+    # `nationality` is a token subset of a company key such as
+    # `nationality_of_ultimate_holding_company`, and that tier would answer it.
+    eq(
+        "U31xa",
+        "strict mode blocks a person's field resolving from a company key",
+        sd._resolve_from_data(
+            "nationality", {"nationality_of_ultimate_holding_company": "Singapore"}, strict=True
+        ),
+        None,
+    )
+    eq(
+        "U31xb",
+        "and the same lookup does resolve without it — this tier is real",
+        sd._resolve_from_data("nationality", {"nationality_of_ultimate_holding_company": "Singapore"}),
+        "Singapore",
+    )
+    # An answer the USER actually gave still wins, strict or not — it names the
+    # field rather than merely containing its tokens.
+    eq(
+        "U31y",
+        "a supplied answer still outranks the register",
+        sd._resolve_from_data("address", {**company_data, "address": "No. 7, Bahan Township"}, strict=True),
+        "No. 7, Bahan Township",
+    )
+    eq(
+        "U31z",
+        "and so does one supplied under an alias",
+        sd._resolve_from_data(
+            "address", {**company_data, "residential_address": "No. 7, Bahan Township"}, strict=True
+        ),
+        "No. 7, Bahan Township",
+    )
+
+    # A non-person user_input field must keep its loose match — this is the
+    # tier the strict pass skips, and nothing else may lose it.
+    eq(
+        "U31aa",
+        "a non-person field is untouched by strict mode",
+        sd._resolve_from_data("registration_number", {"company_registration_number": "113516550"}),
+        "113516550",
+    )
+
+    # --- the wiring actually reaches find_replacement ---------------------
+    # A source read, not a behaviour read: the branch must call the companion
+    # lookup and must NOT fall back to the loose tier for a person attribute.
+    import inspect
+
+    body = inspect.getsource(sd.find_replacement)
+    check(
+        "U31ab",
+        "find_replacement asks the companion resolver",
+        "companion_attribute(" in body,
+        "user_input branch no longer calls companion_attribute",
+    )
+    check(
+        "U31ac",
+        "a person attribute is read from supplied data in strict mode",
+        "strict=person_attr" in body,
+        "strict flag not threaded into the user_input branch",
+    )
+    check(
+        "U31ad",
+        "a person attribute does not fall back to the loose tier",
+        "if not person_attr:" in body,
+        "loose fallback is not gated on person_attr",
+    )
+    check(
+        "U31ae",
+        "the company's own address is discarded for a person's address field",
+        "_company_own_addresses(company_name)" in body,
+        "find_replacement no longer screens out the company's own address",
+    )
+
+
+# ===========================================================================
 # U6  Party coercion — whatever a picker or the model hands back
 # ===========================================================================
 def test_party_coercion():
@@ -2864,6 +3087,7 @@ def main():
         test_write_boundary,
         test_resume_receive,
         test_template_drift,
+        test_bare_person_attributes,
         test_structural_contracts,
     ):
         try:

@@ -190,24 +190,14 @@ def _resolve_value(placeholder: str, normalized_data: dict, template_name: str, 
         return None
 
 
-# Placeholder tails that describe a person rather than name one. Each maps to
+# Placeholder tails that describe a person rather than name one, each mapped to
 # the People-register column that answers it.
-_PERSON_ATTRS = (
-    ("identification_number", "nrc_passport_no"),
-    ("identification_no", "nrc_passport_no"),
-    ("nrc_passport", "nrc_passport_no"),
-    ("nrc_no", "nrc_passport_no"),
-    ("nrc", "nrc_passport_no"),
-    ("passport", "nrc_passport_no"),
-    ("id_number", "nrc_passport_no"),
-    ("father_name", "father_name"),
-    ("fathers_name", "father_name"),
-    ("nationality", "nationality"),
-    ("date_of_birth", "date_of_birth"),
-    ("occupation", "business_occupation"),
-    ("residential_address", "residential_address"),
-    ("address", "residential_address"),
-)
+#
+# ONE table, owned by slot_resolver. It used to be duplicated here, and the two
+# copies had already drifted: this one never listed `nric` — the exact spelling
+# the director consent form uses — so the panel could not answer a placeholder
+# the resolver beside it could.
+from scout.tools.slot_resolver import _attr_tail
 
 _ID_TYPE_RE = re.compile(r"identification[_ ]?type|id[_ ]?type", re.IGNORECASE)
 
@@ -220,12 +210,15 @@ def _person_attribute(placeholder: str) -> tuple[str, str] | None:
     role prefix, so once the person is known the rest follow — asking for them
     separately is how a name and an NRC end up belonging to different people.
     """
-    p = placeholder.lower().strip()
-    for tail, column in _PERSON_ATTRS:
-        if p.endswith(("_" + tail, " " + tail)):
-            role = p[: -(len(tail) + 1)].strip(" _")
-            return (role, column) if role else None
-    return None
+    target = _attr_tail(placeholder)
+    if not target:
+        return None
+    role, column = target
+    # A BARE attribute has no role to attribute it to HERE — this net matches on
+    # the role prefix alone. The bare case is answered upstream in
+    # `find_replacement`, which can see the whole template's slots and so can
+    # tell "the only person in this document" from "one of two".
+    return (role, column) if role else None
 
 
 def _lookup_person(name: str) -> dict:

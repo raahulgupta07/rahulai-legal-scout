@@ -769,7 +769,7 @@ def _corporate_shareholder_name(data: dict, company_name: str | None) -> str:
 # person, as opposed to their name.
 _IDENTIFIER_ATTR_RE = re.compile(
     r"(?:^|[_\s])(?:"
-    r"nrc|nrc_no|nrc_number|nrc_passport_no|nrc_passport_number|"
+    r"nric|nrics|nrc|nrc_no|nrc_number|nrc_passport_no|nrc_passport_number|"
     r"passport|passport_no|passport_number|"
     r"identification_number|identification_no|identity_number|"
     r"identification|id_number|id_no"
@@ -787,6 +787,210 @@ def _role_prefix(placeholder: str, attr_re: re.Pattern) -> str:
     if not match:
         return ""
     return norm[: match.start()].strip(" _")
+
+
+# Every attribute a template may name BESIDE a person's name, mapped to the
+# People-register column that answers it.
+#
+# ORDER MATTERS — longest tail first. `residential_address` must be tested
+# before `address` and `nrc_passport_no` before `nrc`, or the shorter tail wins
+# and strips the wrong prefix off the role.
+PERSON_ATTR_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("nrc_passport_number", "nrc_passport_no"),
+    ("nrc_passport_no", "nrc_passport_no"),
+    ("identification_number", "nrc_passport_no"),
+    ("identification_no", "nrc_passport_no"),
+    ("identity_number", "nrc_passport_no"),
+    ("nrc_passport", "nrc_passport_no"),
+    ("passport_number", "nrc_passport_no"),
+    ("passport_no", "nrc_passport_no"),
+    ("nrc_number", "nrc_passport_no"),
+    ("id_number", "nrc_passport_no"),
+    ("nrc_no", "nrc_passport_no"),
+    ("nrics", "nrc_passport_no"),
+    ("passport", "nrc_passport_no"),
+    ("nric", "nrc_passport_no"),
+    ("nrc", "nrc_passport_no"),
+    ("country_of_residence", "country_of_residence"),
+    ("residential_address", "residential_address"),
+    ("business_occupation", "business_occupation"),
+    ("date_of_birth", "date_of_birth"),
+    ("fathers_name", "father_name"),
+    ("father_name", "father_name"),
+    ("nationality", "nationality"),
+    ("occupation", "business_occupation"),
+    ("birth_date", "date_of_birth"),
+    ("address", "residential_address"),
+    ("email", "email"),
+    ("phone", "phone"),
+    ("dob", "date_of_birth"),
+)
+
+
+def _attr_tail(placeholder: str) -> tuple[str, str] | None:
+    """Split a placeholder into (role prefix, register column).
+
+    The role is whatever precedes the attribute tail, and is "" for a BARE
+    placeholder like `nationality`. A bare tail is not an error — see
+    `sole_person_role` for who it belongs to.
+    """
+    norm = str(placeholder or "").replace("\xa0", " ").strip().lower().replace(" ", "_")
+    for tail, column in PERSON_ATTR_COLUMNS:
+        if norm == tail:
+            return ("", column)
+        if norm.endswith("_" + tail):
+            return (norm[: -(len(tail) + 1)].strip(" _"), column)
+    return None
+
+
+def _name_slot_keys(mapping: dict) -> list[str]:
+    """Keys in the mapping that are person slots — the ones a picker answers.
+
+    `shareholder_list` and `attendee` are excluded: they resolve to a LIST of
+    people, so there is no single person whose nationality a bare placeholder
+    could mean.
+    """
+    keys = []
+    for key, entry in (mapping or {}).items():
+        slot = slot_of(entry, key)
+        if not slot:
+            continue
+        if slot.get("multi") is True or slot.get("kind") in ("shareholder_list", "attendee"):
+            continue
+        keys.append(key)
+    return keys
+
+
+def sole_person_role(mapping: dict) -> str:
+    """The role a BARE person attribute belongs to, or "" when it is ambiguous.
+
+    A consent form names ONE person and then refers to "nationality",
+    "date_of_birth" and "address" with no prefix at all — the register holds
+    every one of them, and every one was asked as free text because nothing
+    connected a bare tail to the only person in the document.
+
+    The rule is deliberately narrow: exactly ONE single-person slot in the whole
+    template. With two (a resigning director and a new one) a bare `nationality`
+    genuinely is ambiguous, and guessing would put one person's details against
+    the other's name — worse than asking.
+    """
+    keys = _name_slot_keys(mapping)
+    if len(keys) != 1:
+        return ""
+    key = keys[0]
+    role = _role_prefix(key, _NAME_ATTR_RE)
+    if role:
+        return role
+    return str(key or "").replace("\xa0", " ").strip().lower()
+
+
+def _slot_key_for_role(mapping: dict, role: str) -> str | None:
+    """The slot key whose role matches — `director_name` for role `director`."""
+    for key, entry in (mapping or {}).items():
+        if not slot_of(entry, key):
+            continue
+        key_norm = str(key or "").replace("\xa0", " ").strip().lower()
+        if _role_prefix(key, _NAME_ATTR_RE) == role or key_norm == role:
+            return key
+    return None
+
+
+def person_register_row(name: str) -> dict:
+    """One People-register row by name, or {} — whitespace-tolerant match."""
+    if not str(name or "").strip():
+        return {}
+    conn = None
+    try:
+        from db.connection import get_db_conn
+
+        conn = get_db_conn()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT nrc_passport_no, father_name, nationality, date_of_birth, "
+            "business_occupation, residential_address, email, phone, "
+            "country_of_residence FROM people "
+            "WHERE upper(regexp_replace(trim(full_name), '\\s+', ' ', 'g')) = "
+            "upper(regexp_replace(trim(%s), '\\s+', ' ', 'g')) LIMIT 1",
+            (name,),
+        )
+        row = cur.fetchone()
+        cur.close()
+        if not row:
+            return {}
+        return {
+            "nrc_passport_no": row[0],
+            "father_name": row[1],
+            "nationality": row[2],
+            "date_of_birth": row[3].isoformat() if row[3] else None,
+            "business_occupation": row[4],
+            "residential_address": row[5],
+            "email": row[6],
+            "phone": row[7],
+            "country_of_residence": row[8],
+        }
+    except Exception as e:
+        import logging
+
+        logging.getLogger("legalscout").warning(f"person_register_row failed for {name!r}: {e}")
+        return {}
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def companion_attribute(
+    placeholder: str,
+    mapping: dict,
+    data: dict,
+    company_name: str | None = None,
+    document_id: Any = None,
+) -> str | None:
+    """Any register attribute of the person a sibling name slot already resolved to.
+
+    Generalises `companion_identifier` from the NRC to every column the register
+    holds, and — through `sole_person_role` — to placeholders written with no
+    role prefix at all.
+
+    Measured 2026-08-27 on the live box: the register held
+    `nationality=Myanmar` and `date_of_birth=1987-09-21` for the director the
+    user had just picked from the card, and the form asked for both as free
+    text. `Director Consent Form - Non-Group Member Appointment.docx` writes
+    them bare, so neither of the two existing bridges — both keyed on a role
+    prefix — could see them.
+    """
+    target = _attr_tail(placeholder)
+    if not target or not isinstance(mapping, dict):
+        return None
+    role, column = target
+
+    if not role:
+        role = sole_person_role(mapping)
+        if not role:
+            return None
+
+    key = _slot_key_for_role(mapping, role)
+    if not key:
+        return None
+
+    parties = selected_parties(key, mapping[key], data, document_id=document_id, company_name=company_name)
+    for party in parties:
+        # The identifier travels WITH the selection, so it answers without a
+        # second read — and it is right even for someone the register does not
+        # hold under exactly that spelling.
+        if column == "nrc_passport_no":
+            identifier = str(party.get("identifier") or "").strip()
+            if identifier:
+                return identifier
+        name = str(party.get("name") or "").strip()
+        if name:
+            value = person_register_row(name).get(column)
+            if value:
+                return str(value)
+        # The sibling resolved to somebody the register has nothing on file for.
+        # Fall through to the caller so the value is ASKED, never invented.
+        return None
+
+    return None
 
 
 def companion_identifier(

@@ -84,7 +84,12 @@ def candidates_include(blanks, kind, expected_names):
 # and auditor information are provided in the company register, the system ask
 # those information"). Only event dates — meeting, notice, signing — must be
 # left blank for the user to choose.
-_REGISTER_DATES = ("financial year", "auditor")
+# `date of birth` joined this list on 2026-08-27, when the register finally
+# began answering it. It belongs here on the same principle as the other two and
+# not as an exemption: a birth date is a FACT the People register owns, not an
+# event the user picks. The cases that changed still assert what matters —
+# the SIGNING date on those consent forms stays blank.
+_REGISTER_DATES = ("financial year", "auditor", "date of birth", "birth date")
 
 
 def _is_register_date(blank) -> bool:
